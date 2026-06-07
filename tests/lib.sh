@@ -1,7 +1,7 @@
 # tests/lib.sh — dependency-free bash test harness.
 # Each test file sources this, calls setup_repo, makes assertions, and exits
 # via the EXIT trap which prints a summary and sets the exit code.
-set -uo pipefail
+set -uo pipefail  # applies to the sourcing test shell; -e is intentionally absent so all assertions run
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPUTY="$REPO/bin/deputy.sh"
@@ -32,7 +32,8 @@ assert_contains() {  # assert_contains <haystack> <needle> [msg]
 }
 
 _summarize() {
+  local _rc=$?
   printf '%d run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
-  [[ "$TESTS_FAILED" -eq 0 ]]
+  [[ "$TESTS_FAILED" -eq 0 && "$_rc" -eq 0 ]]
 }
 trap _summarize EXIT
