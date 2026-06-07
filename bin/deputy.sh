@@ -140,6 +140,27 @@ cmd_status() {
     "$w" "$t" "$r" "$s" "$d" "$f"
 }
 
+# Numeric rank for a priority tag: P0=0 P1=1 P2=2 (none)=3.
+_prio_rank() {
+  case "$1" in P0) echo 0 ;; P1) echo 1 ;; P2) echo 2 ;; *) echo 3 ;; esac
+}
+
+cmd_pick() {
+  local raw parsed state prio best_rank=99 best_line="" rank
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    [[ "$state" == "waiting" ]] || continue
+    prio="${parsed#*|}"; prio="${prio%%|*}"
+    rank="$(_prio_rank "$prio")"
+    if (( rank < best_rank )); then          # strict < preserves FIFO on ties
+      best_rank="$rank"; best_line="$raw"
+    fi
+  done < <(_each_item)
+  [[ -n "$best_line" ]] && printf '%s\n' "$best_line"
+  return 0
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy.sh <command> [args]
@@ -167,6 +188,7 @@ main() {
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
     status) cmd_status; return 0 ;;
+    pick) cmd_pick; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
