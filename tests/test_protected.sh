@@ -12,4 +12,6 @@ assert_eq "$(bash "$DEPUTY" config missing)"   ""          "config missing key e
 bash "$DEPUTY" protected ".env.local"; assert_eq "$?" "0" "protected matches .env.local"
 bash "$DEPUTY" protected "secrets/key.pem"; assert_eq "$?" "0" "protected matches secrets glob"
 bash "$DEPUTY" protected "src/main.py"; assert_eq "$?" "1" "protected allows normal path"
-printf 'src/a.py\nsecrets/b\n' | { bash "$DEPUTY" protected --stdin; assert_eq "$?" "0" "protected detects in a list"; }
+# Read paths from a file (not a pipe) so assert_eq runs in the main shell and is counted.
+printf 'src/a.py\nsecrets/b\n' > "$DEPUTY_ROOT/paths.txt"
+bash "$DEPUTY" protected --stdin < "$DEPUTY_ROOT/paths.txt"; assert_eq "$?" "0" "protected detects in a list"
