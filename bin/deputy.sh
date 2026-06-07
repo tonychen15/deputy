@@ -475,6 +475,41 @@ _wt_remove() {
   _with_lock _do_wt_remove
 }
 
+# Availability csv: $DEPUTY_AVAIL override (tests), else probe the three CLIs.
+_availability() {
+  if [[ -n "${DEPUTY_AVAIL:-}" ]]; then printf '%s\n' "$DEPUTY_AVAIL"; return 0; fi
+  local c avail=""
+  for c in claude gemini codex; do [[ "$(_probe "$c")" == ok ]] && avail+="${avail:+,}$c"; done
+  printf '%s\n' "$avail"
+}
+
+_spawn_orchestrator() { "${DEPUTY_ORCHESTRATOR_CMD:-claude}" "$@"; }
+
+# One tick: claim the top item and hand it to the orchestrator. --once = no loop.
+cmd_run() {
+  local once=0; [[ "${1:-}" == "--once" ]] && once=1
+  cmd_recover >/dev/null 2>&1 || true
+  if _live_claim_exists; then return 0; fi
+  local item; item="$(cmd_pick)"
+  [[ -n "$item" ]] || return 0
+  local avail decision; avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
+  if [[ "$decision" != "claude" ]]; then
+    cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
+    return 0
+  fi
+  cmd_claim "$item" --pid "$$" >/dev/null 2>&1 || return 0
+  local running_line; running_line="$(cat "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s\n' "$item")"
+  set +e
+  _spawn_orchestrator "$running_line" "$decision"
+  set -e
+  rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
+  if [[ "$once" -eq 0 ]]; then
+    local remaining; remaining="$(cmd_pick)"
+    [[ -n "$remaining" ]] && cmd_run
+  fi
+  return 0
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -499,6 +534,7 @@ main() {
       return $? ;;
     wt-create) shift; _wt_create "${1:?slug}"; return $? ;;
     wt-remove) shift; _wt_remove; return $? ;;
+    run) shift; cmd_run "$@"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
