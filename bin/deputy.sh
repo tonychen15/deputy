@@ -20,6 +20,41 @@ LOCK_FILE="$STATE_DIR/lock"
 mkdir -p "$STATE_DIR"
 [[ -f "$LOCK_FILE" ]] || : > "$LOCK_FILE"
 
+# Yield raw item lines: everything after the legend's closing '-->'. If the file
+# has no '-->', every non-blank line is an item.
+_each_item() {
+  local line seen=0 has_legend=0
+  grep -q -- '-->' "$BACKLOG" && has_legend=1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$has_legend" -eq 1 && "$seen" -eq 0 ]]; then
+      [[ "$line" == *'-->'* ]] && seen=1
+      continue
+    fi
+    [[ -z "${line//[[:space:]]/}" ]] && continue   # skip blank/whitespace-only
+    printf '%s\n' "$line"
+  done < "$BACKLOG"
+}
+
+# Parse one raw line -> "state|priority|description" (priority may be empty).
+_parse_item() {
+  local line="$1" state="waiting" prio="" desc=""
+  line="${line#"${line%%[![:space:]]*}"}"          # left-trim
+  if [[ "$line" =~ ^([~@?#!])([[:space:]]+(.*))?$ ]]; then
+    case "${BASH_REMATCH[1]}" in
+      '~') state=triaging ;; '@') state=running ;;  '?') state=surfaced ;;
+      '#') state=done ;;     '!') state=failed ;;
+    esac
+    line="${BASH_REMATCH[3]:-}"
+  fi
+  if [[ "$line" =~ ^\[(P[0-2])\]([[:space:]]+(.*))?$ ]]; then
+    prio="${BASH_REMATCH[1]}"
+    desc="${BASH_REMATCH[3]:-}"
+  else
+    desc="$line"
+  fi
+  printf '%s|%s|%s' "$state" "$prio" "$desc"
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy.sh <command> [args]
@@ -42,6 +77,7 @@ main() {
   local cmd="${1:-help}"
   case "$cmd" in
     help|-h|--help) usage; return 0 ;;
+    _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
