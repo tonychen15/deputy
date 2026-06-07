@@ -324,6 +324,28 @@ _detect_outcome() {
   printf 'hard_error\n'
 }
 
+# True if $1 appears in the comma-separated list $2.
+_in_csv() { case ",$2," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+# Choose a provider for a work kind given available providers (csv).
+# Echoes: a provider name | "wait" (claude-bound work, claude down) | "none".
+_route() {
+  local kind="$1" avail="$2"
+  case "$kind" in
+    orchestrate|code-complex)
+      _in_csv claude "$avail" && { printf 'claude\n'; return 0; }
+      printf 'wait\n' ;;
+    code-simple)
+      _in_csv claude "$avail" && { printf 'claude\n'; return 0; }
+      _in_csv codex  "$avail" && { printf 'codex\n';  return 0; }
+      printf 'wait\n' ;;
+    review)
+      _in_csv gemini "$avail" && { printf 'gemini\n'; return 0; }
+      printf 'wait\n' ;;
+    *) printf 'none\n'; return 2 ;;
+  esac
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -338,6 +360,7 @@ main() {
     claim) shift; cmd_claim "$@"; return $? ;;
     recover) cmd_recover; return 0 ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
+    route) shift; _route "${1:-}" "${2:-}"; return $? ;;
     *) usage >&2; return 2 ;;
   esac
 }
