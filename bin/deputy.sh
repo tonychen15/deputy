@@ -324,6 +324,30 @@ _detect_outcome() {
   printf 'hard_error\n'
 }
 
+# The trivial liveness prompt invocation per CLI.
+_probe_cmd() {
+  case "$1" in
+    claude) claude -p "ping" ;;
+    gemini) gemini -p "ping" ;;
+    codex)  codex exec "ping" ;;
+    *) return 127 ;;
+  esac
+}
+
+# Probe a CLI: absent | ok | quota_exhausted | auth_error | hard_error.
+_probe() {
+  local cli="$1"
+  command -v "$cli" >/dev/null 2>&1 || { printf 'absent\n'; return 0; }
+  local log rc
+  log="$(mktemp)"
+  set +e
+  _probe_cmd "$cli" >"$log" 2>&1
+  rc=$?
+  set -e
+  _detect_outcome "$cli" "$rc" "$log"
+  rm -f "$log"
+}
+
 # True if $1 appears in the comma-separated list $2.
 _in_csv() { case ",$2," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
@@ -361,6 +385,7 @@ main() {
     recover) cmd_recover; return 0 ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
     route) shift; _route "${1:-}" "${2:-}"; return $? ;;
+    probe) shift; _probe "${1:-}"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
