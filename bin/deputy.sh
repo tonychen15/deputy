@@ -504,7 +504,23 @@ _availability() {
   printf '%s\n' "$avail"
 }
 
-_spawn_orchestrator() { "${DEPUTY_ORCHESTRATOR_CMD:-claude}" "$@"; }
+# Spawn the orchestrator for a claimed item. If DEPUTY_ORCHESTRATOR_CMD is set
+# (tests / custom drivers), call it as `<cmd> <item-line> <provider>`. Otherwise
+# build a headless prompt that runs the deputy orchestrator skill on this one item.
+_spawn_orchestrator() {
+  local item="$1" provider="$2"
+  if [[ -n "${DEPUTY_ORCHESTRATOR_CMD:-}" ]]; then
+    "$DEPUTY_ORCHESTRATOR_CMD" "$item" "$provider"
+    return $?
+  fi
+  local prompt
+  prompt="You are the Deputy orchestrator — use the 'deputy' skill. Work this ONE claimed backlog item end-to-end per the skill's loop, then stop.
+Repo root: $ROOT
+Item (the exact current BACKLOG.md line — pass it verbatim to 'deputy set'): $item
+Provider for coding: $provider
+Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced via 'deputy set \"<line>\" <state>'."
+  claude -p "$prompt" --model claude-sonnet-4-6 --allowedTools "Bash,Edit,Write,Read,Glob,Grep"
+}
 
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
 cmd_run() {
