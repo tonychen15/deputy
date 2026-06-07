@@ -117,6 +117,11 @@ cmd_add() {
     shift
   done
   [[ -n "$text" ]] || { printf 'deputy: add requires text\n' >&2; return 2; }
+  text="${text#"${text%%[![:space:]]*}"}"   # left-trim (matches parser's own trim)
+  if [[ "$text" =~ ^[~@?#!][[:space:]] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?#!) + space or a [Px] tag: %s\n' "$text" >&2
+    return 2
+  fi
   _do_add() {
     if _desc_exists "$text"; then
       printf 'deputy: already present: %s\n' "$text"; return 0

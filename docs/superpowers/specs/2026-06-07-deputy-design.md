@@ -173,6 +173,11 @@ line *numbers* shift when lines are added/removed, but an exact-line match eithe
 finds its target or is a safe no-op. The runner never caches a line index across
 the lock boundary.
 
+- **Reserved-prefix constraint:** an item description may not *begin* with a status
+  prefix char (`~ @ ? # !`) followed by a space, nor with a `[Px]` tag — those forms
+  are ambiguous with the line grammar. `add` rejects them; hand-edited lines must
+  avoid them too. (A future escaping scheme could lift this; out of scope for V1.)
+
 ### Priority vs the command flags
 Command flags map 1:1 to on-disk tags: `-ui → [P0]`, `-u → [P1]`, `-i → [P2]`.
 A hand-edited line with no tag is the lowest lane. Nothing is ever auto-dropped.
