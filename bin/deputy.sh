@@ -181,6 +181,44 @@ cmd_set() {
   _with_lock _do_set
 }
 
+# True if any .deputy/<pid>.claim is owned by a live process.
+_live_claim_exists() {
+  local f pid
+  for f in "$STATE_DIR"/*.claim; do
+    [[ -e "$f" ]] || continue
+    pid="${f##*/}"; pid="${pid%.claim}"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_claim() {
+  local from="" pid="$PPID"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pid) [[ $# -gt 1 ]] || { printf 'deputy: --pid requires an argument\n' >&2; return 2; }; pid="$2"; shift 2 ;;
+      *) [[ -z "$from" ]] && { from="$1"; shift; } || { printf 'deputy: unexpected arg: %s\n' "$1" >&2; return 2; } ;;
+    esac
+  done
+  [[ -n "$from" ]] || { printf 'deputy: claim requires "<line>"\n' >&2; return 2; }
+  [[ "$pid" =~ ^[0-9]+$ ]] || { printf 'deputy: invalid pid: %s\n' "$pid" >&2; return 2; }
+  _do_claim() {
+    _live_claim_exists && { printf 'deputy: busy (a live claim exists)\n' >&2; return 3; }
+    local parsed state
+    parsed="$(_parse_item "$from")"; state="${parsed%%|*}"
+    [[ "$state" == "waiting" ]] || { printf 'deputy: item is not waiting (%s)\n' "$state" >&2; return 4; }
+    grep -qxF -- "$from" "$BACKLOG" || { printf 'deputy: item not found\n' >&2; return 1; }
+    local prio desc to
+    prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
+    to="$(_serialize_item running "$prio" "$desc")"
+    _flip_line "$from" "$to"
+    printf '%s\n' "$to" > "$STATE_DIR/$pid.claim"
+  }
+  _with_lock _do_claim
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy.sh <command> [args]
@@ -210,6 +248,7 @@ main() {
     status) cmd_status; return 0 ;;
     pick) cmd_pick; return 0 ;;
     set) shift; cmd_set "$@"; return $? ;;
+    claim) shift; cmd_claim "$@"; return $? ;;
     *) usage >&2; return 2 ;;
   esac
 }
