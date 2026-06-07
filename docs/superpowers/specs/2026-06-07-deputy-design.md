@@ -1,6 +1,13 @@
 # Deputy — Design Spec
 
-**Status:** Draft for review
+**Status:** Implemented (V1) — Plans 1–3 merged; queue engine, scheduling/routing,
+and orchestrator all built and tested. **Live-validated 2026-06-07:** a real
+end-to-end `deputy run` drove the `claude` orchestrator to triage a simple item,
+do the work in an isolated `.deputy/wt` worktree, pass the deterministic
+protected-path gate, get a `PASS` from a real **Gemini xReview**, commit to the
+item branch, and `deputy set … done` — all autonomously. V2 carve-outs remain (see
+§15): migrate waypoint/xReview to Gemini/Codex, external notifications, full Reflect,
+parallel worktrees, due-dates/dependencies, Codex CLI install.
 **Date:** 2026-06-07
 **Repo:** `deputy` (currently the `jobflow` working dir; to be renamed)
 **Supersedes:** the bullet notes in `docs/features-todo.md`
