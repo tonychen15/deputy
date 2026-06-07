@@ -302,6 +302,10 @@ commands:
   set "<exact line>" <state>      transition an item's state by exact-line match
   claim "<exact line>" [--pid N]  mark an item running and write a claim (serial)
   recover                         revert stale/orphaned claims to waiting
+  probe <cli>                     check a provider's availability
+  route <kind> <avail-csv>        choose a provider (orchestrate|code-complex|code-simple|review)
+  cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
+  detect <cli> <rc> <log>         (internal) classify a CLI outcome
   help                            show this message
 
 states: waiting triaging running surfaced done failed
