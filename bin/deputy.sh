@@ -298,6 +298,7 @@ commands:
                                   description that starts with "-")
   list                            print parsed items (state|priority|description)
   status                          counts by state
+  run [--once]                    work the backlog: claim the top item, run the orchestrator
   pick                            print the highest-priority waiting item (raw line)
   set "<exact line>" <state>      transition an item's state by exact-line match
   claim "<exact line>" [--pid N]  mark an item running and write a claim (serial)
