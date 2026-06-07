@@ -45,3 +45,34 @@ assert_eq "$([[ -L "$p3/deputy" ]] && echo yes || echo no)" "yes" "bare install 
 p4="$(mktemp -d)"; mkdir -p "$p4/deputy"
 DEPUTY_PREFIX="$p4" bash "$INSTALL" link --force >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "3" "link refuses a directory target"
+
+# --- init also seeds .deputy/config and .deputy/protected (idempotent, no clobber) ---
+di="$(mktemp -d)"
+bash "$INSTALL" init "$di" >/dev/null
+assert_eq "$([[ -f "$di/.deputy/config" ]] && echo yes || echo no)" "yes" "init seeds .deputy/config"
+assert_eq "$([[ -f "$di/.deputy/protected" ]] && echo yes || echo no)" "yes" "init seeds .deputy/protected"
+echo "custom=1" >> "$di/.deputy/config"
+bash "$INSTALL" init "$di" >/dev/null
+assert_contains "$(cat "$di/.deputy/config")" "custom=1" "init does not clobber existing config"
+
+# --- link also installs the orchestrator skill into DEPUTY_SKILLS_DIR ---
+sk="$(mktemp -d)"; pf="$(mktemp -d)"
+DEPUTY_SKILLS_DIR="$sk" DEPUTY_PREFIX="$pf" bash "$INSTALL" link >/dev/null
+assert_eq "$([[ -e "$sk/deputy/SKILL.md" ]] && echo yes || echo no)" "yes" "link installs orchestrator skill"
+
+# --- link is idempotent for the skill too ---
+DEPUTY_SKILLS_DIR="$sk" DEPUTY_PREFIX="$pf" bash "$INSTALL" link >/dev/null; rc=$?
+assert_eq "$rc" "0" "re-link with skill exits 0"
+
+# --- install.sh cron delegates to deputy cron --ensure (fake crontab) ---
+store="$(mktemp)"; : > "$store"
+fake="$(mktemp)"
+cat > "$fake" <<EOF
+#!/usr/bin/env bash
+[[ "\${1:-}" == "-l" ]] && { cat "$store"; exit 0; }
+[[ "\${1:-}" == "-" ]] && { cat > "$store"; exit 0; }
+exit 0
+EOF
+chmod +x "$fake"
+DEPUTY_CRONTAB="$fake" bash "$INSTALL" cron >/dev/null 2>&1
+assert_eq "$(grep -c 'deputy' "$store")" "1" "install cron ensures one entry"

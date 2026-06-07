@@ -19,6 +19,7 @@ usage() {
 usage:
   install.sh [link] [--prefix DIR] [--force]   symlink 'deputy' into DIR (default: \$HOME/.local/bin)
   install.sh init [DIR]                         seed BACKLOG.md + gitignore .deputy/ in DIR (default: cwd)
+  install.sh cron                               run 'deputy cron --ensure' (opt-in safety-net)
   install.sh help
 EOF
 }
@@ -56,6 +57,23 @@ cmd_link() {
     *":$prefix:"*) ;;
     *) printf 'install: NOTE: %s is not on your PATH; add it to use `deputy` directly.\n' "$prefix" >&2 ;;
   esac
+
+  # Install the orchestrator skill.
+  local skills_dir="${DEPUTY_SKILLS_DIR:-$HOME/.claude/skills}"
+  local skill_src="$SRC_DIR/skills/deputy" skill_dst="$skills_dir/deputy"
+  if [[ -d "$skill_src" ]]; then
+    mkdir -p "$skills_dir"
+    if [[ -d "$skill_dst" && ! -L "$skill_dst" ]]; then
+      printf 'install: %s is a directory; not replacing the skill.\n' "$skill_dst" >&2
+    elif [[ -L "$skill_dst" && "$(readlink -f "$skill_dst" 2>/dev/null)" == "$(readlink -f "$skill_src")" ]]; then
+      printf 'install: skill already linked: %s -> %s\n' "$skill_dst" "$skill_src"
+    else
+      ln -sfn "$skill_src" "$skill_dst"
+      printf 'install: linked skill %s -> %s\n' "$skill_dst" "$skill_src"
+    fi
+  fi
+  # SessionStart hook: print guidance (V1 does not auto-edit Claude settings).
+  printf 'install: SessionStart hook available at %s/hooks/session-start.sh (register it in your Claude settings to enable surfacing banners)\n' "$SRC_DIR"
 }
 
 cmd_init() {
@@ -80,6 +98,18 @@ cmd_init() {
     printf '.deputy/\n' >> "$gi"
     printf 'install: added .deputy/ to %s\n' "$gi"
   fi
+
+  local f src dst
+  for f in config protected; do
+    src="$SRC_DIR/templates/$f"; dst="$dir/.deputy/$f"
+    [[ -f "$src" ]] || continue
+    mkdir -p "$dir/.deputy"
+    if [[ -e "$dst" ]]; then
+      printf 'install: %s already exists, leaving it\n' "$dst"
+    else
+      cp "$src" "$dst"; printf 'install: seeded %s\n' "$dst"
+    fi
+  done
 }
 
 main() {
@@ -87,6 +117,7 @@ main() {
   case "$cmd" in
     link)          shift || true; cmd_link "$@" ;;
     init)          shift || true; cmd_init "$@" ;;
+    cron)          shift || true; bash "$RUNNER" cron --ensure ;;
     help|-h|--help) usage ;;
     --*)           cmd_link "$@" ;;   # allow `install.sh --prefix DIR` / `--force`
     *) usage >&2; return 2 ;;
