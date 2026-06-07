@@ -302,6 +302,28 @@ states: waiting triaging running surfaced done failed
 EOF
 }
 
+# Classify a CLI invocation outcome: ok|quota_exhausted|auth_error|hard_error.
+# Conservative: an unrecognized non-zero exit is hard_error, never quota_exhausted.
+_detect_outcome() {
+  local cli="$1" rc="$2" log="$3" content=""
+  [[ "$rc" -eq 0 ]] && { printf 'ok\n'; return 0; }
+  [[ -f "$log" ]] && content="$(cat "$log")"
+  local lc="${content,,}"   # lowercase for case-insensitive matching
+  case "$cli" in
+    claude) [[ "$lc" == *"hit your limit"* || "$lc" == *"usage limit"* || "$lc" == *"rate limit"* ]] \
+              && { printf 'quota_exhausted\n'; return 0; } ;;
+    gemini) [[ "$lc" == *"resource_exhausted"* || "$lc" == *"429"* || "$lc" == *"quota"* ]] \
+              && { printf 'quota_exhausted\n'; return 0; } ;;
+    codex)  [[ "$lc" == *"usage limit"* || "$lc" == *"rate limit"* || "$lc" == *"quota"* ]] \
+              && { printf 'quota_exhausted\n'; return 0; } ;;
+  esac
+  case "$lc" in
+    *"not authenticated"*|*"please log in"*|*"/login"*|*"api key"*|*"sign in"*|*"unauthorized"*) \
+      printf 'auth_error\n'; return 0 ;;
+  esac
+  printf 'hard_error\n'
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -315,6 +337,7 @@ main() {
     set) shift; cmd_set "$@"; return $? ;;
     claim) shift; cmd_claim "$@"; return $? ;;
     recover) cmd_recover; return 0 ;;
+    detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
