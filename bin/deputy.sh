@@ -370,6 +370,40 @@ _route() {
   esac
 }
 
+_crontab() { "${DEPUTY_CRONTAB:-crontab}" "$@"; }
+
+# Extract a 24h hour from "resets 11pm" / "resets 3am". Echoes nothing if no match.
+_parse_reset_hour() {
+  local s="${1,,}" h ampm
+  [[ "$s" =~ ([0-9]+)[[:space:]]*(am|pm) ]] || return 0
+  h="${BASH_REMATCH[1]}"; ampm="${BASH_REMATCH[2]}"
+  if [[ "$ampm" == "pm" && "$h" -lt 12 ]]; then h=$((h + 12))
+  elif [[ "$ampm" == "am" && "$h" -eq 12 ]]; then h=0; fi
+  printf '%s\n' "$h"
+}
+
+# Replace the single deputy cron line with $1 (empty $1 removes it). Marker: a
+# trailing "# deputy" comment so we own exactly our line.
+_set_cron() {
+  local schedule="$1" existing filtered
+  existing="$(_crontab -l 2>/dev/null || true)"
+  filtered="$(printf '%s\n' "$existing" | grep -v '# deputy' || true)"
+  {
+    printf '%s\n' "$filtered" | grep -v '^[[:space:]]*$' || true
+    [[ -n "$schedule" ]] && printf '%s deputy run  # deputy\n' "$schedule"
+  } | _crontab -
+}
+
+cmd_cron() {
+  case "${1:-}" in
+    --ensure)     _set_cron "0 */2 * * *" ;;
+    --remove)     _set_cron "" ;;
+    --reschedule) local h; h="$(_parse_reset_hour "${2:-}")"
+                  if [[ -n "$h" ]]; then _set_cron "0 $h * * *"; else _set_cron "0 */2 * * *"; fi ;;
+    *) printf 'deputy: cron needs --ensure|--remove|--reschedule "<text>"\n' >&2; return 2 ;;
+  esac
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -386,6 +420,8 @@ main() {
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
     route) shift; _route "${1:-}" "${2:-}"; return $? ;;
     probe) shift; _probe "${1:-}"; return 0 ;;
+    cron) shift; cmd_cron "$@"; return $? ;;
+    _resethour) shift; _parse_reset_hour "${1:-}"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
