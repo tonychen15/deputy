@@ -131,26 +131,38 @@ prunes an orphaned `.deputy/wt` left by a dead worker.
 
 ```markdown
 # Deputy Backlog
-<!-- LEGEND — do not edit this block. Everything below the closing arrow is an item.
-Status (line prefix):  (none) waiting   ~ triaging   @ running   ? surfaced   # done   ! failed
-Priority (tag):        [P0] urgent+important   [P1] urgent   [P2] important   (none) lowest lane
-Order:                 P0 > P1 > P2 > untagged ; FIFO within a lane
-Line format:           <status?> <priority?> <description>
-Add an item:           deputy "your task" [-ui | -u | -i]    — or just add a line below
--->
+
+## LEGEND
+**Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `#` done | `!` failed
+**Priority (tag):** `[P0]` urgent+important | `[P1]` urgent | `[P2]` important | (none) lowest lane
+**Order:** P0 > P1 > P2 > untagged ; FIFO within a lane
+**Line format:** `<status?> <priority?> <description>`
+**Add an item:** `deputy "your task" [-ui | -u | -i]` — or just add a line below
+---
+
+## Items
 
 [P0] Fix the login redirect loop
+
 [P1] Rotate the leaked API key
+
 [P2] Refactor the auth module
-     Tidy up the README
-# Set up CI pipeline
+
+Tidy up the README
+
+#Set up CI pipeline
 ```
 
 ### Parsing rule
-Everything from the top of the file **through the closing `-->`** is a skipped
-header region. Every non-blank line **after** it is an item. This avoids the
-markdown-heading collision (a `#`-prefixed done line or the `# Deputy Backlog`
-title could otherwise look like an item/heading).
+Items are the non-blank lines **after the `## Items` heading**. The `## LEGEND`
+section above it is skipped entirely. Legacy files using a `<!-- ... -->` comment
+legend are still supported (items start after the closing `-->`); bare files with
+no legend also work (every non-blank line is an item).
+
+**Serialization** is no-space: the status prefix directly abuts what follows
+(`#[P0] x`, `#Refactor`, `@[P0] x`, `[P2] x`, `Plain`). **Parsing** is lenient:
+an optional space after the prefix is accepted, so old-format lines like
+`# [P0] x` or `@ [P1] y` parse correctly alongside the new compact form.
 
 ### Line grammar
 `<status-prefix?> <priority-tag?> <description>`
@@ -174,9 +186,9 @@ finds its target or is a safe no-op. The runner never caches a line index across
 the lock boundary.
 
 - **Reserved-prefix constraint:** an item description may not *begin* with a status
-  prefix char (`~ @ ? # !`) followed by a space, nor with a `[Px]` tag — those forms
-  are ambiguous with the line grammar. `add` rejects them; hand-edited lines must
-  avoid them too. (A future escaping scheme could lift this; out of scope for V1.)
+  prefix char (`~ @ ? # !`) (with or without a following space), nor with a `[Px]` tag
+  — those forms are ambiguous with the line grammar. `add` rejects them; hand-edited
+  lines must avoid them too. (A future escaping scheme could lift this; out of scope for V1.)
 
 ### Priority vs the command flags
 Command flags map 1:1 to on-disk tags: `-ui → [P0]`, `-u → [P1]`, `-i → [P2]`.

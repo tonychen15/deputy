@@ -20,57 +20,62 @@ LOCK_FILE="$STATE_DIR/lock"
 mkdir -p "$STATE_DIR"
 [[ -f "$LOCK_FILE" ]] || : > "$LOCK_FILE"
 
-# Yield raw item lines: everything after the legend's closing '-->'. If the file
-# has no '-->', every non-blank line is an item.
+# Yield raw item lines: everything after the "## Items" heading. Falls back to
+# after a legacy "<!-- ... -->" legend, else every non-blank line. Blank lines
+# are skipped for iteration (but left intact in the file).
 _each_item() {
-  local line seen=0 has_legend=0
+  local line seen=0 mode=none
   [[ -f "$BACKLOG" ]] || return 0
-  grep -q -- '-->' "$BACKLOG" 2>/dev/null && has_legend=1
+  if grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null; then mode=items
+  elif grep -q -- '-->' "$BACKLOG" 2>/dev/null; then mode=comment
+  fi
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$has_legend" -eq 1 && "$seen" -eq 0 ]]; then
-      [[ "$line" == *'-->'* ]] && seen=1
+    if [[ "$seen" -eq 0 && "$mode" != "none" ]]; then
+      if [[ "$mode" == "items" && "$line" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]]; then seen=1; fi
+      [[ "$mode" == "comment" && "$line" == *'-->'* ]] && seen=1
       continue
     fi
-    [[ -z "${line//[[:space:]]/}" ]] && continue   # skip blank/whitespace-only
+    [[ -z "${line//[[:space:]]/}" ]] && continue
     printf '%s\n' "$line"
   done < "$BACKLOG"
 }
 
-# Parse one raw line -> "state|priority|description" (priority may be empty).
+# Parse one raw line -> "state|priority|description". Lenient: accepts an optional
+# space after the status prefix (so both `#[P0] x` and `# [P0] x` parse the same).
 _parse_item() {
   local line="$1" state="waiting" prio="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
-  if [[ "$line" =~ ^([~@?#!])[[:space:]]+(.*)$ ]]; then
+  if [[ "$line" =~ ^([~@?#!])[[:space:]]*(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
       '~') state=triaging ;; '@') state=running ;;  '?') state=surfaced ;;
       '#') state=done ;;     '!') state=failed ;;
     esac
     line="${BASH_REMATCH[2]}"
   fi
-  if [[ "$line" =~ ^\[(P[0-2])\]([[:space:]]+(.*))?$ ]]; then
+  if [[ "$line" =~ ^\[(P[0-2])\][[:space:]]*(.*)$ ]]; then
     prio="${BASH_REMATCH[1]}"
-    desc="${BASH_REMATCH[3]:-}"
+    desc="${BASH_REMATCH[2]}"
   else
     desc="$line"
   fi
   printf '%s|%s|%s' "$state" "$prio" "$desc"
 }
 
-# Build a canonical line from (state, priority, description).
+# Build a canonical line from (state, priority, description). The status symbol
+# directly abuts what follows (no space): `#[P0] x`, `#Refactor`, `[P2] x`, `Plain`.
 _serialize_item() {
-  local state="$1" prio="$2" desc="$3" prefix="" tag="" out=""
+  local state="$1" prio="$2" desc="$3" prefix="" body=""
   case "$state" in
     waiting) prefix="" ;;  triaging) prefix="~" ;; running) prefix="@" ;;
     surfaced) prefix="?" ;; done) prefix="#" ;;   failed) prefix="!" ;;
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
-  [[ -n "$prio" ]] && tag="[$prio]"
-  for part in "$prefix" "$tag" "$desc"; do
-    [[ -z "$part" ]] && continue
-    [[ -n "$out" ]] && out+=" "
-    out+="$part"
-  done
-  printf '%s' "$out"
+  if [[ -n "$prio" ]]; then
+    if [[ -n "$desc" ]]; then body="[$prio] $desc"; else body="[$prio]"; fi
+  else
+    body="$desc"
+  fi
+  printf '%s%s' "$prefix" "$body"
 }
 
 cmd_list() {
@@ -95,8 +100,9 @@ _flip_line() {
   mv "$tmp" "$BACKLOG"
 }
 
-# Append a raw line to BACKLOG. Caller holds the lock.
-_append_item() { printf '%s\n' "$1" >> "$BACKLOG"; }
+# Append a raw line preceded by a blank line so items stay blank-separated.
+# Caller holds the lock.
+_append_item() { printf '\n%s\n' "$1" >> "$BACKLOG"; }
 
 # True if any item's parsed description equals $1.
 _desc_exists() {
@@ -128,8 +134,8 @@ cmd_add() {
   done
   [[ -n "$text" ]] || { printf 'deputy: add requires text\n' >&2; return 2; }
   text="${text#"${text%%[![:space:]]*}"}"   # left-trim (matches parser's own trim)
-  if [[ "$text" =~ ^[~@?#!][[:space:]] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
-    printf 'deputy: description may not begin with a status prefix (~@?#!) + space or a [Px] tag: %s\n' "$text" >&2
+  if [[ "$text" =~ ^[~@?#!] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?#!) or a [Px] tag: %s\n' "$text" >&2
     return 2
   fi
   if [[ "$text" == *$'\n'* ]]; then

@@ -11,7 +11,7 @@ assert_eq "$rc" "0" "claim succeeds when free"
 assert_contains "$(bash "$DEPUTY" list)" "running|P0|first" "claimed item is running"
 [[ -f "$DEPUTY_ROOT/.deputy/$LIVE.claim" ]] && r=yes || r=no
 assert_eq "$r" "yes" "claim file written"
-assert_eq "$(cat "$DEPUTY_ROOT/.deputy/$LIVE.claim")" "@ [P0] first" "claim file holds running line"
+assert_eq "$(cat "$DEPUTY_ROOT/.deputy/$LIVE.claim")" "@[P0] first" "claim file holds running line"
 
 # Second claim refused while a live claim exists (serial).
 sleep 300 & LIVE2=$!

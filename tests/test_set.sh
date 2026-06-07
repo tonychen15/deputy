@@ -8,7 +8,7 @@ bash "$DEPUTY" set "[P0] do the thing" running
 assert_contains "$(bash "$DEPUTY" list)" "running|P0|do the thing" "set waiting->running keeps P0"
 
 # running -> done (use the now-current raw line).
-bash "$DEPUTY" set "@ [P0] do the thing" done
+bash "$DEPUTY" set "@[P0] do the thing" done
 assert_contains "$(bash "$DEPUTY" list)" "done|P0|do the thing" "set running->done"
 
 # untagged transition.

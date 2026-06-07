@@ -11,8 +11,8 @@ assert_eq "$(parse '# Done thing')"       "done||Done thing"       "done untagge
 assert_eq "$(parse '   Plain waiting')"   "waiting||Plain waiting" "left-trim untagged"
 assert_eq "$(parse '? [P2] Ask me')"      "surfaced|P2|Ask me"     "surfaced P2"
 assert_eq "$(parse '! Broke')"            "failed||Broke"          "failed untagged"
-assert_eq "$(parse '@mention the user')"  "waiting||@mention the user" "no-space prefix is text"
-assert_eq "$(parse '@')"                  "waiting||@"             "bare prefix no space is text"
+assert_eq "$(parse '@mention the user')"  "running||mention the user" "leading prefix is a status prefix"
+assert_eq "$(parse '@')"                  "running||"               "bare prefix is a status"
 assert_eq "$(parse '~ [P2]')"             "triaging|P2|"           "prefix + tag, empty description"
 
 # list + legend-skip
@@ -24,7 +24,7 @@ assert_contains "$out" "done||three"     "list: item three"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'LEGEND')" "0" "list: legend not parsed as item"
 
 ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3"; }
-assert_eq "$(ser running P0 'Fix it')" "@ [P0] Fix it" "serialize running P0"
+assert_eq "$(ser running P0 'Fix it')" "@[P0] Fix it" "serialize running P0"
 assert_eq "$(ser waiting '' 'Plain')"  "Plain"         "serialize waiting untagged"
-assert_eq "$(ser done '' 'Thing')"     "# Thing"       "serialize done untagged"
-assert_eq "$(ser surfaced P2 'Ask')"   "? [P2] Ask"    "serialize surfaced P2"
+assert_eq "$(ser done '' 'Thing')"     "#Thing"        "serialize done untagged"
+assert_eq "$(ser surfaced P2 'Ask')"   "?[P2] Ask"     "serialize surfaced P2"
