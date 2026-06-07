@@ -219,6 +219,50 @@ cmd_claim() {
   _with_lock _do_claim
 }
 
+# Revert a running/triaging line back to waiting (strip the prefix). Caller holds lock.
+_revert_to_waiting() {
+  local raw="$1" parsed prio desc to
+  parsed="$(_parse_item "$raw")"
+  prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
+  to="$(_serialize_item waiting "$prio" "$desc")"
+  _flip_line "$raw" "$to"
+}
+
+cmd_recover() {
+  _do_recover() {
+    local f pid line
+    # (1) Dead-claim recovery.
+    for f in "$STATE_DIR"/*.claim; do
+      [[ -e "$f" ]] || continue
+      pid="${f##*/}"; pid="${pid%.claim}"
+      if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+        line="$(cat "$f")"
+        _revert_to_waiting "$line"
+        rm -f "$f"
+      fi
+    done
+    # Collect lines still claimed by LIVE pids.
+    local -a claimed=()
+    for f in "$STATE_DIR"/*.claim; do
+      [[ -e "$f" ]] || continue
+      pid="${f##*/}"; pid="${pid%.claim}"
+      if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        claimed+=("$(cat "$f")")
+      fi
+    done
+    # (2) Orphan recovery: any @/~ item not in a live claim.
+    local raw parsed state c found
+    while IFS= read -r raw; do
+      parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+      [[ "$state" == "running" || "$state" == "triaging" ]] || continue
+      found=0
+      for c in "${claimed[@]:-}"; do [[ "$c" == "$raw" ]] && { found=1; break; }; done
+      [[ "$found" -eq 0 ]] && _revert_to_waiting "$raw"
+    done < <(_each_item)
+  }
+  _with_lock _do_recover
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy.sh <command> [args]
@@ -249,6 +293,7 @@ main() {
     pick) cmd_pick; return 0 ;;
     set) shift; cmd_set "$@"; return $? ;;
     claim) shift; cmd_claim "$@"; return $? ;;
+    recover) cmd_recover; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }

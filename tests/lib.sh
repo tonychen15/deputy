@@ -12,6 +12,7 @@ TESTS_FAILED=0
 setup_repo() {
   TMP="$(mktemp -d)"
   cp "$REPO/templates/BACKLOG.md" "$TMP/BACKLOG.md"
+  mkdir -p "$TMP/.deputy"
   export DEPUTY_ROOT="$TMP"
 }
 
