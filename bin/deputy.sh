@@ -127,6 +127,19 @@ cmd_add() {
   _with_lock _do_add
 }
 
+cmd_status() {
+  local raw state w=0 t=0 r=0 s=0 d=0 f=0 parsed
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    case "$state" in
+      waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running) r=$((r+1)) ;;
+      surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;; failed) f=$((f+1)) ;;
+    esac
+  done < <(_each_item)
+  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\n' \
+    "$w" "$t" "$r" "$s" "$d" "$f"
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy.sh <command> [args]
@@ -153,6 +166,7 @@ main() {
     list) cmd_list; return 0 ;;
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
+    status) cmd_status; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
