@@ -24,7 +24,8 @@ mkdir -p "$STATE_DIR"
 # has no '-->', every non-blank line is an item.
 _each_item() {
   local line seen=0 has_legend=0
-  grep -q -- '-->' "$BACKLOG" && has_legend=1
+  [[ -f "$BACKLOG" ]] || return 0
+  grep -q -- '-->' "$BACKLOG" 2>/dev/null && has_legend=1
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$has_legend" -eq 1 && "$seen" -eq 0 ]]; then
       [[ "$line" == *'-->'* ]] && seen=1
@@ -79,6 +80,52 @@ cmd_list() {
   done < <(_each_item)
 }
 
+# Run a function while holding an exclusive lock on LOCK_FILE (short-held).
+_with_lock() { ( flock -x 200; "$@" ) 200>"$LOCK_FILE"; }
+
+# Exact whole-line replacement (research.sh flip_line). Atomic via tmpfile+mv.
+# Caller holds the lock. Used by upcoming set/claim commands.
+_flip_line() {
+  local from="$1" to="$2" tmp line; tmp="$(mktemp)"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$from" ]]; then printf '%s\n' "$to"; else printf '%s\n' "$line"; fi
+  done < "$BACKLOG" > "$tmp"
+  mv "$tmp" "$BACKLOG"
+}
+
+# Append a raw line to BACKLOG. Caller holds the lock.
+_append_item() { printf '%s\n' "$1" >> "$BACKLOG"; }
+
+# True if any item's parsed description equals $1.
+_desc_exists() {
+  local want="$1" raw parsed
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    [[ "${parsed#*|*|}" == "$want" ]] && return 0
+  done < <(_each_item)
+  return 1
+}
+
+cmd_add() {
+  local text="" prio=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --p0) prio=P0 ;; --p1) prio=P1 ;; --p2) prio=P2 ;;
+      *) text="${text}${text:+ }$1" ;;
+    esac
+    shift
+  done
+  [[ -n "$text" ]] || { printf 'deputy: add requires text\n' >&2; return 2; }
+  _do_add() {
+    if _desc_exists "$text"; then
+      printf 'deputy: already present: %s\n' "$text"; return 0
+    fi
+    _append_item "$(_serialize_item waiting "$prio" "$text")"
+    printf 'deputy: added: %s\n' "$text"
+  }
+  _with_lock _do_add
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy.sh <command> [args]
@@ -104,6 +151,7 @@ main() {
     _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
     list) cmd_list; return 0 ;;
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" && printf '\n' || return 1 ;;
+    add) shift; cmd_add "$@" ;;
     *) usage >&2; return 2 ;;
   esac
 }
