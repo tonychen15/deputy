@@ -1,0 +1,6 @@
+# Deputy per-repo config. KEY=VALUE, one per line.
+test_cmd=
+lint_cmd=
+build_cmd=
+max_items=5
+time_cap_mins=30

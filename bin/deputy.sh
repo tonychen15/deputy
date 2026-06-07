@@ -414,6 +414,35 @@ cmd_cron() {
   esac
 }
 
+# Read a single key from .deputy/config (KEY=VALUE). Echoes the value or empty.
+_config_get() {
+  local key="$1" cfg="$STATE_DIR/config" line k v
+  [[ -f "$cfg" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == *=* ]] || continue
+    k="${line%%=*}"; v="${line#*=}"
+    k="${k#"${k%%[![:space:]]*}"}"; k="${k%"${k##*[![:space:]]}"}"
+    v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+    if [[ "$k" == "$key" ]]; then printf '%s\n' "$v"; return 0; fi
+  done < "$cfg"
+}
+
+# True (0) if any path (newline-separated, from $1) matches a glob in
+# .deputy/protected. Deterministic; used as the pre-commit gate.
+_protected_violation() {
+  local input="$1" prot="$STATE_DIR/protected" path glob
+  [[ -f "$prot" ]] || return 1
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    while IFS= read -r glob || [[ -n "$glob" ]]; do
+      [[ -n "$glob" && "$glob" != \#* ]] || continue
+      case "$path" in $glob) return 0 ;; esac
+    done < "$prot"
+  done <<< "$input"
+  return 1
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -432,6 +461,10 @@ main() {
     probe) shift; _probe "${1:-}"; return 0 ;;
     cron) shift; cmd_cron "$@"; return $? ;;
     _resethour) shift; _parse_reset_hour "${1:-}"; return 0 ;;
+    config) shift; _config_get "${1:-}"; return 0 ;;
+    protected) shift
+      if [[ "${1:-}" == "--stdin" ]]; then _protected_violation "$(cat)"; else _protected_violation "${1:-}"; fi
+      return $? ;;
     *) usage >&2; return 2 ;;
   esac
 }
