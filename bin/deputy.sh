@@ -288,6 +288,25 @@ cmd_recover() {
   _with_lock _do_recover
 }
 
+cmd_review() {
+  local any=0 raw parsed state desc f
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    [[ "$state" == "surfaced" ]] || continue
+    desc="${parsed#*|*|}"
+    printf '? %s\n' "$desc"; any=1
+  done < <(_each_item)
+  shopt -s nullglob
+  for f in "$STATE_DIR"/*.questions.md; do
+    printf '\n--- %s ---\n' "$(basename "$f")"
+    cat "$f"
+  done
+  shopt -u nullglob
+  if [[ "$any" -eq 0 ]]; then printf 'deputy: nothing surfaced.\n'; fi
+  printf '\n'
+  cmd_status
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy <command> [args]
@@ -307,6 +326,7 @@ commands:
   route <kind> <avail-csv>        choose a provider (orchestrate|code-complex|code-simple|review)
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
   detect <cli> <rc> <log>         (internal) classify a CLI outcome
+  review                          show surfaced items, their questions, and the digest
   help                            show this message
 
 states: waiting triaging running surfaced done failed
@@ -524,6 +544,7 @@ main() {
     set) shift; cmd_set "$@"; return $? ;;
     claim) shift; cmd_claim "$@"; return $? ;;
     recover) cmd_recover; return 0 ;;
+    review) cmd_review; return 0 ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
     route) shift; _route "${1:-}" "${2:-}"; return $? ;;
     probe) shift; _probe "${1:-}"; return 0 ;;
