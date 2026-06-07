@@ -42,3 +42,26 @@ assert_contains "$(bash "$DEPUTY" list)" "waiting||email @bob about it" "non-pre
 # Newlines in a description are rejected (would corrupt the one-line-per-item queue).
 bash "$DEPUTY" add "$(printf 'line one\nline two')" 2>/dev/null; rc=$?
 assert_eq "$rc" "2" "add rejects embedded newline"
+
+# Eisenhower flag aliases: -ui=P0, -u=P1, -i=P2 (equivalent to --p0/--p1/--p2).
+setup_repo
+bash "$DEPUTY" add "urgent important" -ui
+bash "$DEPUTY" add "just urgent" -u
+bash "$DEPUTY" add "just important" -i
+out="$(bash "$DEPUTY" list)"
+assert_contains "$out" "waiting|P0|urgent important" "-ui maps to P0"
+assert_contains "$out" "waiting|P1|just urgent"      "-u maps to P1"
+assert_contains "$out" "waiting|P2|just important"   "-i maps to P2"
+
+# Flag may come before or after the text; last priority flag wins.
+bash "$DEPUTY" add -ui "flag first"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|flag first" "flag may precede text"
+
+# `--` ends flag parsing so a description can start with a dash.
+bash "$DEPUTY" add -u -- "-5% drop alert"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|-5% drop alert" "-- allows leading-dash description"
+
+# An unknown single-dash flag is rejected (not silently absorbed).
+bash "$DEPUTY" add "task" -x 2>/dev/null; rc=$?
+assert_eq "$rc" "2" "unknown single-dash flag rejected"
+assert_eq "$(bash "$DEPUTY" list | grep -c -- '-x')" "0" "unknown single-dash flag not absorbed"

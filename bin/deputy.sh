@@ -109,13 +109,21 @@ _desc_exists() {
 }
 
 cmd_add() {
-  local text="" prio=""
+  # Priority flags: -ui/-u/-i (urgent+important / urgent / important) are aliases
+  # for --p0/--p1/--p2. A `--` marker ends flag parsing so a description may begin
+  # with a dash (e.g. `deputy add -- "-5% drop alert"`). Last flag wins.
+  local text="" prio="" no_more_flags=0
   while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --p0) prio=P0 ;; --p1) prio=P1 ;; --p2) prio=P2 ;;
-      --*) printf 'deputy: unknown flag: %s\n' "$1" >&2; return 2 ;;
-      *) text="${text}${text:+ }$1" ;;
-    esac
+    if [[ "$no_more_flags" -eq 0 ]]; then
+      case "$1" in
+        --)         no_more_flags=1; shift; continue ;;
+        --p0|-ui)   prio=P0; shift; continue ;;
+        --p1|-u)    prio=P1; shift; continue ;;
+        --p2|-i)    prio=P2; shift; continue ;;
+        -*) printf 'deputy: unknown flag: %s (use -- before a description starting with "-")\n' "$1" >&2; return 2 ;;
+      esac
+    fi
+    text="${text}${text:+ }$1"
     shift
   done
   [[ -n "$text" ]] || { printf 'deputy: add requires text\n' >&2; return 2; }
@@ -279,7 +287,9 @@ usage() {
 usage: deputy <command> [args]
 
 commands:
-  add "<text>" [--p0|--p1|--p2]   add a waiting item
+  add "<text>" [-ui|-u|-i]        add a waiting item (-ui=P0 -u=P1 -i=P2;
+                                  --p0/--p1/--p2 also accepted; use -- before a
+                                  description that starts with "-")
   list                            print parsed items (state|priority|description)
   status                          counts by state
   pick                            print the highest-priority waiting item (raw line)
