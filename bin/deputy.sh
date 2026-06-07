@@ -39,12 +39,12 @@ _each_item() {
 _parse_item() {
   local line="$1" state="waiting" prio="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
-  if [[ "$line" =~ ^([~@?#!])([[:space:]]+(.*))?$ ]]; then
+  if [[ "$line" =~ ^([~@?#!])[[:space:]]+(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
       '~') state=triaging ;; '@') state=running ;;  '?') state=surfaced ;;
       '#') state=done ;;     '!') state=failed ;;
     esac
-    line="${BASH_REMATCH[3]:-}"
+    line="${BASH_REMATCH[2]}"
   fi
   if [[ "$line" =~ ^\[(P[0-2])\]([[:space:]]+(.*))?$ ]]; then
     prio="${BASH_REMATCH[1]}"

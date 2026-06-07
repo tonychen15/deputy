@@ -12,3 +12,5 @@ assert_eq "$(parse '   Plain waiting')"   "waiting||Plain waiting" "left-trim un
 assert_eq "$(parse '? [P2] Ask me')"      "surfaced|P2|Ask me"     "surfaced P2"
 assert_eq "$(parse '! Broke')"            "failed||Broke"          "failed untagged"
 assert_eq "$(parse '@mention the user')"  "waiting||@mention the user" "no-space prefix is text"
+assert_eq "$(parse '@')"                  "waiting||@"             "bare prefix no space is text"
+assert_eq "$(parse '~ [P2]')"             "triaging|P2|"           "prefix + tag, empty description"
