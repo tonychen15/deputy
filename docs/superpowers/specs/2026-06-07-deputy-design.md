@@ -434,6 +434,16 @@ Internal runner helpers (not for humans): `deputy.sh --set <line> <state>`,
 - **Forward recovery:** partial work survives on the item's `deputy/<slug>` branch +
   waypoint checkpoints; on resume Deputy continues forward, never rolls back.
 
+### Known V1 limitations
+- **`kill -0` liveness assumes same-user workers.** The `kill -0 <pid>` check used to
+  detect live vs. dead claims succeeds only when the signalling process shares the same
+  UID as the target. In a cross-user deployment a live worker's claim would appear dead
+  and be incorrectly reverted. This is acceptable for V1's single-user model.
+- **PID recycling.** If a worker dies and the OS recycles its PID before stale-recovery
+  runs, a coincidentally-reused PID will be misidentified as alive. The window is
+  narrow under normal load, but the risk is non-zero. A monotonic claim token (V2)
+  would close this gap.
+
 ---
 
 ## 14. Testing strategy

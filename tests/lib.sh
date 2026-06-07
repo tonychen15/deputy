@@ -35,6 +35,7 @@ assert_contains() {  # assert_contains <haystack> <needle> [msg]
 _summarize() {
   local _rc=$?
   printf '%d run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
-  [[ "$TESTS_FAILED" -eq 0 && "$_rc" -eq 0 ]]
+  [[ "$_rc" -ne 0 ]] && exit "$_rc"        # preserve a crash/explicit-exit code
+  [[ "$TESTS_FAILED" -eq 0 ]] && exit 0 || exit 1
 }
 trap _summarize EXIT

@@ -86,7 +86,9 @@ _with_lock() { ( flock -x 200; "$@" ) 200>"$LOCK_FILE"; }
 # Exact whole-line replacement (research.sh flip_line). Atomic via tmpfile+mv.
 # Caller holds the lock. Used by upcoming set/claim commands.
 _flip_line() {
-  local from="$1" to="$2" tmp line; tmp="$(mktemp)"
+  local from="$1" to="$2" tmp line
+  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" == "$from" ]]; then printf '%s\n' "$to"; else printf '%s\n' "$line"; fi
   done < "$BACKLOG" > "$tmp"
@@ -120,6 +122,10 @@ cmd_add() {
   text="${text#"${text%%[![:space:]]*}"}"   # left-trim (matches parser's own trim)
   if [[ "$text" =~ ^[~@?#!][[:space:]] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
     printf 'deputy: description may not begin with a status prefix (~@?#!) + space or a [Px] tag: %s\n' "$text" >&2
+    return 2
+  fi
+  if [[ "$text" == *$'\n'* ]]; then
+    printf 'deputy: description may not contain a newline\n' >&2
     return 2
   fi
   _do_add() {

@@ -38,3 +38,7 @@ assert_eq "$n" "0" "rejected descriptions are not written"
 # A description merely CONTAINING @ (not a leading prefix+space) is still allowed.
 bash "$DEPUTY" add "email @bob about it"
 assert_contains "$(bash "$DEPUTY" list)" "waiting||email @bob about it" "non-prefix @ still allowed"
+
+# Newlines in a description are rejected (would corrupt the one-line-per-item queue).
+bash "$DEPUTY" add "$(printf 'line one\nline two')" 2>/dev/null; rc=$?
+assert_eq "$rc" "2" "add rejects embedded newline"
