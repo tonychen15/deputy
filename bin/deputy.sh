@@ -161,6 +161,26 @@ cmd_pick() {
   return 0
 }
 
+_valid_state() {
+  case "$1" in waiting|triaging|running|surfaced|done|failed) return 0 ;; *) return 1 ;; esac
+}
+
+cmd_set() {
+  local from="${1:-}" newstate="${2:-}"
+  [[ -n "$from" && -n "$newstate" ]] || { printf 'deputy: set requires "<line>" <state>\n' >&2; return 2; }
+  _valid_state "$newstate" || { printf 'deputy: invalid state: %s\n' "$newstate" >&2; return 2; }
+  _do_set() {
+    grep -qxF -- "$from" "$BACKLOG" || return 1     # exact-line existence
+    local parsed prio desc to
+    parsed="$(_parse_item "$from")"
+    prio="${parsed#*|}"; prio="${prio%%|*}"
+    desc="${parsed##*|}"
+    to="$(_serialize_item "$newstate" "$prio" "$desc")"
+    _flip_line "$from" "$to"
+  }
+  _with_lock _do_set
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy.sh <command> [args]
@@ -189,6 +209,7 @@ main() {
     add) shift; cmd_add "$@" ;;
     status) cmd_status; return 0 ;;
     pick) cmd_pick; return 0 ;;
+    set) shift; cmd_set "$@"; return $? ;;
     *) usage >&2; return 2 ;;
   esac
 }
