@@ -14,3 +14,17 @@ assert_eq "$(parse '! Broke')"            "failed||Broke"          "failed untag
 assert_eq "$(parse '@mention the user')"  "waiting||@mention the user" "no-space prefix is text"
 assert_eq "$(parse '@')"                  "waiting||@"             "bare prefix no space is text"
 assert_eq "$(parse '~ [P2]')"             "triaging|P2|"           "prefix + tag, empty description"
+
+# list + legend-skip
+printf '%s\n' '[P0] one' '~ [P1] two' '# three' >> "$DEPUTY_ROOT/BACKLOG.md"
+out="$(bash "$DEPUTY" list)"
+assert_contains "$out" "waiting|P0|one"  "list: item one"
+assert_contains "$out" "triaging|P1|two" "list: item two"
+assert_contains "$out" "done||three"     "list: item three"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'LEGEND')" "0" "list: legend not parsed as item"
+
+ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3"; }
+assert_eq "$(ser running P0 'Fix it')" "@ [P0] Fix it" "serialize running P0"
+assert_eq "$(ser waiting '' 'Plain')"  "Plain"         "serialize waiting untagged"
+assert_eq "$(ser done '' 'Thing')"     "# Thing"       "serialize done untagged"
+assert_eq "$(ser surfaced P2 'Ask')"   "? [P2] Ask"    "serialize surfaced P2"

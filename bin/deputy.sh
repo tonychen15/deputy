@@ -55,6 +55,30 @@ _parse_item() {
   printf '%s|%s|%s' "$state" "$prio" "$desc"
 }
 
+# Build a canonical line from (state, priority, description).
+_serialize_item() {
+  local state="$1" prio="$2" desc="$3" prefix="" tag="" out=""
+  case "$state" in
+    waiting) prefix="" ;;  triaging) prefix="~" ;; running) prefix="@" ;;
+    surfaced) prefix="?" ;; done) prefix="#" ;;   failed) prefix="!" ;;
+    *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
+  esac
+  [[ -n "$prio" ]] && tag="[$prio]"
+  for part in "$prefix" "$tag" "$desc"; do
+    [[ -z "$part" ]] && continue
+    [[ -n "$out" ]] && out+=" "
+    out+="$part"
+  done
+  printf '%s' "$out"
+}
+
+cmd_list() {
+  local raw
+  while IFS= read -r raw; do
+    _parse_item "$raw"; printf '\n'
+  done < <(_each_item)
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy.sh <command> [args]
@@ -78,6 +102,8 @@ main() {
   case "$cmd" in
     help|-h|--help) usage; return 0 ;;
     _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
+    list) cmd_list; return 0 ;;
+    _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" && printf '\n' || return 1 ;;
     *) usage >&2; return 2 ;;
   esac
 }
