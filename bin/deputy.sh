@@ -443,6 +443,38 @@ _protected_violation() {
   return 1
 }
 
+_wt_path() { printf '%s/wt' "$STATE_DIR"; }
+
+# Create the execution worktree on branch deputy/<slug>. New branch from HEAD, or
+# attach to it if it already exists (resume / forward-recovery).
+_wt_create() {
+  local slug="$1"
+  [[ "$slug" =~ ^[a-zA-Z0-9_-]+$ ]] || {
+    printf 'deputy: invalid slug (alphanumeric, dash, underscore only): %s\n' "$slug" >&2; return 2
+  }
+  local wt branch
+  wt="$(_wt_path)"; branch="deputy/$slug"
+  _do_wt_create() {
+    git -C "$ROOT" worktree prune 2>/dev/null || true
+    [[ -e "$wt" ]] && git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true
+    if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch"; then
+      git -C "$ROOT" worktree add "$wt" "$branch" >/dev/null
+    else
+      git -C "$ROOT" worktree add "$wt" -b "$branch" >/dev/null
+    fi
+  }
+  _with_lock _do_wt_create
+}
+
+_wt_remove() {
+  _do_wt_remove() {
+    local wt; wt="$(_wt_path)"
+    [[ -e "$wt" ]] && git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true
+    git -C "$ROOT" worktree prune 2>/dev/null || true
+  }
+  _with_lock _do_wt_remove
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -465,6 +497,8 @@ main() {
     protected) shift
       if [[ "${1:-}" == "--stdin" ]]; then _protected_violation "$(cat)"; else _protected_violation "${1:-}"; fi
       return $? ;;
+    wt-create) shift; _wt_create "${1:?slug}"; return $? ;;
+    wt-remove) shift; _wt_remove; return $? ;;
     *) usage >&2; return 2 ;;
   esac
 }
