@@ -390,7 +390,7 @@ _set_cron() {
   filtered="$(printf '%s\n' "$existing" | grep -v '# deputy' || true)"
   {
     printf '%s\n' "$filtered" | grep -v '^[[:space:]]*$' || true
-    [[ -n "$schedule" ]] && printf '%s deputy run  # deputy\n' "$schedule"
+    if [[ -n "$schedule" ]]; then printf '%s deputy run  # deputy\n' "$schedule"; fi
   } | _crontab -
 }
 

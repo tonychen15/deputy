@@ -26,8 +26,9 @@ bash "$DEPUTY" cron --reschedule "resets 11pm"
 assert_contains "$(cat "$STORE")" "0 23 " "reschedule uses parsed hour 23"
 assert_eq "$(grep -c 'deputy' "$STORE")" "1" "reschedule keeps one entry"
 
-# remove
-bash "$DEPUTY" cron --remove
+# remove (must also exit 0, not just produce the right file)
+bash "$DEPUTY" cron --remove; rc=$?
+assert_eq "$rc" "0" "remove exits 0"
 assert_eq "$(grep -c 'deputy' "$STORE")" "0" "remove deletes entry"
 
 # reset-hour parser unit checks via a hidden subcommand
