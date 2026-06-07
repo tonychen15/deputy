@@ -18,3 +18,12 @@ assert_eq "$n" "1" "add dedups by description"
 
 # The legend survives an add.
 assert_eq "$(grep -c 'LEGEND' "$DEPUTY_ROOT/BACKLOG.md")" "1" "legend intact after add"
+
+# Unknown flags are rejected, not absorbed into the description.
+bash "$DEPUTY" add "real task" --p3 2>/dev/null; rc=$?
+assert_eq "$rc" "2" "add rejects unknown flag"
+assert_eq "$(bash "$DEPUTY" list | grep -c -- '--p3')" "0" "unknown flag not absorbed"
+
+# Bare multi-word descriptions still join.
+bash "$DEPUTY" add Buy the milk
+assert_contains "$(bash "$DEPUTY" list)" "waiting||Buy the milk" "bare multi-word add joins"

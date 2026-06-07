@@ -517,7 +517,8 @@ cmd_add() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --p0) prio=P0 ;; --p1) prio=P1 ;; --p2) prio=P2 ;;
-      *) [[ -z "$text" ]] && text="$1" || { printf 'deputy: unexpected arg: %s\n' "$1" >&2; return 2; } ;;
+      --*) printf 'deputy: unknown flag: %s\n' "$1" >&2; return 2 ;;
+      *) text="${text}${text:+ }$1" ;;
     esac
     shift
   done
