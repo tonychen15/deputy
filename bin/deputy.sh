@@ -276,7 +276,7 @@ cmd_recover() {
 
 usage() {
   cat <<'EOF'
-usage: deputy.sh <command> [args]
+usage: deputy <command> [args]
 
 commands:
   add "<text>" [--p0|--p1|--p2]   add a waiting item
