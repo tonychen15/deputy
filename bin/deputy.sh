@@ -174,7 +174,7 @@ cmd_set() {
     local parsed prio desc to
     parsed="$(_parse_item "$from")"
     prio="${parsed#*|}"; prio="${prio%%|*}"
-    desc="${parsed##*|}"
+    desc="${parsed#*|*|}"
     to="$(_serialize_item "$newstate" "$prio" "$desc")"
     _flip_line "$from" "$to"
   }

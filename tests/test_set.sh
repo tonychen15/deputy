@@ -25,3 +25,12 @@ assert_eq "$after" "$before" "set no-match leaves file unchanged"
 # Invalid state -> usage error (exit 2).
 bash "$DEPUTY" set "[P0] x" bogus; rc=$?
 assert_eq "$rc" "2" "set invalid state exits 2"
+
+# Missing the state arg -> usage error (exit 2).
+bash "$DEPUTY" set "only-one-arg"; rc=$?
+assert_eq "$rc" "2" "set missing state arg exits 2"
+
+# A description containing a pipe survives the transition (no truncation).
+printf '%s\n' '[P1] a|b' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" set "[P1] a|b" running
+assert_contains "$(bash "$DEPUTY" list)" "running|P1|a|b" "set preserves pipe in description"

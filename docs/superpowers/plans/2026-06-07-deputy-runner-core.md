@@ -785,7 +785,7 @@ cmd_set() {
     local parsed prio desc to
     parsed="$(_parse_item "$from")"
     prio="${parsed#*|}"; prio="${prio%%|*}"
-    desc="${parsed##*|}"
+    desc="${parsed#*|*|}"
     to="$(_serialize_item "$newstate" "$prio" "$desc")"
     _flip_line "$from" "$to"
   }
@@ -894,7 +894,7 @@ cmd_claim() {
     [[ "$state" == "waiting" ]] || { printf 'deputy: item is not waiting (%s)\n' "$state" >&2; return 4; }
     grep -qxF -- "$from" "$BACKLOG" || { printf 'deputy: item not found\n' >&2; return 1; }
     local prio desc to
-    prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed##*|}"
+    prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
     to="$(_serialize_item running "$prio" "$desc")"
     _flip_line "$from" "$to"
     printf '%s\n' "$to" > "$STATE_DIR/$pid.claim"
@@ -983,7 +983,7 @@ Add above `main` in `bin/deputy.sh`:
 _revert_to_waiting() {
   local raw="$1" parsed prio desc to
   parsed="$(_parse_item "$raw")"
-  prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed##*|}"
+  prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
   to="$(_serialize_item waiting "$prio" "$desc")"
   _flip_line "$raw" "$to"
 }
