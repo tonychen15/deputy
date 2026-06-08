@@ -416,9 +416,57 @@ _route() {
 
 _crontab() { "${DEPUTY_CRONTAB:-crontab}" "$@"; }
 
-# Extract a 24h hour from "resets 11pm" / "resets 3am". Echoes nothing if no match.
+# Extract seconds-until-reset from provider error text. Echoes integer seconds or nothing.
+# Handles Gemini: "retry after: Ns", "retry-after: N", "retryDelay: Ns" (JSON).
+# Handles Codex:  "retry after N seconds", "try again in N minutes/seconds".
+_parse_reset_secs() {
+  local s="${1,,}"
+  # Gemini/Codex: "retry after: Ns" or "retry-after: N" (colon form, with or without unit)
+  if [[ "$s" =~ retry[[:space:]]*-?[[:space:]]*after[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"; return 0
+  fi
+  # Gemini JSON: "retryDelay":"3600s" or retryDelay: 3600s
+  if [[ "$s" =~ retrydelay[^0-9]*([0-9]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"; return 0
+  fi
+  # Codex: "retry after N seconds" (no colon — distinct from colon form above)
+  if [[ "$s" =~ retry[[:space:]]+after[[:space:]]+([0-9]+)[[:space:]]*(s|sec|second) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"; return 0
+  fi
+  # Codex: "try again in N minutes" or "try again in N seconds"
+  if [[ "$s" =~ try[[:space:]]+again[[:space:]]+in[[:space:]]+([0-9]+)[[:space:]]*(m|min|minute) ]]; then
+    printf '%s\n' "$(( BASH_REMATCH[1] * 60 ))"; return 0
+  fi
+  if [[ "$s" =~ try[[:space:]]+again[[:space:]]+in[[:space:]]+([0-9]+)[[:space:]]*(s|sec|second) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"; return 0
+  fi
+}
+
+# Extract a 24h hour from reset hint text. Echoes nothing if no match.
+# Handles:
+#   - Gemini/Codex seconds patterns via _parse_reset_secs → future cron hour
+#   - ISO 8601 timestamps (Gemini quota reset): "2025-01-15T23:00:00Z" → hour, rounded up if mins>0
+#   - Claude am/pm: "resets 11pm" / "resets 3am"
 _parse_reset_hour() {
-  local s="${1,,}" h ampm
+  local s="${1,,}" h ampm secs
+  # Seconds-based patterns (Gemini/Codex)
+  secs="$(_parse_reset_secs "$s")"
+  if [[ -n "$secs" ]]; then
+    local cur_h cur_m
+    cur_h="${DEPUTY_NOW_HOUR:-$(date +%H:%M)}"
+    cur_m="${cur_h#*:}"; cur_h="${cur_h%%:*}"
+    # ceil(secs/3600) hours from now, modulo 24
+    h=$(( (10#$cur_h * 60 + 10#$cur_m + (secs + 59) / 60 + 59) / 60 % 24 ))
+    printf '%s\n' "$h"; return 0
+  fi
+  # ISO 8601 timestamp (Gemini quota reset): extract hour, round up if mins > 0
+  local _iso_re='[0-9]{4}-[0-9]{2}-[0-9]{2}[tT]([0-9]{2}):([0-9]{2}):[0-9]{2}'
+  if [[ "$s" =~ $_iso_re ]]; then
+    h="$(( 10#${BASH_REMATCH[1]} ))"
+    [[ "$(( 10#${BASH_REMATCH[2]} ))" -gt 0 ]] && h=$(( (h + 1) % 24 ))
+    printf '%s\n' "$h"; return 0
+  fi
+  # Claude-style am/pm
   [[ "$s" =~ ([0-9]+)[[:space:]]*(am|pm) ]] || return 0
   h="${BASH_REMATCH[1]}"; ampm="${BASH_REMATCH[2]}"
   if [[ "$ampm" == "pm" && "$h" -lt 12 ]]; then h=$((h + 12))
@@ -842,6 +890,7 @@ main() {
     probe) shift; _probe "${1:-}"; return 0 ;;
     cron) shift; cmd_cron "$@"; return $? ;;
     _resethour) shift; _parse_reset_hour "${1:-}"; return 0 ;;
+    _resetsecs) shift; _parse_reset_secs "${1:-}"; return 0 ;;
     config) shift; _config_get "${1:-}"; return 0 ;;
     protected) shift
       if [[ "${1:-}" == "--stdin" ]]; then _protected_violation "$(cat)"; else _protected_violation "${1:-}"; fi
