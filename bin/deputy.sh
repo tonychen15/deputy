@@ -245,6 +245,17 @@ _live_claim_exists() {
   return 1
 }
 
+# Count live claims (processes with an active .claim file).
+_live_claim_count() {
+  local cnt=0 f pid
+  for f in "$STATE_DIR"/*.claim; do
+    [[ -e "$f" ]] || continue
+    pid="${f##*/}"; pid="${pid%.claim}"
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && cnt=$((cnt + 1))
+  done
+  printf '%d' "$cnt"
+}
+
 cmd_claim() {
   local from="" pid="$PPID"
   while [[ $# -gt 0 ]]; do
@@ -256,16 +267,25 @@ cmd_claim() {
   [[ -n "$from" ]] || { printf 'deputy: claim requires "<line>"\n' >&2; return 2; }
   [[ "$pid" =~ ^[0-9]+$ ]] || { printf 'deputy: invalid pid: %s\n' "$pid" >&2; return 2; }
   _do_claim() {
-    _live_claim_exists && { printf 'deputy: busy (a live claim exists)\n' >&2; return 3; }
+    local cap; cap="$(_config_get max_parallel)"; cap="${cap:-1}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=1
+    local count; count="$(_live_claim_count)"
+    if [[ "$count" -ge "$cap" ]]; then
+      printf 'deputy: busy (parallel cap %s reached)\n' "$cap" >&2; return 3
+    fi
     local parsed state
     parsed="$(_parse_item "$from")"; state="${parsed%%|*}"
     [[ "$state" == "waiting" || "$state" == "paused" ]] || { printf 'deputy: item is not waiting/paused (%s)\n' "$state" >&2; return 4; }
     grep -qxF -- "$from" "$BACKLOG" || { printf 'deputy: item not found\n' >&2; return 1; }
-    local prio desc to
+    local prio desc slug to
     prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
+    slug="$(_slugify "$desc")"
+    if _wt_conflict_check "$slug"; then
+      printf 'deputy: conflict (path overlap with a running item)\n' >&2; return 5
+    fi
     to="$(_serialize_item running "$prio" "$desc")"
     _flip_line "$from" "$to"
     printf '%s\n' "$to" > "$STATE_DIR/$pid.claim"
+    printf '%s\n' "$slug" > "$STATE_DIR/$pid.slug"
   }
   _with_lock _do_claim
 }
@@ -289,7 +309,7 @@ cmd_recover() {
       if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
         line="$(cat "$f")"
         _revert_to_waiting "$line"
-        rm -f "$f"
+        rm -f "$f" "$STATE_DIR/$pid.slug" 2>/dev/null || true
       fi
     done
     # Collect lines still claimed by LIVE pids.
@@ -357,7 +377,17 @@ commands:
   clean [--dry-run]               remove untouched (waiting) items; keeps everything deputy has touched
   reflect [--apply]               re-triage report: learnings, untagged items, reprioritization list,
                                   surfaced items, duplicate candidates; --apply writes .deputy/learnings.md
+  wt-create <slug>                create per-item worktree at .deputy/wt-<slug> on branch deputy/<slug>
+                                  (prints the created path)
+  wt-remove <slug>                remove the worktree for <slug>
+  wt-path <slug>                  print the worktree path for <slug> without creating it
+  wt-paths <slug> <path>...       register file paths claimed by a worktree (conflict detection)
+  slug <text>                     convert text to the canonical worktree slug (lowercase, alphanum+dash)
   help                            show this message
+
+config keys (.deputy/config):
+  max_parallel=N                  max concurrent orchestrators (default 1 = serial)
+  max_items=N                     items started per run cycle (default 0 = unlimited)
 
 states: waiting triaging running surfaced done failed cancelled duplicate paused
 EOF
@@ -557,17 +587,73 @@ _protected_violation() {
   return 1
 }
 
-_wt_path() { printf '%s' "${DEPUTY_WT:-$STATE_DIR/wt}"; }
+# Convert a description to a filesystem-safe slug (lowercase, alphanum+dash, max 48 chars).
+_slugify() {
+  local s
+  s="$(printf '%s' "${1,,}" | tr -cs 'a-z0-9' '-')"
+  s="${s:0:48}"
+  s="${s%-}"; s="${s#-}"   # strip dashes after truncation (truncation may land on a dash)
+  printf '%s' "$s"
+}
+
+# Return the worktree path for a given slug.  DEPUTY_WT overrides the path entirely
+# (used by tests that pre-create a worktree directory directly).
+_wt_path() {
+  if [[ -n "${DEPUTY_WT:-}" ]]; then printf '%s' "$DEPUTY_WT"; return 0; fi
+  local slug="${1:?_wt_path requires a slug}"
+  printf '%s/wt-%s' "$STATE_DIR" "$slug"
+}
+
+# Check whether the incoming item (by slug) conflicts with any currently-running item.
+# Two kinds of conflict:
+#   1. Slug collision: both items map to the same worktree path — always a conflict.
+#   2. Path overlap: both have registered path files with at least one common entry.
+# Returns 0 (conflict) or 1 (no conflict).
+_wt_conflict_check() {
+  local new_slug="$1"
+  local new_paths="$STATE_DIR/wt-$new_slug.paths"
+  local f pid slug_f running_slug running_paths
+  for f in "$STATE_DIR"/*.claim; do
+    [[ -e "$f" ]] || continue
+    pid="${f##*/}"; pid="${pid%.claim}"
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || continue
+    slug_f="$STATE_DIR/$pid.slug"
+    [[ -f "$slug_f" ]] || continue
+    running_slug="$(cat "$slug_f")"
+    # Same slug = same worktree directory; always a conflict regardless of paths.
+    [[ "$running_slug" == "$new_slug" ]] && return 0
+    # Different slug: check registered path overlap (only if both items have path files).
+    [[ -f "$new_paths" && -s "$new_paths" ]] || continue
+    running_paths="$STATE_DIR/wt-$running_slug.paths"
+    [[ -f "$running_paths" && -s "$running_paths" ]] || continue
+    grep -qxFf "$new_paths" "$running_paths" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# Register file paths that a worktree will touch.  Appends to .deputy/wt-<slug>.paths.
+# Pass --clear as the first argument after <slug> to reset the file before writing.
+# Orchestrators call this so that subsequent parallel-claim attempts can detect conflicts.
+cmd_wt_paths() {
+  local slug="${1:?wt-paths requires <slug>}"; shift
+  local clear=0
+  [[ "${1:-}" == "--clear" ]] && { clear=1; shift; }
+  [[ $# -gt 0 ]] || { printf 'deputy: wt-paths requires at least one path\n' >&2; return 2; }
+  local paths_file="$STATE_DIR/wt-$slug.paths"
+  [[ "$clear" -eq 1 ]] && : > "$paths_file"
+  printf '%s\n' "$@" >> "$paths_file"
+}
 
 # Create the execution worktree on branch deputy/<slug>. New branch from HEAD, or
 # attach to it if it already exists (resume / forward-recovery).
+# Prints the worktree path on success.
 _wt_create() {
   local slug="$1"
   [[ "$slug" =~ ^[a-zA-Z0-9_-]+$ ]] || {
     printf 'deputy: invalid slug (alphanumeric, dash, underscore only): %s\n' "$slug" >&2; return 2
   }
   local wt branch
-  wt="$(_wt_path)"; branch="deputy/$slug"
+  wt="$(_wt_path "$slug")"; branch="deputy/$slug"
   _do_wt_create() {
     git -C "$ROOT" worktree prune 2>/dev/null || true
     [[ -e "$wt" ]] && git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true
@@ -578,11 +664,13 @@ _wt_create() {
     fi
   }
   _with_lock _do_wt_create
+  printf '%s\n' "$wt"
 }
 
 _wt_remove() {
+  local slug="${1:?wt-remove requires a slug}"
   _do_wt_remove() {
-    local wt; wt="$(_wt_path)"
+    local wt; wt="$(_wt_path "$slug")"
     [[ -e "$wt" ]] && git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true
     git -C "$ROOT" worktree prune 2>/dev/null || true
   }
@@ -615,52 +703,101 @@ Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove /
   claude -p "$prompt" --model claude-sonnet-4-6 --allowedTools "Bash,Edit,Write,Read,Glob,Grep"
 }
 
-# One tick: claim the top item and hand it to the orchestrator. --once = no loop.
+# One tick: claim the top item(s) and hand them to the orchestrator.
+# Supports parallel execution: up to max_parallel items run concurrently, each
+# spawned as a background process with its own claim file.  --once = stop after
+# the first round of claims (all spawned slots still drain before exit).
 cmd_run() {
   local once=0; [[ "${1:-}" == "--once" ]] && once=1
   cmd_recover >/dev/null 2>&1 || true
   if _live_claim_exists; then return 0; fi
-  # Active run: remove this repo's heartbeat line; it is re-armed when we go idle (below).
+  # Active run: remove this repo's heartbeat line; re-armed when we go idle (below).
   _cron_enabled && _set_cron "" >/dev/null 2>&1 || true
-  # Optional per-cycle cap; 0/empty/non-numeric = unlimited (run until the queue is
-  # empty or Claude's session limit is hit).
+  # max_parallel: how many orchestrators may run simultaneously (default 1 = serial).
+  local par; par="$(_config_get max_parallel)"; par="${par:-1}"; [[ "$par" =~ ^[0-9]+$ ]] || par=1; [[ "$par" -ge 1 ]] || par=1
+  # max_items: optional cap on items STARTED per run cycle (0 = unlimited).
   local cap; cap="$(_config_get max_items)"; cap="${cap:-0}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
-  local processed=0 item avail decision running_line log rc outcome reset
+
+  local claimed=0 quota_hit=0
+  local item avail decision running_line log rc outcome reset bg_pid
+  # Parallel slot tracking: pids / log-paths / running-lines of background orchestrators.
+  local -a slot_pids=() slot_logs=() slot_lines=()
+
+  # Process (wait + evaluate) the oldest running slot.  Modifies slot_* arrays.
+  # Uses dynamic scoping to write back quota_hit.
+  _run_drain_oldest() {
+    [[ "${#slot_pids[@]}" -eq 0 ]] && return 0
+    local _sp="${slot_pids[0]}" _sl="${slot_logs[0]}" _sline="${slot_lines[0]}" _rc=0 _outcome _reset
+    # Disable errexit around wait: orchestrators may legitimately exit non-zero
+    # (quota limit, hard error), and we must handle the outcome rather than abort.
+    set +e; wait "$_sp" 2>/dev/null; _rc=$?; set -e
+    rm -f "$STATE_DIR/$_sp.claim" "$STATE_DIR/$_sp.slug" 2>/dev/null || true
+    cat "$_sl"
+    _outcome="$(_detect_outcome claude "$_rc" "$_sl")"
+    if [[ "$_outcome" == "quota_exhausted" ]]; then
+      _reset="$(grep -iE 'reset|limit' "$_sl" | head -3)"
+      _with_lock _revert_to_waiting "$_sline" >/dev/null 2>&1 || true
+      _cron_enabled && cmd_cron --reschedule "$_reset" >/dev/null 2>&1 || true
+      printf 'deputy: Claude session limit reached — rescheduled for reset; stopping this cycle.\n'
+      quota_hit=1
+    fi
+    rm -f "$_sl"
+    slot_pids=("${slot_pids[@]:1}")
+    slot_logs=("${slot_logs[@]:1}")
+    slot_lines=("${slot_lines[@]:1}")
+  }
+
   while :; do
-    item="$(cmd_pick)"; [[ -n "$item" ]] || break
+    [[ "$quota_hit" -eq 1 ]] && break
+
+    # If all parallel slots are occupied, drain the oldest before spawning more.
+    while [[ "${#slot_pids[@]}" -ge "$par" && "$quota_hit" -eq 0 ]]; do
+      _run_drain_oldest
+    done
+    [[ "$quota_hit" -eq 1 ]] && break
+
+    item="$(cmd_pick)"
+    if [[ -z "$item" ]]; then
+      # Queue empty: drain remaining slots then check again.
+      [[ "${#slot_pids[@]}" -eq 0 ]] && break
+      _run_drain_oldest; continue
+    fi
+
     avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
     if [[ "$decision" != "claude" ]]; then
       _cron_enabled && cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
-      return 0
+      break
     fi
-    cmd_claim "$item" --pid "$$" >/dev/null 2>&1 || break
+
+    # Claim synchronously so cmd_pick sees the item as running on the next iteration.
+    cmd_claim "$item" --pid "$$" >/dev/null 2>&1 || continue
     running_line="$(cat "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$item")"
     log="$(mktemp)"
+
+    # Spawn orchestrator as background process, then transfer the claim to its PID.
     set +e
-    _spawn_orchestrator "$running_line" "$decision" >"$log" 2>&1
-    rc=$?
+    _spawn_orchestrator "$running_line" "$decision" >"$log" 2>&1 &
+    bg_pid=$!
     set -e
-    rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
-    cat "$log"   # surface the orchestrator's output (headless log / interactive)
-    outcome="$(_detect_outcome claude "$rc" "$log")"
-    if [[ "$outcome" == "quota_exhausted" ]]; then
-      # Pass only the relevant reset/limit line(s) to the rescheduler (bounded;
-      # avoids ARG_MAX on a large log). _parse_reset_hour scans for "<N>am/pm".
-      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
-      # The orchestrator didn't finish this item — revert it for the next cycle,
-      # reschedule cron for the reset time, and stop (research.sh behavior).
-      _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
-      _cron_enabled && cmd_cron --reschedule "$reset" >/dev/null 2>&1 || true
-      printf 'deputy: Claude session limit reached — rescheduled for reset; stopping this cycle.\n'
-      return 0
-    fi
-    rm -f "$log"
-    processed=$((processed + 1))
+    mv "$STATE_DIR/$$.claim" "$STATE_DIR/$bg_pid.claim" 2>/dev/null || true
+    [[ -f "$STATE_DIR/$$.slug" ]] && mv "$STATE_DIR/$$.slug" "$STATE_DIR/$bg_pid.slug" 2>/dev/null || true
+
+    slot_pids+=("$bg_pid")
+    slot_logs+=("$log")
+    slot_lines+=("$running_line")
+    claimed=$((claimed + 1))
+
     [[ "$once" -eq 1 ]] && break
-    [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
+    [[ "$cap" -gt 0 && "$claimed" -ge "$cap" ]] && break
   done
-  # Reached idle (queue drained / cap / --once): re-arm the heartbeat if opted in.
-  _cron_enabled && _set_cron "*/15 * * * *" >/dev/null 2>&1 || true
+
+  # Drain any remaining slots before exiting.
+  while [[ "${#slot_pids[@]}" -gt 0 ]]; do _run_drain_oldest; done
+
+  # Reached idle: re-arm the heartbeat only when the session was NOT quota-limited
+  # (quota_exhausted already rescheduled cron to the reset time; overwriting it here
+  # would undo that reschedule).
+  [[ "$quota_hit" -eq 0 ]] && _cron_enabled && _set_cron "*/15 * * * *" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -992,7 +1129,7 @@ cmd_wp_commit() {
   esac; done
   _wp_require_jq || return 1
   _wp_validate_id "$id" || return 1
-  local wt; wt="$(_wt_path)"
+  local wt; wt="$(_wt_path "$id")"
   [[ -d "$wt/.git" || -e "$wt/.git" ]] || { printf 'deputy: no worktree at %s\n' "$wt" >&2; return 1; }
   # Guard: require an in_progress step; without one the ledger update is a no-op.
   if ! jq -e 'any(.steps[]; .status=="in_progress")' "$(_wp_json "$id")" >/dev/null 2>&1; then
@@ -1060,7 +1197,10 @@ main() {
       if [[ "${1:-}" == "--stdin" ]]; then _protected_violation "$(cat)"; else _protected_violation "${1:-}"; fi
       return $? ;;
     wt-create) shift; _wt_create "${1:?slug}"; return $? ;;
-    wt-remove) shift; _wt_remove; return $? ;;
+    wt-remove) shift; _wt_remove "${1:?slug}"; return $? ;;
+    wt-path)   shift; printf '%s\n' "$(_wt_path "${1:?slug}")"; return 0 ;;
+    wt-paths)  shift; cmd_wt_paths "$@"; return $? ;;
+    slug)      shift; _slugify "${*:-}"; printf '\n'; return 0 ;;
     run) shift; cmd_run "$@"; return 0 ;;
     start) shift; cmd_wp_start "$@"; return $? ;;
     done) shift; cmd_wp_done "$@"; return $? ;;
