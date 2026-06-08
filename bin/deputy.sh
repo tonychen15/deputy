@@ -612,7 +612,6 @@ cmd_clean() {
 }
 
 # ── Checkpoint spine (absorbed waypoint), stored under .deputy/waypoints/ ──────
-_wp_dir()      { printf '%s/waypoints' "$STATE_DIR"; }
 _wp_task_dir() { printf '%s/waypoints/%s' "$STATE_DIR" "$1"; }
 _wp_json()     { printf '%s/waypoints/%s/waypoint.json' "$STATE_DIR" "$1"; }
 _wp_now()      { date -Iseconds; }
@@ -655,9 +654,11 @@ cmd_wp_start() {
     [[ -f "$(_wp_json "$id")" ]] && return 0        # idempotent: never clobber (checked inside lock)
     local td; td="$(_wp_task_dir "$id")"; mkdir -p "$td"
     local now; now="$(_wp_now)"
+    local _jtmp; _jtmp="$(mktemp "$td/.wp.XXXXXX")"
     jq -n --arg id "$id" --arg g "$goal" --arg now "$now" \
       '{task_id:$id, goal:$g, status:"in_progress", created_at:$now, updated_at:$now, note:"", current_step:null, steps:[]}' \
-      > "$(_wp_json "$id")" || { printf 'deputy: failed to write waypoint.json for %s\n' "$id" >&2; return 1; }
+      > "$_jtmp" && mv "$_jtmp" "$(_wp_json "$id")" \
+      || { rm -f "$_jtmp"; printf 'deputy: failed to write waypoint.json for %s\n' "$id" >&2; return 1; }
     _wp_render_status "$id"
   }
   _with_lock _do_start
