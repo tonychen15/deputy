@@ -91,6 +91,42 @@ assert_eq "$(bash "$DEPUTY" _resethour 'resets 12am')" "0"  "12am -> 0"
 assert_eq "$(bash "$DEPUTY" _resethour 'resets 12pm')" "12" "12pm -> 12"
 assert_eq "$(bash "$DEPUTY" _resethour 'no time here')" ""  "no match -> empty"
 
+# ── _resetsecs: per-provider seconds extraction (pure / deterministic) ──
+# Gemini: "retry after: Ns" (colon form)
+assert_eq "$(bash "$DEPUTY" _resetsecs 'retry after: 3600s')" "3600" "gemini: retry after: 3600s"
+assert_eq "$(bash "$DEPUTY" _resetsecs 'retry after: 60')"    "60"   "gemini: retry after: 60 (no unit)"
+# Gemini: "retry-after: N" (HTTP header echo)
+assert_eq "$(bash "$DEPUTY" _resetsecs 'retry-after: 120')"   "120"  "gemini: retry-after header"
+# Gemini JSON: retryDelay
+assert_eq "$(bash "$DEPUTY" _resetsecs '{"retryDelay":"3600s"}')" "3600" "gemini: retryDelay JSON"
+assert_eq "$(bash "$DEPUTY" _resetsecs 'retryDelay: 1800s')"      "1800" "gemini: retryDelay plain"
+# Codex: "retry after N seconds" (no colon)
+assert_eq "$(bash "$DEPUTY" _resetsecs 'Rate limit exceeded. Please retry after 60 seconds.')" "60" "codex: retry after 60 seconds"
+assert_eq "$(bash "$DEPUTY" _resetsecs 'please retry after 30 sec')" "30" "codex: retry after 30 sec"
+# Codex: "try again in N minutes/seconds"
+assert_eq "$(bash "$DEPUTY" _resetsecs 'try again in 5 minutes')"  "300" "codex: try again in 5 minutes"
+assert_eq "$(bash "$DEPUTY" _resetsecs 'try again in 90 seconds')" "90"  "codex: try again in 90 seconds"
+assert_eq "$(bash "$DEPUTY" _resetsecs 'try again in 2 min')"      "120" "codex: try again in 2 min"
+# No match
+assert_eq "$(bash "$DEPUTY" _resetsecs 'RESOURCE_EXHAUSTED quota exceeded')" "" "no seconds: empty"
+assert_eq "$(bash "$DEPUTY" _resetsecs 'no time info here')"                 "" "no time: empty"
+
+# ── _resethour: ISO 8601 timestamps (Gemini quota reset) — deterministic ──
+assert_eq "$(bash "$DEPUTY" _resethour '2025-01-15T23:00:00Z')" "23" "ISO: exact hour 23 (no rounding)"
+assert_eq "$(bash "$DEPUTY" _resethour '2025-01-15T09:00:00Z')" "9"  "ISO: exact hour 9 (no rounding)"
+assert_eq "$(bash "$DEPUTY" _resethour '2025-01-15T23:05:00Z')" "0"  "ISO: 23:05 rounds up to 0 (midnight)"
+assert_eq "$(bash "$DEPUTY" _resethour '2025-01-15T08:30:00Z')" "9"  "ISO: 08:30 rounds up to 9"
+# _resethour with seconds-based input: inject time for deterministic result
+# 10:30 + 3600s (60 min) = 11:30 → ceil to hour 12
+assert_eq "$(DEPUTY_NOW_HOUR="10:30" bash "$DEPUTY" _resethour 'retry after: 3600s')" "12" \
+  "seconds-based: 10:30 + 3600s → hour 12"
+# 10:00 + 3600s = 11:00 → exactly on the hour → 11
+assert_eq "$(DEPUTY_NOW_HOUR="10:00" bash "$DEPUTY" _resethour 'retry after: 3600s')" "11" \
+  "seconds-based: 10:00 + 3600s → hour 11"
+# _resetsecs is time-independent; no injection needed
+assert_eq "$(bash "$DEPUTY" _resetsecs 'try again in 5 minutes')" "300" \
+  "seconds-based: _resetsecs 5min = 300s (no time injection needed)"
+
 # ── Test 9: cron --ensure creates cron.enabled marker AND writes */15 line ──
 : > "$STORE"
 ROOT_MARKER="$DEPUTY_ROOT"
