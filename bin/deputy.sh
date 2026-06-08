@@ -340,6 +340,8 @@ commands:
   detect <cli> <rc> <log>         (internal) classify a CLI outcome
   review                          show surfaced items, their questions, and the digest
   clean [--dry-run]               remove untouched (waiting) items; keeps everything deputy has touched
+  reflect [--apply]               re-triage report: learnings, untagged items, reprioritization list,
+                                  surfaced items, duplicate candidates; --apply writes .deputy/learnings.md
   help                            show this message
 
 states: waiting triaging running surfaced done failed cancelled duplicate
@@ -646,6 +648,151 @@ cmd_clean() {
   printf 'deputy: cleaned %d untouched item(s)\n' "${#doomed[@]}"
 }
 
+# Find all duplicate candidate pairs from a list of descriptions (one per stdin line).
+# Prints "N\tDesc1\tDesc2" for each pair sharing ≥3 significant words (>3 chars).
+# All N² comparisons run inside a single awk process — no per-pair subshells.
+_reflect_find_duplicates() {
+  awk -v threshold=3 '
+  { lines[NR] = $0 }
+  END {
+    for (i = 1; i <= NR; i++) {
+      delete w
+      n1 = split(tolower(lines[i]), a, " ")
+      for (k = 1; k <= n1; k++) {
+        gsub(/[^a-z]/, "", a[k])
+        if (length(a[k]) > 3) w[a[k]] = 1
+      }
+      for (j = i + 1; j <= NR; j++) {
+        c = 0; delete seen
+        n2 = split(tolower(lines[j]), b, " ")
+        for (k = 1; k <= n2; k++) {
+          gsub(/[^a-z]/, "", b[k])
+          if (length(b[k]) > 3 && (b[k] in w) && !(b[k] in seen)) {
+            seen[b[k]] = 1; c++
+          }
+        }
+        if (c >= threshold) printf "%d\t%s\t%s\n", c, lines[i], lines[j]
+      }
+    }
+  }'
+}
+
+# Show a structured reflect report: learnings (done items), items needing re-triage
+# (untagged), full reprioritization list, surfaced items, and potential duplicates.
+# --apply: also writes .deputy/learnings.md (fresh snapshot of done items).
+cmd_reflect() {
+  local apply=0
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --apply) apply=1; shift ;;
+    *) printf 'deputy: reflect: unexpected arg: %s\n' "$1" >&2; return 2 ;;
+  esac; done
+
+  local raw parsed state prio desc
+  local -a done_items=() waiting_items=() surfaced_items=()
+
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    local rest="${parsed#*|}"
+    prio="${rest%%|*}"
+    desc="${parsed#*|*|}"
+    case "$state" in
+      done)     done_items+=("${prio}|${desc}") ;;
+      waiting)  waiting_items+=("${prio}|${desc}") ;;
+      surfaced) surfaced_items+=("${prio}|${desc}") ;;
+    esac
+  done < <(_each_item)
+
+  printf '%s\n\n' "=== Deputy Reflect ==="
+
+  # 1. Learnings — what has been shipped
+  printf '%s\n' "-- Learnings (${#done_items[@]} done) --"
+  if [[ "${#done_items[@]}" -eq 0 ]]; then
+    printf '  (no done items)\n'
+  else
+    for item in "${done_items[@]}"; do
+      local p="${item%%|*}" d="${item#*|}"
+      printf '  # %s%s\n' "${p:+[$p] }" "$d"
+    done
+  fi
+  printf '\n'
+
+  # 2. Needs re-triage — untagged waiting items (no [Px] priority)
+  printf '%s\n' "-- Needs re-triage (untagged waiting items) --"
+  local untagged=0
+  for item in "${waiting_items[@]}"; do
+    local p="${item%%|*}" d="${item#*|}"
+    if [[ -z "$p" ]]; then
+      printf '  ? %s\n' "$d"
+      untagged=$((untagged + 1))
+    fi
+  done
+  [[ "$untagged" -eq 0 ]] && printf '  (none: all waiting items have a priority)\n'
+  printf '\n'
+
+  # 3. Reprioritization — full waiting list ordered as-is
+  printf '%s\n' "-- Waiting items (reprioritization review) --"
+  if [[ "${#waiting_items[@]}" -eq 0 ]]; then
+    printf '  (no waiting items)\n'
+  else
+    for item in "${waiting_items[@]}"; do
+      local p="${item%%|*}" d="${item#*|}"
+      printf '  [%s] %s\n' "${p:-??}" "$d"
+    done
+  fi
+  printf '\n'
+
+  # 4. Surfaced — pending human response
+  printf '%s\n' "-- Surfaced items (awaiting human response) --"
+  if [[ "${#surfaced_items[@]}" -eq 0 ]]; then
+    printf '  (none)\n'
+  else
+    for item in "${surfaced_items[@]}"; do
+      printf '  ? %s\n' "${item#*|}"
+    done
+  fi
+  printf '\n'
+
+  # 5. Potential duplicates — pairs sharing ≥3 significant words (operator reviews).
+  # All comparisons happen inside a single awk process (no per-pair forks).
+  printf '%s\n' "-- Potential duplicates (review manually; use: deputy set \"<line>\" duplicate) --"
+  local -a all_items=("${done_items[@]}" "${waiting_items[@]}")
+  local found_dups=0
+  if [[ "${#all_items[@]}" -ge 2 ]]; then
+    local dup_line overlap di dj
+    while IFS=$'\t' read -r overlap di dj; do
+      printf '  CANDIDATE: "%s"\n       vs.: "%s"\n       (shared words: %s)\n' \
+        "$di" "$dj" "$overlap"
+      found_dups=$((found_dups + 1))
+    done < <(printf '%s\n' "${all_items[@]#*|}" | _reflect_find_duplicates)
+  fi
+  [[ "$found_dups" -eq 0 ]] && printf '  (no candidates detected)\n'
+  printf '\n'
+
+  # 6. Write learnings snapshot if --apply
+  if [[ "$apply" -eq 1 ]]; then
+    local lf="$STATE_DIR/learnings.md"
+    local -a snap_items=("${done_items[@]}")
+    _do_write_learnings() {
+      local tmp; tmp="$(mktemp "$STATE_DIR/.learnings.XXXXXX")"
+      {
+        printf '# Deputy Learnings Snapshot\n'
+        printf '# Generated: %s\n\n' "$(date -Iseconds 2>/dev/null || date)"
+        if [[ "${#snap_items[@]}" -eq 0 ]]; then
+          printf '%s\n' "_No done items yet._"
+        else
+          for item in "${snap_items[@]}"; do
+            local p="${item%%|*}" d="${item#*|}"
+            printf '%s\n' "- ${p:+[$p] }${d}"
+          done
+        fi
+      } > "$tmp" && mv "$tmp" "$lf" || { rm -f "$tmp"; return 1; }
+    }
+    _with_lock _do_write_learnings
+    printf 'deputy: learnings snapshot written to %s\n' "$lf"
+  fi
+}
+
 # ── Checkpoint spine (absorbed waypoint), stored under .deputy/waypoints/ ──────
 _wp_task_dir() { printf '%s/waypoints/%s' "$STATE_DIR" "$1"; }
 _wp_json()     { printf '%s/waypoints/%s/waypoint.json' "$STATE_DIR" "$1"; }
@@ -837,6 +984,7 @@ main() {
     recover) cmd_recover; return 0 ;;
     review) cmd_review; return 0 ;;
     clean) shift; cmd_clean "$@"; return $? ;;
+    reflect) shift; cmd_reflect "$@"; return $? ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
     route) shift; _route "${1:-}" "${2:-}"; return $? ;;
     probe) shift; _probe "${1:-}"; return 0 ;;
