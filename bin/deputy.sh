@@ -353,7 +353,7 @@ _detect_outcome() {
               && { printf 'quota_exhausted\n'; return 0; } ;;
   esac
   case "$lc" in
-    *"not authenticated"*|*"please log in"*|*"/login"*|*"api key"*|*"sign in"*|*"unauthorized"*) \
+    *"not authenticated"*|*"not logged in"*|*"please log in"*|*"/login"*|*"api key"*|*"sign in"*|*"unauthorized"*) \
       printf 'auth_error\n'; return 0 ;;
   esac
   printf 'hard_error\n'
@@ -364,7 +364,7 @@ _probe_cmd() {
   case "$1" in
     claude) claude -p "ping" ;;
     gemini) gemini -p "ping" ;;
-    codex)  codex exec "ping" ;;
+    codex)  codex login status ;;
     *) return 127 ;;
   esac
 }

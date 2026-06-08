@@ -17,8 +17,8 @@ assert_eq "$(PATH="$BIN:$PATH" bash "$DEPUTY" probe claude)" "ok" "probe ok"
 mk gemini 1 "Error: RESOURCE_EXHAUSTED"
 assert_eq "$(PATH="$BIN:$PATH" bash "$DEPUTY" probe gemini)" "quota_exhausted" "probe quota"
 
-# codex absent (remove it)
-rm -f "$BIN/codex"
-assert_eq "$(PATH="$BIN:$PATH" bash "$DEPUTY" probe codex)" "absent" "probe absent"
+# absent: probe a name that is guaranteed not on PATH (robust even if a real
+# claude/gemini/codex is installed on the system).
+assert_eq "$(PATH="$BIN:$PATH" bash "$DEPUTY" probe zzz_not_a_real_cli)" "absent" "probe absent"
 
 rm -rf "$BIN"
