@@ -695,6 +695,39 @@ cmd_wp_steps() {
   jq -r '.steps[] | "\(.id)|\(.status)|\(.purpose)"' "$(_wp_json "$id")"
 }
 
+cmd_wp_setstep() {
+  local id="" sid="" expected=""
+  id="${1:?set-step needs <id>}"; shift
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --step) [[ $# -ge 2 ]] || { printf 'deputy: set-step --step needs a value\n' >&2; return 2; }; sid="$2"; shift 2 ;;
+    --expected) [[ $# -ge 2 ]] || { printf 'deputy: set-step --expected needs a value\n' >&2; return 2; }; expected="$2"; shift 2 ;;
+    *) printf 'deputy: set-step: unexpected arg %s\n' "$1" >&2; return 2 ;;
+  esac; done
+  [[ -n "$sid" ]] || { printf 'deputy: set-step needs --step\n' >&2; return 2; }
+  _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  _do_setstep() {
+    # Guard: refuse to advance current_step to a non-existent step id.
+    if ! jq -e --arg sid "$sid" 'any(.steps[]; .id == $sid)' "$(_wp_json "$id")" >/dev/null; then
+      printf 'deputy: set-step: step id %s not found in %s\n' "$sid" "$id" >&2; return 1
+    fi
+    _wp_jq "$id" \
+      '(.steps[] | select(.id==$sid) | .status) = "in_progress"
+       | (.steps[] | select(.id==$sid) | .expected_result) = $e
+       | .current_step = $sid | .updated_at=$now' \
+      --arg sid "$sid" --arg e "$expected" --arg now "$(_wp_now)"
+  }
+  _with_lock _do_setstep
+}
+
+# Print "<id>|<purpose>" of the first step not yet succeeded (empty if none).
+cmd_wp_resume() {
+  local id="${1:?resume needs <id>}"; _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  jq -r 'first(.steps[] | select(.status!="succeeded")) | "\(.id)|\(.purpose)"' \
+    "$(_wp_json "$id")"
+}
+
 # Hidden helper for tests: print the raw waypoint.json.
 cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
 
@@ -729,6 +762,8 @@ main() {
     done) shift; cmd_wp_done "$@"; return $? ;;
     plan) shift; cmd_wp_plan "$@"; return $? ;;
     steps) shift; cmd_wp_steps "$@"; return $? ;;
+    set-step) shift; cmd_wp_setstep "$@"; return $? ;;
+    resume) shift; cmd_wp_resume "$@"; return $? ;;
     _wp_show) shift; cmd_wp_show "$@"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
