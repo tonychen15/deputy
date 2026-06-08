@@ -330,6 +330,7 @@ commands:
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
   detect <cli> <rc> <log>         (internal) classify a CLI outcome
   review                          show surfaced items, their questions, and the digest
+  clean [--dry-run]               remove untouched (waiting) items; keeps everything deputy has touched
   help                            show this message
 
 states: waiting triaging running surfaced done failed cancelled duplicate
@@ -550,6 +551,46 @@ cmd_run() {
   return 0
 }
 
+# Remove UNTOUCHED (waiting) items from BACKLOG.md — the ones deputy has never
+# acted on. Keeps everything deputy has touched (triaging/running/surfaced/done/
+# failed/cancelled/duplicate). --dry-run previews only. The real pass is
+# lock-serialized + atomic and squeezes any resulting consecutive blanks.
+cmd_clean() {
+  local dry=0; [[ "${1:-}" == "--dry-run" ]] && dry=1
+  local raw parsed state
+  local -a doomed=()
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    case "$state" in waiting) doomed+=("$raw") ;; esac
+  done < <(_each_item)
+  if [[ "${#doomed[@]}" -eq 0 ]]; then printf 'deputy: nothing to clean\n'; return 0; fi
+  if [[ "$dry" -eq 1 ]]; then
+    printf 'deputy: would remove %d untouched item(s):\n' "${#doomed[@]}"
+    printf '  %s\n' "${doomed[@]}"
+    return 0
+  fi
+  _do_clean() {
+    local tmp line d r prev_blank=0
+    tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+    chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      d=0
+      for r in "${doomed[@]}"; do [[ "$line" == "$r" ]] && { d=1; break; }; done
+      [[ "$d" -eq 1 ]] && continue
+      if [[ -z "${line//[[:space:]]/}" ]]; then
+        [[ "$prev_blank" -eq 1 ]] && continue
+        prev_blank=1
+      else
+        prev_blank=0
+      fi
+      printf '%s\n' "$line"
+    done < "$BACKLOG" > "$tmp"
+    mv "$tmp" "$BACKLOG"
+  }
+  _with_lock _do_clean
+  printf 'deputy: cleaned %d untouched item(s)\n' "${#doomed[@]}"
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -564,6 +605,7 @@ main() {
     claim) shift; cmd_claim "$@"; return $? ;;
     recover) cmd_recover; return 0 ;;
     review) cmd_review; return 0 ;;
+    clean) shift; cmd_clean "$@"; return $? ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
     route) shift; _route "${1:-}" "${2:-}"; return $? ;;
     probe) shift; _probe "${1:-}"; return 0 ;;
