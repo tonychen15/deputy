@@ -413,19 +413,28 @@ _probe() {
 _in_csv() { case ",$2," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 # Choose a provider for a work kind given available providers (csv).
-# Echoes: a provider name | "wait" (claude-bound work, claude down) | "none".
+# Echoes: a provider name | "wait" | "none".
+# Optional --not <provider> flag excludes a provider from selection (author≠reviewer).
 _route() {
-  local kind="$1" avail="$2"
+  local kind="$1" avail="$2" not="" i
+  for (( i=3; i<=$#; i++ )); do
+    if [[ "${!i}" == "--not" ]]; then (( i++ )); not="${!i:-}"; fi
+  done
   case "$kind" in
     orchestrate|code-complex)
       _in_csv claude "$avail" && { printf 'claude\n'; return 0; }
+      _in_csv gemini "$avail" && { printf 'gemini\n'; return 0; }
       printf 'wait\n' ;;
     code-simple)
       _in_csv claude "$avail" && { printf 'claude\n'; return 0; }
       _in_csv codex  "$avail" && { printf 'codex\n';  return 0; }
       printf 'wait\n' ;;
     review)
-      _in_csv gemini "$avail" && { printf 'gemini\n'; return 0; }
+      local p
+      for p in gemini claude codex; do
+        [[ -n "$not" && "$p" == "$not" ]] && continue
+        _in_csv "$p" "$avail" && { printf '%s\n' "$p"; return 0; }
+      done
       printf 'wait\n' ;;
     *) printf 'none\n'; return 2 ;;
   esac
@@ -1050,7 +1059,7 @@ main() {
     clean) shift; cmd_clean "$@"; return $? ;;
     reflect) shift; cmd_reflect "$@"; return $? ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
-    route) shift; _route "${1:-}" "${2:-}"; return $? ;;
+    route) shift; _route "$@"; return $? ;;
     probe) shift; _probe "${1:-}"; return 0 ;;
     cron) shift; cmd_cron "$@"; return $? ;;
     _resethour) shift; _parse_reset_hour "${1:-}"; return 0 ;;
