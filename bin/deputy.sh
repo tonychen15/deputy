@@ -706,7 +706,7 @@ cmd_reflect() {
     desc="${parsed#*|*|}"
     case "$state" in
       done)     done_items+=("${prio}|${desc}") ;;
-      waiting)  waiting_items+=("${prio}|${desc}") ;;
+      waiting|paused) waiting_items+=("${prio}|${desc}") ;;
       surfaced) surfaced_items+=("${prio}|${desc}") ;;
     esac
   done < <(_each_item)
