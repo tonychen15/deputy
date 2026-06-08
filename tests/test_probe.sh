@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/lib.sh"
 setup_repo
+# Suppress the PATH self-fix so mock CLIs in $BIN aren't shadowed by real ones.
+export DEPUTY_NO_PATH_FIX=1
 
 # Build a fake PATH dir holding mock CLIs.
 BIN="$(mktemp -d)"

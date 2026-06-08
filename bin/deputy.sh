@@ -3,6 +3,15 @@
 # mutates BACKLOG.md + .deputy/ under a repo root. No LLM logic lives here.
 set -euo pipefail
 
+# Ensure agent CLIs are found under cron's minimal PATH (idempotent).
+# Set DEPUTY_NO_PATH_FIX=1 to suppress (e.g. in tests that supply mock CLIs).
+if [[ "${DEPUTY_NO_PATH_FIX:-0}" != "1" ]]; then
+  for _d in "$HOME/.local/bin" "$HOME/.local/share/fnm/aliases/default/bin"; do
+    case ":$PATH:" in *":$_d:"*) ;; *) [[ -n "$_d" ]] && PATH="$_d:$PATH" ;; esac
+  done
+  export PATH; unset _d
+fi
+
 # ── Root + paths ────────────────────────────────────────────────────────────
 resolve_root() {
   if [[ -n "${DEPUTY_ROOT:-}" ]]; then
@@ -417,24 +426,36 @@ _parse_reset_hour() {
   printf '%s\n' "$h"
 }
 
-# Replace the single deputy cron line with $1 (empty $1 removes it). Marker: a
-# trailing "# deputy" comment so we own exactly our line.
+# Replace this repo's deputy cron line with the given schedule (empty = remove).
+# Uses a per-repo delimited marker "# deputy[<ABS_ROOT>]" so multiple repos coexist
+# and prefix collisions are impossible (the [ ] delimiters prevent /x/repo matching
+# /x/repo-two).
 _set_cron() {
-  local schedule="$1" existing filtered
+  local schedule="$1" root bin marker existing filtered root_q bin_q
+  root="$(resolve_root)"
+  bin="$(command -v deputy 2>/dev/null || readlink -f "${BASH_SOURCE[0]}")"
+  marker="# deputy[$root]"
+  # Single-quote-safe versions (replace ' with '\'' for embedding in single-quoted shell words).
+  root_q="${root//\'/\'\\\'\'}"
+  bin_q="${bin//\'/\'\\\'\'}"
   existing="$(_crontab -l 2>/dev/null || true)"
-  filtered="$(printf '%s\n' "$existing" | grep -v '# deputy' || true)"
+  filtered="$(printf '%s\n' "$existing" | grep -vF "$marker" || true)"
   {
     printf '%s\n' "$filtered" | grep -v '^[[:space:]]*$' || true
-    if [[ -n "$schedule" ]]; then printf '%s deputy run  # deputy\n' "$schedule"; fi
+    if [[ -n "$schedule" ]]; then
+      printf "%s cd '%s' && '%s' run >> '%s/.deputy/cron.log' 2>&1  %s\n" \
+        "$schedule" "$root_q" "$bin_q" "$root_q" "$marker"
+    fi
   } | _crontab -
 }
 
 cmd_cron() {
   case "${1:-}" in
-    --ensure)     _set_cron "0 */2 * * *" ;;
+    --ensure)     _set_cron "*/15 * * * *" ;;
     --remove)     _set_cron "" ;;
     --reschedule) local h; h="$(_parse_reset_hour "${2:-}")"
-                  if [[ -n "$h" ]]; then _set_cron "0 $h * * *"; else _set_cron "0 */2 * * *"; fi ;;
+                  if [[ -n "$h" ]]; then _set_cron "0 $h * * *"
+                  else _set_cron "0 */2 * * *"; fi ;;
     *) printf 'deputy: cron needs --ensure|--remove|--reschedule "<text>"\n' >&2; return 2 ;;
   esac
 }
@@ -526,10 +547,24 @@ Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove /
   claude -p "$prompt" --model claude-sonnet-4-6 --allowedTools "Bash,Edit,Write,Read,Glob,Grep"
 }
 
+# Re-arm this repo's heartbeat if the repo is cron-enabled but the */15 line is
+# missing (e.g. a prior quota reschedule replaced it). No-op if already correct or
+# if the repo was never cron-enabled — so a manual run never surprise-installs cron.
+_cron_selfarm() {
+  local root marker existing; root="$(resolve_root)"; marker="# deputy[$root]"
+  existing="$(_crontab -l 2>/dev/null || true)"
+  printf '%s\n' "$existing" | grep -qF "$marker" || return 0          # not enabled → skip
+  # Check the line that owns this repo's marker starts with */15 (schedule-only check,
+  # avoids quoting discrepancies in the cd path).
+  printf '%s\n' "$existing" | grep -F "$marker" | grep -q '^[*]/15 ' && return 0  # already armed
+  cmd_cron --ensure >/dev/null 2>&1 || true
+}
+
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
 cmd_run() {
   local once=0; [[ "${1:-}" == "--once" ]] && once=1
   cmd_recover >/dev/null 2>&1 || true
+  _cron_selfarm
   if _live_claim_exists; then return 0; fi
   # Optional per-cycle cap; 0/empty/non-numeric = unlimited (run until the queue is
   # empty or Claude's session limit is hit).
