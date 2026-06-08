@@ -81,3 +81,22 @@ DEPUTY_ROOT="$cron_root" DEPUTY_CRONTAB="$fake" bash "$INSTALL" cron >/dev/null 
 assert_eq "$(grep -c 'deputy' "$store")" "1" "install cron ensures one entry"
 assert_eq "$(test -f "$cron_root/.deputy/cron.enabled" && echo yes || echo no)" "yes" "install cron creates the opt-in marker in DEPUTY_ROOT"
 rm -rf "$cron_root" "$store" "$fake" 2>/dev/null || true
+
+# --- init appends Deputy task-intake guidance to CLAUDE.md ---
+dc="$(mktemp -d)"
+bash "$INSTALL" init "$dc" >/dev/null
+assert_eq "$([[ -f "$dc/CLAUDE.md" ]] && echo yes || echo no)" "yes" "init creates CLAUDE.md"
+assert_contains "$(cat "$dc/CLAUDE.md")" "Deputy: task intake" "CLAUDE.md contains sentinel"
+assert_contains "$(cat "$dc/CLAUDE.md")" "BACKLOG.md" "CLAUDE.md mentions BACKLOG.md"
+
+# --- init CLAUDE.md guidance is idempotent ---
+bash "$INSTALL" init "$dc" >/dev/null
+count="$(grep -c 'Deputy: task intake' "$dc/CLAUDE.md")"
+assert_eq "$count" "1" "init CLAUDE.md guidance is not duplicated"
+
+# --- init preserves existing CLAUDE.md content ---
+dc2="$(mktemp -d)"
+printf '# My Project\nCustom instructions here.\n' > "$dc2/CLAUDE.md"
+bash "$INSTALL" init "$dc2" >/dev/null
+assert_contains "$(cat "$dc2/CLAUDE.md")" "Custom instructions here." "init preserves existing CLAUDE.md"
+assert_contains "$(cat "$dc2/CLAUDE.md")" "Deputy: task intake" "init appends to existing CLAUDE.md"

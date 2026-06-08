@@ -2,7 +2,7 @@
 # install.sh — install the Deputy runner (Plan 1 MVP).
 #
 #   install.sh [link] [--prefix DIR] [--force]   symlink `deputy` into DIR (default: $HOME/.local/bin)
-#   install.sh init [DIR]                         seed BACKLOG.md + gitignore .deputy/ in DIR (default: cwd)
+#   install.sh init [DIR]                         seed BACKLOG.md, .deputy/, and CLAUDE.md guidance in DIR (default: cwd)
 #   install.sh help
 #
 # `link` puts the `deputy` command on your PATH; the runner resolves its target
@@ -18,7 +18,7 @@ usage() {
   cat <<EOF
 usage:
   install.sh [link] [--prefix DIR] [--force]   symlink 'deputy' into DIR (default: \$HOME/.local/bin)
-  install.sh init [DIR]                         seed BACKLOG.md + gitignore .deputy/ in DIR (default: cwd)
+  install.sh init [DIR]                         seed BACKLOG.md, .deputy/, and CLAUDE.md guidance in DIR (default: cwd)
   install.sh cron                               run 'deputy cron --ensure' (opt-in safety-net)
   install.sh help
 EOF
@@ -111,6 +111,30 @@ cmd_init() {
       cp "$src" "$dst"; printf 'install: seeded %s\n' "$dst"
     fi
   done
+
+  # Append Deputy task-intake guidance to CLAUDE.md so Claude records tasks to BACKLOG.md.
+  local claude_md="$dir/CLAUDE.md"
+  local sentinel="## Deputy: task intake"
+  if [[ -f "$claude_md" ]] && grep -qF "$sentinel" "$claude_md"; then
+    printf 'install: Deputy guidance already in %s\n' "$claude_md"
+  else
+    # Ensure we start on a fresh line if the file lacks a trailing newline.
+    if [[ -f "$claude_md" && -s "$claude_md" && -n "$(tail -c1 "$claude_md")" ]]; then printf '\n' >> "$claude_md"; fi
+    cat >> "$claude_md" <<'DEPUTY_GUIDANCE'
+
+## Deputy: task intake
+
+Whenever you discover unfinished work, planned features, bugs, or TODOs during a session,
+record them in `BACKLOG.md` so Deputy can schedule and execute them automatically.
+
+Add an item:
+  deputy add "description"        # appends with auto-priority
+  # or append a plain line to BACKLOG.md directly
+
+Deputy processes `BACKLOG.md` on its next run; items are picked by priority (P0 > P1 > P2 > untagged).
+DEPUTY_GUIDANCE
+    printf 'install: appended Deputy guidance to %s\n' "$claude_md"
+  fi
 }
 
 main() {
