@@ -13,7 +13,7 @@
 
 #[P1] Add cancelled and duplicate item statuses to the queue (parse/serialize/status)
 
-[P1] Install and wire the Codex CLI so simple-coding failover is live (probes absent today)
+#[P1] Install and wire the Codex CLI so simple-coding failover is live (probes absent today)
 
 [P1] Add a token/cost budget cap to the run loop (stop a cycle past N output tokens)
 
