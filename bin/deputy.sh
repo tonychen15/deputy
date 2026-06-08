@@ -115,12 +115,37 @@ _flip_line() {
 # Caller holds the lock.
 _append_item() { printf '\n%s\n' "$1" >> "$BACKLOG"; }
 
-# True if any item's parsed description equals $1.
+# Write the bare description (inline :key:value tokens stripped) into the variable
+# named by $1.  Nameref avoids a $() subshell fork in hot paths.  Globbing is
+# disabled during word-splitting so literal [, *, ? in descriptions never expand.
+_attr_strip_r() {
+  local -n _asr_out="$1"
+  local w _g="${-//[^f]/}"    # save globbing state: 'f' = disabled, '' = enabled
+  _asr_out=""
+  set -f
+  for w in $2; do
+    [[ "$w" =~ ^:[a-z][a-z0-9-]*:[^[:space:]]+$ ]] && continue
+    _asr_out="${_asr_out}${_asr_out:+ }${w}"
+  done
+  [[ -z "$_g" ]] && set +f    # restore globbing if it was enabled before the call
+}
+
+# Convenience wrapper that echoes the bare description (for $() callers).
+_attr_strip() { local _v; _attr_strip_r _v "$1"; printf '%s' "$_v"; }
+
+# Append a single `:key:value` attribute to a description string.
+_attr_append() { printf '%s :%s:%s' "$1" "$2" "$3"; }
+
+# True if any item's bare description (attributes stripped) equals the bare form
+# of $1.  Prevents false "duplicate" blocks when the same task is re-added with
+# different attribute values.  Uses _attr_strip_r to avoid per-item subshell forks.
 _desc_exists() {
-  local want="$1" raw parsed
+  local want="$1" bare_want raw parsed bare_desc
+  _attr_strip_r bare_want "$want"
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
-    [[ "${parsed#*|*|}" == "$want" ]] && return 0
+    _attr_strip_r bare_desc "${parsed#*|*|}"
+    [[ "$bare_desc" == "$bare_want" ]] && return 0
   done < <(_each_item)
   return 1
 }
@@ -129,14 +154,32 @@ cmd_add() {
   # Priority flags: -ui/-u/-i (urgent+important / urgent / important) are aliases
   # for --p0/--p1/--p2. A `--` marker ends flag parsing so a description may begin
   # with a dash (e.g. `deputy add -- "-5% drop alert"`). Last flag wins.
-  local text="" prio="" no_more_flags=0
+  # Attribute flags (--due/--depends-on/--project/--goal) append inline :key:value
+  # tokens to the description; --depends-on may appear multiple times.
+  local text="" prio="" attrs="" no_more_flags=0
   while [[ $# -gt 0 ]]; do
     if [[ "$no_more_flags" -eq 0 ]]; then
       case "$1" in
-        --)         no_more_flags=1; shift; continue ;;
-        --p0|-ui)   prio=P0; shift; continue ;;
-        --p1|-u)    prio=P1; shift; continue ;;
-        --p2|-i)    prio=P2; shift; continue ;;
+        --)            no_more_flags=1; shift; continue ;;
+        --p0|-ui)      prio=P0; shift; continue ;;
+        --p1|-u)       prio=P1; shift; continue ;;
+        --p2|-i)       prio=P2; shift; continue ;;
+        --due)
+          [[ $# -ge 2 ]] || { printf 'deputy: --due requires a value\n' >&2; return 2; }
+          [[ "$2" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { printf 'deputy: --due must be YYYY-MM-DD, got: %s\n' "$2" >&2; return 2; }
+          attrs="${attrs}${attrs:+ }:due:$2"; shift 2; continue ;;
+        --depends-on)
+          [[ $# -ge 2 ]] || { printf 'deputy: --depends-on requires a value\n' >&2; return 2; }
+          [[ "$2" =~ ^[a-zA-Z0-9._-]+$ ]] || { printf 'deputy: --depends-on value must be alphanumeric/dash/dot/underscore, got: %s\n' "$2" >&2; return 2; }
+          attrs="${attrs}${attrs:+ }:depends-on:$2"; shift 2; continue ;;
+        --project)
+          [[ $# -ge 2 ]] || { printf 'deputy: --project requires a value\n' >&2; return 2; }
+          [[ "$2" =~ ^[a-zA-Z0-9._-]+$ ]] || { printf 'deputy: --project value must be alphanumeric/dash/dot/underscore, got: %s\n' "$2" >&2; return 2; }
+          attrs="${attrs}${attrs:+ }:project:$2"; shift 2; continue ;;
+        --goal)
+          [[ $# -ge 2 ]] || { printf 'deputy: --goal requires a value\n' >&2; return 2; }
+          [[ "$2" =~ ^[a-zA-Z0-9._-]+$ ]] || { printf 'deputy: --goal value must be alphanumeric/dash/dot/underscore, got: %s\n' "$2" >&2; return 2; }
+          attrs="${attrs}${attrs:+ }:goal:$2"; shift 2; continue ;;
         -*) printf 'deputy: unknown flag: %s (use -- before a description starting with "-")\n' "$1" >&2; return 2 ;;
       esac
     fi
@@ -153,6 +196,7 @@ cmd_add() {
     printf 'deputy: description may not contain a newline\n' >&2
     return 2
   fi
+  [[ -n "$attrs" ]] && text="$text $attrs"
   _do_add() {
     if _desc_exists "$text"; then
       printf 'deputy: already present: %s\n' "$text"; return 0
@@ -360,9 +404,10 @@ cmd_claim() {
     parsed="$(_parse_item "$from")"; state="${parsed%%|*}"
     [[ "$state" == "waiting" || "$state" == "paused" ]] || { printf 'deputy: item is not waiting/paused (%s)\n' "$state" >&2; return 4; }
     grep -qxF -- "$from" "$BACKLOG" || { printf 'deputy: item not found\n' >&2; return 1; }
-    local prio desc slug to
+    local prio desc slug to bare_desc
     prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
-    slug="$(_slugify "$desc")"
+    _attr_strip_r bare_desc "$desc"
+    slug="$(_slugify "$bare_desc")"
     if _wt_conflict_check "$slug"; then
       printf 'deputy: conflict (path overlap with a running item)\n' >&2; return 5
     fi
@@ -445,7 +490,10 @@ commands:
   add "<text>" [-ui|-u|-i]        add a waiting item and run it immediately if idle
                                   (-ui=P0 -u=P1 -i=P2; --p0/--p1/--p2 also accepted;
                                   use -- before a description that starts with "-";
-                                  set DEPUTY_NO_AUTORUN=1 to enqueue without running)
+                                  set DEPUTY_NO_AUTORUN=1 to enqueue without running;
+                                  attribute flags: --due YYYY-MM-DD
+                                    --depends-on <slug>  (repeatable)
+                                    --project <name>  --goal <name>)
   list                            print parsed items (state|priority|description)
   status                          counts by state
   run [--once]                    work the backlog: claim the top item, run the orchestrator
@@ -1287,7 +1335,7 @@ main() {
     wt-remove) shift; _wt_remove "${1:?slug}"; return $? ;;
     wt-path)   shift; printf '%s\n' "$(_wt_path "${1:?slug}")"; return 0 ;;
     wt-paths)  shift; cmd_wt_paths "$@"; return $? ;;
-    slug)      shift; _slugify "${*:-}"; printf '\n'; return 0 ;;
+    slug)      shift; local _sv; _attr_strip_r _sv "${*:-}"; _slugify "$_sv"; printf '\n'; return 0 ;;
     run) shift; cmd_run "$@"; return 0 ;;
     start) shift; cmd_wp_start "$@"; return $? ;;
     done) shift; cmd_wp_done "$@"; return $? ;;
