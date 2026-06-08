@@ -15,7 +15,7 @@
 
 #[P1] Install and wire the Codex CLI so simple-coding failover is live (probes absent today)
 
-[P1] Add a token/cost budget cap to the run loop (stop a cycle past N output tokens)
+#[P1] Add a token/cost budget cap to the run loop (stop a cycle past N output tokens)
 
 [P2] Add precise per-provider rate-limit reset parsing for gemini and codex
 
