@@ -33,6 +33,6 @@ Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 
 #[P0] rename jobflow folder name to deputy and update its reference
 
-[P0] add a 'clean' option for deputy to clean those untouched items
+#[P0] add a 'clean' option for deputy to clean those untouched items
 
 [P1] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
