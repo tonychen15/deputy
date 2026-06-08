@@ -11,7 +11,7 @@
 **Scope (this plan):** queue data model + `add`, `list`, `status`, `pick`, `set`, `claim`, `recover`. **Out of scope** (later plans): cron, LLM/CLI adapters, routing, the orchestrator skill, git worktrees, `install.sh`, hooks.
 
 **Conventions used throughout this plan:**
-- Run all commands from the repo root (`/home/tong/src/tonychen15/jobflow`).
+- Run all commands from the repo root (`/home/tong/src/tonychen15/deputy`).
 - The runner resolves its root from `$DEPUTY_ROOT` (default: `git rev-parse --show-toplevel`, else `$PWD`). Tests set `$DEPUTY_ROOT` to a temp dir.
 - **Status prefixes:** waiting = *(none)*, `~` triaging, `@` running, `?` surfaced, `#` done, `!` failed.
 - **Priority tags:** `[P0]` `[P1]` `[P2]`, absent = lowest. Rank P0<P1<P2<none; FIFO within a rank (file order).

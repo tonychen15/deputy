@@ -9,7 +9,7 @@ item branch, and `deputy set … done` — all autonomously. V2 carve-outs remai
 §15): migrate waypoint/xReview to Gemini/Codex, external notifications, full Reflect,
 parallel worktrees, due-dates/dependencies, Codex CLI install.
 **Date:** 2026-06-07
-**Repo:** `deputy` (currently the `jobflow` working dir; to be renamed)
+**Repo:** `deputy` (at `/home/tong/src/tonychen15/deputy`)
 **Supersedes:** the bullet notes in `docs/features-todo.md`
 
 ---

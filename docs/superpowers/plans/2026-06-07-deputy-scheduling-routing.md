@@ -11,7 +11,7 @@
 **Scope (this plan):** `detect`, `probe`, `route`, `cron` subcommands + their helpers. **Out of scope** (Plan 3): the orchestrator skill, the actual claim→spawn run loop, worktree execution, waypoint/xReview wiring, SessionStart hook, install of skill/hooks.
 
 **Conventions:**
-- Run commands from repo root `/home/tong/src/tonychen15/jobflow`.
+- Run commands from repo root `/home/tong/src/tonychen15/deputy`.
 - Providers: `claude`, `gemini`, `codex`. Roles (spec §8): claude = orchestration/planning + primary coder; gemini = primary reviewer; codex = failover coder for *simple* coding when claude is quota-limited; complex/waypoint work waits for claude.
 - Outcome classes: `ok | quota_exhausted | auth_error | hard_error`. Conservative default: an unrecognized non-zero exit is `hard_error` (never falsely `quota_exhausted`).
 - All new functions go **above `main`** in `bin/deputy.sh`; each new subcommand gets a `case` arm before the `*)` catch-all.
