@@ -216,6 +216,76 @@ _valid_state() {
   case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate|paused) return 0 ;; *) return 1 ;; esac
 }
 
+# ── Notifications ─────────────────────────────────────────────────────────────
+# Fires when an item reaches surfaced/done/failed/cancelled/duplicate.
+# Config keys (.deputy/config):
+#   notify=desktop,push,email    comma-separated list of enabled channels
+#   notify_push_url=<url>        ntfy.sh-compatible URL (required for push channel)
+#   notify_email=<address>       recipient address (required for email channel)
+# Any channel whose prerequisite is absent is silently skipped.
+
+_notify_label() {
+  case "$1" in
+    surfaced)  printf 'Needs Input' ;;
+    done)      printf 'Done' ;;
+    failed)    printf 'Failed' ;;
+    cancelled) printf 'Cancelled' ;;
+    duplicate) printf 'Duplicate' ;;
+    *)         printf '%s' "$1" ;;
+  esac
+}
+
+_notify_desktop() {
+  local title="$1" body="$2"
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "$title" "$body" 2>/dev/null || true
+  elif command -v osascript >/dev/null 2>&1; then
+    # Pass via env vars to avoid AppleScript injection from special chars in description.
+    DEPUTY_NOTIF_TITLE="$title" DEPUTY_NOTIF_BODY="$body" \
+      osascript -e 'display notification (system attribute "DEPUTY_NOTIF_BODY") with title (system attribute "DEPUTY_NOTIF_TITLE")' \
+      2>/dev/null || true
+  fi
+}
+
+_notify_push() {
+  local title="$1" body="$2" url
+  url="$(_config_get notify_push_url)"
+  [[ -n "$url" ]] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -s --max-time 3 -H "Title: $title" -d "$body" "$url" >/dev/null 2>&1 || true
+}
+
+_notify_email() {
+  local title="$1" body="$2" addr
+  addr="$(_config_get notify_email)"
+  [[ -n "$addr" ]] || return 0
+  if command -v mail >/dev/null 2>&1; then
+    printf '%s\n' "$body" | mail -s "$title" "$addr" 2>/dev/null || true
+  elif command -v sendmail >/dev/null 2>&1; then
+    printf 'To: %s\nSubject: %s\n\n%s\n' "$addr" "$title" "$body" | sendmail "$addr" 2>/dev/null || true
+  fi
+}
+
+# Fire notifications for terminal/attention states. Silently no-ops for other states
+# or when no channels are configured.
+_notify() {
+  local state="$1" desc="$2"
+  case "$state" in surfaced|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
+  local channels; channels="$(_config_get notify)"
+  [[ -n "$channels" ]] || return 0
+  local label; label="$(_notify_label "$state")"
+  local title="Deputy: $label"
+  local ch
+  while IFS= read -r ch; do
+    ch="${ch#"${ch%%[![:space:]]*}"}"; ch="${ch%"${ch##*[![:space:]]}"}"
+    case "$ch" in
+      desktop) _notify_desktop "$title" "$desc" ;;
+      push)    _notify_push    "$title" "$desc" ;;
+      email)   _notify_email   "$title" "$desc" ;;
+    esac
+  done < <(printf '%s\n' "$channels" | tr ',' '\n')
+}
+
 cmd_set() {
   local from="${1:-}" newstate="${2:-}"
   [[ -n "$from" && -n "$newstate" ]] || { printf 'deputy: set requires "<line>" <state>\n' >&2; return 2; }
@@ -229,7 +299,21 @@ cmd_set() {
     to="$(_serialize_item "$newstate" "$prio" "$desc")"
     _flip_line "$from" "$to"
   }
-  _with_lock _do_set
+  local _set_rc=0
+  _with_lock _do_set || _set_rc=$?
+  if [[ "$_set_rc" -eq 0 ]]; then
+    local _parsed _desc
+    _parsed="$(_parse_item "$from")"
+    _desc="${_parsed#*|*|}"
+    # Background by default so slow channels (e.g. push/curl) don't block the CLI.
+    # Set DEPUTY_NOTIFY_SYNC=1 to run synchronously (used in tests).
+    if [[ "${DEPUTY_NOTIFY_SYNC:-0}" == "1" ]]; then
+      _notify "$newstate" "$_desc" >/dev/null 2>&1 || true
+    else
+      _notify "$newstate" "$_desc" >/dev/null 2>&1 &
+    fi
+  fi
+  return "$_set_rc"
 }
 
 # True if any .deputy/<pid>.claim is owned by a live process.
@@ -388,6 +472,9 @@ commands:
 config keys (.deputy/config):
   max_parallel=N                  max concurrent orchestrators (default 1 = serial)
   max_items=N                     items started per run cycle (default 0 = unlimited)
+  notify=desktop,push,email       channels for item-surfaced/finished notifications
+  notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
+  notify_email=<address>          recipient address (required for email)
 
 states: waiting triaging running surfaced done failed cancelled duplicate paused
 EOF
