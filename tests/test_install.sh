@@ -65,6 +65,9 @@ DEPUTY_SKILLS_DIR="$sk" DEPUTY_PREFIX="$pf" bash "$INSTALL" link >/dev/null; rc=
 assert_eq "$rc" "0" "re-link with skill exits 0"
 
 # --- install.sh cron delegates to deputy cron --ensure (fake crontab) ---
+# Isolate DEPUTY_ROOT to a temp repo: `cron --ensure` now also writes a
+# `.deputy/cron.enabled` marker under DEPUTY_ROOT, which must NOT touch the real repo.
+cron_root="$(mktemp -d)"; mkdir -p "$cron_root/.deputy"
 store="$(mktemp)"; : > "$store"
 fake="$(mktemp)"
 cat > "$fake" <<EOF
@@ -74,5 +77,7 @@ cat > "$fake" <<EOF
 exit 0
 EOF
 chmod +x "$fake"
-DEPUTY_CRONTAB="$fake" bash "$INSTALL" cron >/dev/null 2>&1
+DEPUTY_ROOT="$cron_root" DEPUTY_CRONTAB="$fake" bash "$INSTALL" cron >/dev/null 2>&1
 assert_eq "$(grep -c 'deputy' "$store")" "1" "install cron ensures one entry"
+assert_eq "$(test -f "$cron_root/.deputy/cron.enabled" && echo yes || echo no)" "yes" "install cron creates the opt-in marker in DEPUTY_ROOT"
+rm -rf "$cron_root" "$store" "$fake" 2>/dev/null || true
