@@ -498,7 +498,10 @@ Internal runner helpers (not for humans): `deputy.sh --set <line> <state>`,
 - SessionStart surfacing + light Reflect/morning report.
 
 **V2**
-- **Install + wire the Codex CLI** (so the `codex` simple-coding failover is live; today it probes `absent`).
+- **Suspension & Resume subsystem** — `preempted`/`blocked`/`scheduled`/`awaiting`
+  states, `surfaced` reasons (`answer`/`approve`), `depends-on`, always-checkpoint
+  + dependency-first scheduling. Full design: `2026-06-07-deputy-suspension-resume.md`
+  (the preemption / dependencies / parallel-worktree items fold into it).
 - Migrate waypoint + xReview to run on Gemini/Codex (so complex items can fail over too).
 - External notifications (push/desktop/email).
 - Full Reflect: re-triage stale items, reprioritize, prune duplicates, capture learnings.
