@@ -671,6 +671,30 @@ cmd_wp_done() {
   _with_lock _do_done
 }
 
+cmd_wp_plan() {
+  local id="" sid="" purpose=""
+  id="${1:?plan needs <id>}"; shift
+  _wp_validate_id "$id" || return 1
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --step)    [[ $# -ge 2 ]] || { printf 'deputy: plan: --step requires a value\n' >&2; return 2; }; sid="$2"; shift 2 ;;
+    --purpose) [[ $# -ge 2 ]] || { printf 'deputy: plan: --purpose requires a value\n' >&2; return 2; }; purpose="$2"; shift 2 ;;
+    *) printf 'deputy: plan: unexpected arg %s\n' "$1" >&2; return 2 ;;
+  esac; done
+  [[ -n "$sid" && -n "$purpose" ]] || { printf 'deputy: plan needs --step and --purpose\n' >&2; return 2; }
+  _wp_require_jq || return 1
+  _do_plan() {
+    _wp_jq "$id" \
+      '.steps += [{id:$sid, purpose:$p, expected_result:"", status:"pending", completed_at:null, actual_result:null}] | .updated_at=$now' \
+      --arg sid "$sid" --arg p "$purpose" --arg now "$(_wp_now)"
+  }
+  _with_lock _do_plan
+}
+
+cmd_wp_steps() {
+  local id="${1:?steps needs <id>}"; _wp_validate_id "$id" || return 1; _wp_require_jq || return 1
+  jq -r '.steps[] | "\(.id)|\(.status)|\(.purpose)"' "$(_wp_json "$id")"
+}
+
 # Hidden helper for tests: print the raw waypoint.json.
 cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
 
@@ -703,6 +727,8 @@ main() {
     run) shift; cmd_run "$@"; return 0 ;;
     start) shift; cmd_wp_start "$@"; return $? ;;
     done) shift; cmd_wp_done "$@"; return $? ;;
+    plan) shift; cmd_wp_plan "$@"; return $? ;;
+    steps) shift; cmd_wp_steps "$@"; return $? ;;
     _wp_show) shift; cmd_wp_show "$@"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
