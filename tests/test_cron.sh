@@ -91,53 +91,81 @@ assert_eq "$(bash "$DEPUTY" _resethour 'resets 12am')" "0"  "12am -> 0"
 assert_eq "$(bash "$DEPUTY" _resethour 'resets 12pm')" "12" "12pm -> 12"
 assert_eq "$(bash "$DEPUTY" _resethour 'no time here')" ""  "no match -> empty"
 
-# ── Test 9: self-arm — cron line present but NOT */15 → cmd_run restores */15 ──
+# ── Test 9: cron --ensure creates cron.enabled marker AND writes */15 line ──
 : > "$STORE"
-ROOT_SA="$DEPUTY_ROOT"  # use default setup_repo root
+ROOT_MARKER="$DEPUTY_ROOT"
+bash "$DEPUTY" cron --ensure
+assert_eq "$(test -f "$ROOT_MARKER/.deputy/cron.enabled" && echo yes || echo no)" "yes" \
+  "ensure creates cron.enabled marker"
+assert_contains "$(cat "$STORE")" "*/15 * * * *" "ensure writes */15 line (marker present)"
+# _cron_enabled via the marker (indirect: ensure it's a file, covered above)
 
-# Simulate a prior reschedule: write a non-*/15 line with the repo marker
-printf "0 3 * * * cd '%s' && deputy run  # deputy[%s]\n" "$ROOT_SA" "$ROOT_SA" > "$STORE"
+# ── Test 10: cron --remove deletes the marker AND removes the line ──
+bash "$DEPUTY" cron --remove
+assert_eq "$(test -f "$ROOT_MARKER/.deputy/cron.enabled" && echo yes || echo no)" "no" \
+  "remove deletes cron.enabled marker"
+assert_eq "$(grep -c "deputy\[$ROOT_MARKER\]" "$STORE" 2>/dev/null || true)" "0" \
+  "remove deletes cron line from store"
 
-ORCH_SA="$(mktemp)"
-cat > "$ORCH_SA" <<'EOFORCH'
+# ── Test 11: marker absent → deputy run leaves crontab store unchanged ──
+: > "$STORE"  # empty store, no marker file for this repo (just removed above)
+rm -f "$ROOT_MARKER/.deputy/cron.enabled" 2>/dev/null || true
+
+ORCH_LC="$(mktemp)"
+cat > "$ORCH_LC" <<'EOFORCH'
 #!/usr/bin/env bash
-# no-op orchestrator for self-arm test
+# no-op orchestrator
 exit 0
 EOFORCH
-chmod +x "$ORCH_SA"
+chmod +x "$ORCH_LC"
 
-# deputy run should detect the marker, notice it's not */15, and re-arm
-DEPUTY_ORCHESTRATOR_CMD="$ORCH_SA" DEPUTY_AVAIL="claude,gemini" \
+bash "$DEPUTY" add "lifecycle job" --p0
+
+DEPUTY_ORCHESTRATOR_CMD="$ORCH_LC" DEPUTY_AVAIL="claude,gemini" \
   bash "$DEPUTY" run --once >/dev/null 2>&1 || true
-
-assert_contains "$(cat "$STORE")" "*/15 * * * *" "self-arm: run restores */15 line when marker present but non-*/15"
-assert_eq "$(grep -c "deputy\[$ROOT_SA\]" "$STORE")" "1" "self-arm: only one repo line after re-arm"
-
-# ── Test 10: self-arm no-op when */15 line already present ──
-: > "$STORE"
-STORE_CONTENT="$(printf "*/15 * * * * cd '%s' && deputy run >> '%s/.deputy/cron.log' 2>&1  # deputy[%s]\n" \
-  "$ROOT_SA" "$ROOT_SA" "$ROOT_SA")"
-printf '%s\n' "$STORE_CONTENT" > "$STORE"
-STORE_BEFORE="$(cat "$STORE")"
-
-DEPUTY_ORCHESTRATOR_CMD="$ORCH_SA" DEPUTY_AVAIL="claude,gemini" \
-  bash "$DEPUTY" run --once >/dev/null 2>&1 || true
-
-STORE_AFTER="$(cat "$STORE")"
-assert_eq "$STORE_BEFORE" "$STORE_AFTER" "self-arm: no rewrite when */15 line already present (byte-identical)"
-
-# ── Test 11: no marker → deputy run does NOT add any cron line ──
-: > "$STORE"  # empty — no marker for this repo
-
-DEPUTY_ORCHESTRATOR_CMD="$ORCH_SA" DEPUTY_AVAIL="claude,gemini" \
-  bash "$DEPUTY" run --once >/dev/null 2>&1 || true
-
 assert_eq "$(grep -c 'deputy\[' "$STORE" 2>/dev/null || true)" "0" \
   "no marker: run must NOT add cron line"
 
-rm -f "$ORCH_SA"
+# ── Test 12 (Lifecycle): marker present → deputy run re-arms */15 at idle-exit ──
+: > "$STORE"
+# Re-enable (sets marker + arms initial line)
+bash "$DEPUTY" cron --ensure
+# Add a couple of items so the run loop has work to do
+bash "$DEPUTY" add "lifecycle item 1" --p0
+bash "$DEPUTY" add "lifecycle item 2" --p0
 
-# ── Test 12: PATH idempotency — running deputy twice does not duplicate dirs ──
+# Record what the crontab looks like before run (should have */15 from --ensure)
+STORE_BEFORE_RUN="$(cat "$STORE")"
+
+# Capture-script: record the crontab at orchestrator-call time (proves line removed during run)
+CAPTURE_FILE="$(mktemp)"
+ORCH_CAP="$(mktemp)"
+cat > "$ORCH_CAP" <<EOFCAP
+#!/usr/bin/env bash
+# Capture crontab state at orchestrator invocation; also mark the item done.
+bash "$DEPUTY" set "\$1" done >/dev/null 2>&1 || true
+# Capture the crontab store at this instant (first invocation wins; don't overwrite if exists)
+[[ -s "$CAPTURE_FILE" ]] || cat "$STORE" > "$CAPTURE_FILE"
+exit 0
+EOFCAP
+chmod +x "$ORCH_CAP"
+
+DEPUTY_ORCHESTRATOR_CMD="$ORCH_CAP" DEPUTY_AVAIL="claude,gemini" \
+  bash "$DEPUTY" run >/dev/null 2>&1 || true
+
+# At orchestrator time, the deputy line should have been REMOVED
+assert_eq "$(grep -c "deputy\[$ROOT_MARKER\]" "$CAPTURE_FILE" 2>/dev/null || true)" "0" \
+  "lifecycle: cron line absent at orchestrator-call time (removed while active)"
+
+# After idle exit, the */15 line should be RESTORED
+assert_eq "$(grep -c "deputy\[$ROOT_MARKER\]" "$STORE")" "1" \
+  "lifecycle: cron line present after run goes idle"
+assert_contains "$(cat "$STORE")" "*/15 * * * *" \
+  "lifecycle: re-armed line uses */15 schedule"
+
+rm -f "$ORCH_LC" "$ORCH_CAP" "$CAPTURE_FILE"
+
+# ── Test 13: PATH idempotency — running deputy twice does not duplicate dirs ──
 # We source deputy.sh in a subshell to check PATH expansion doesn't duplicate entries.
 path_check="$(bash -c '
   source "'"$DEPUTY"'" help >/dev/null 2>&1 || true

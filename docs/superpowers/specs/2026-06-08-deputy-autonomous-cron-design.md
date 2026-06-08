@@ -53,13 +53,15 @@ deputy has the cron *machinery* (`cron --ensure`/`--reschedule`, `_set_cron`) an
      **(b) a `deputy` command** (`add`/`run` re-arms when it finishes idle).
    - Re-arm also happens on the quota path via `cron --reschedule` (arm at the reset hour),
      so autonomy survives a session-limit stop.
-5. **Autonomous flag (persistent) — gates the lifecycle.** Because the cron line is
+5. **Autonomous opt-in — marker file gates the lifecycle (REVISED 2026-06-08, implementation).** Because the cron line is
    *absent during active runs*, its presence can no longer signal "this repo wants a
-   heartbeat." A persistent flag records the opt-in: `.deputy/config: autonomous=1`, set by
-   `deputy cron --ensure` (and `install.sh cron`), cleared by `deputy cron --remove`. The
-   remove-on-active and re-arm-on-idle steps **only act when `autonomous=1`**, so a manual
-   `deputy run`/`add` in a non-autonomous repo never touches the crontab. `_live_claim_exists`
-   still guards the brief window before removal against a concurrent cron fire.
+   heartbeat." A persistent marker file records the opt-in: **`.deputy/cron.enabled`**
+   (a zero-byte sentinel), created by `deputy cron --ensure` (and `install.sh cron`),
+   deleted by `deputy cron --remove`. The helper `_cron_enabled()` tests for this file:
+   `[[ -f "$STATE_DIR/cron.enabled" ]]`. The remove-on-active and re-arm-on-idle steps
+   **only act when the marker is present**, so a manual `deputy run`/`add` in a
+   non-autonomous repo never touches the crontab. `_live_claim_exists` still guards the
+   brief window before removal against a concurrent cron fire.
    - *Robustness note:* removing the line at start means a hard crash mid-run (after remove,
      before re-arm) leaves no heartbeat until the next manual `deputy add`/`run` re-arms it.
      Accepted (this is research.sh's model); the quota path and normal idle-exit both re-arm.
@@ -75,20 +77,27 @@ deputy has the cron *machinery* (`cron --ensure`/`--reschedule`, `_set_cron`) an
   when idle) — NOT a fixed always-on `*/15`. (Revised 2026-06-08, §4.)
 - **Per-repo markers** so deputy + stock-pick (and any future repo) each get their own
   cron line and coexist.
-- Opt-in is a **persistent `autonomous` flag** (not "is the line present?", since the line
-  is removed during runs). (§5.)
+- Opt-in is a **marker file `.deputy/cron.enabled`** (not a config key, not "is the line
+  present?", since the line is removed during runs). (§5.)
+- Auto-run (`deputy add` background dispatch) is a **detached background `deputy run`**
+  (drain loop, not `--once`), overridable via `DEPUTY_AUTORUN_CMD` for tests, logging to
+  `.deputy/run.log`.
 - This consolidates with the **P0 "make `deputy add` trigger run + preemption"** item: the
   same entry points (`add`/`run`) own the remove-on-active / arm-on-idle lifecycle; the
   preemption half (higher-priority `add` preempts a running lower-priority task) is the
   remaining piece, built on the checkpoint spine + a `paused`/`preempted` status.
 
 ## Testing
-- `cron --ensure` sets `autonomous=1` AND arms the repo-aware line (per-repo marker);
-  a second repo's `--ensure` preserves the first repo's line (multi-repo, prefix-safe).
-- `cron --remove` clears `autonomous=1` and removes only this repo's line.
-- `deputy run` / `deputy add` in an `autonomous=1` repo **removes** the line at start;
-  on going idle (empty queue) **re-creates** it. In a non-autonomous repo, neither
-  touches the crontab.
+- `cron --ensure` creates `.deputy/cron.enabled` marker AND arms the repo-aware `*/15` line
+  (per-repo marker); a second repo's `--ensure` preserves the first repo's line
+  (multi-repo, prefix-safe).
+- `cron --remove` deletes `.deputy/cron.enabled` and removes only this repo's line.
+- `deputy run` with the marker present **removes** the cron line at start; on going idle
+  (empty queue) **re-creates** the `*/15` line. Without the marker, neither step touches
+  the crontab.
+- **Auto-run is a detached background `deputy run`** (not `--once`) spawned by `_autorun`
+  so `deputy add` returns immediately. Tests override the spawn via `DEPUTY_AUTORUN_CMD`;
+  the background process logs to `.deputy/run.log`.
 - `--reschedule` arms this repo's line at the reset hour (quota path).
 - `cmd_run` no-ops/declines a second run under a live claim (keep the existing test).
 - PATH export present and idempotent (doesn't duplicate on re-invoke).

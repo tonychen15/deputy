@@ -27,9 +27,11 @@ out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="gemini" DEPUTY_CRONTAB=/bin
 assert_eq "$rc" "0" "run exits 0 when claude unavailable"
 assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|later" "item stays waiting when claude down"
 
-# --- session limit (quota) stops the cycle and reschedules ---
+# --- session limit (quota) stops the cycle and reschedules (only when cron-enabled) ---
 setup_repo
 mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=0\n' > "$DEPUTY_ROOT/.deputy/config"
+# Opt in to autonomous mode so the reschedule path fires.
+: > "$DEPUTY_ROOT/.deputy/cron.enabled"
 bash "$DEPUTY" add "first job" --p0
 bash "$DEPUTY" add "second job" --p0
 LIMIT="$(mktemp)"

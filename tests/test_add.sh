@@ -66,26 +66,38 @@ bash "$DEPUTY" add "task" -x 2>/dev/null; rc=$?
 assert_eq "$rc" "2" "unknown single-dash flag rejected"
 assert_eq "$(bash "$DEPUTY" list | grep -c -- '-x')" "0" "unknown single-dash flag not absorbed"
 
-# ── Auto-run: add triggers execution when nothing is running ──────────────────
+# ── Auto-run: add triggers _autorun dispatch when nothing is running ─────────
+# Use DEPUTY_AUTORUN_CMD mock so add returns immediately (non-blocking _autorun).
 setup_repo
-ORCH="$(mktemp)"
-cat > "$ORCH" <<EOF
+AUTORUN_FIRED="$DEPUTY_ROOT/.autorun.fired"
+AUTORUN_MOCK="$(mktemp)"
+cat > "$AUTORUN_MOCK" <<EOFMOCK
 #!/usr/bin/env bash
-bash "$DEPUTY" set "\$1" done >/dev/null 2>&1 || true
-EOF
-chmod +x "$ORCH"
+touch "$AUTORUN_FIRED"
+EOFMOCK
+chmod +x "$AUTORUN_MOCK"
 
-DEPUTY_NO_AUTORUN=0 DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true \
+DEPUTY_NO_AUTORUN=0 DEPUTY_AUTORUN_CMD="$AUTORUN_MOCK" \
   bash "$DEPUTY" add "auto run me" --p0
-assert_contains "$(bash "$DEPUTY" list)" "done|P0|auto run me" "add triggers immediate execution when idle"
+assert_eq "$(test -f "$AUTORUN_FIRED" && echo yes || echo no)" "yes" \
+  "add dispatches _autorun when idle and item is pickable"
 
-# add does NOT trigger a second run when a live claim already exists
+# add does NOT dispatch autorun when a live claim already exists
 setup_repo
+AUTORUN_FIRED2="$DEPUTY_ROOT/.autorun.fired2"
+AUTORUN_MOCK2="$(mktemp)"
+cat > "$AUTORUN_MOCK2" <<EOFMOCK2
+#!/usr/bin/env bash
+touch "$AUTORUN_FIRED2"
+EOFMOCK2
+chmod +x "$AUTORUN_MOCK2"
 sleep 300 & LIVE=$!
 printf '@[P0] already running\n' >> "$DEPUTY_ROOT/BACKLOG.md"
 printf '@[P0] already running\n' > "$DEPUTY_ROOT/.deputy/$LIVE.claim"
-DEPUTY_NO_AUTORUN=0 DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true \
+DEPUTY_NO_AUTORUN=0 DEPUTY_AUTORUN_CMD="$AUTORUN_MOCK2" \
   bash "$DEPUTY" add "new lower" --p1
 assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|new lower" "add queues item but does not run when claim exists"
+assert_eq "$(test -f "$AUTORUN_FIRED2" && echo yes || echo no)" "no" \
+  "add does not dispatch autorun when live claim exists"
 kill "$LIVE" 2>/dev/null
-rm -f "$ORCH"
+rm -f "$AUTORUN_MOCK" "$AUTORUN_MOCK2"

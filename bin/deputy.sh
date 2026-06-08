@@ -164,8 +164,17 @@ cmd_add() {
   # Trigger execution immediately if nothing is running and work is available.
   # Set DEPUTY_NO_AUTORUN=1 to suppress (used in tests that exercise add in isolation).
   if [[ "${DEPUTY_NO_AUTORUN:-0}" != "1" ]] && ! _live_claim_exists && [[ -n "$(cmd_pick)" ]]; then
-    cmd_run --once
+    _autorun
   fi
+}
+
+# Kick off a background drain so 'deputy add' returns immediately (research.sh model).
+# Tests override via DEPUTY_AUTORUN_CMD.
+_autorun() {
+  if [[ -n "${DEPUTY_AUTORUN_CMD:-}" ]]; then "$DEPUTY_AUTORUN_CMD"; return 0; fi
+  local bin; bin="$(command -v deputy 2>/dev/null || readlink -f "${BASH_SOURCE[0]}")"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  ( "$bin" run >> "$STATE_DIR/run.log" 2>&1 & ) 2>/dev/null || true
 }
 
 cmd_status() {
@@ -422,6 +431,9 @@ _route() {
 
 _crontab() { "${DEPUTY_CRONTAB:-crontab}" "$@"; }
 
+# True (0) if this repo has opted in to the autonomous cron heartbeat.
+_cron_enabled() { [[ -f "$STATE_DIR/cron.enabled" ]]; }
+
 # Extract a 24h hour from "resets 11pm" / "resets 3am". Echoes nothing if no match.
 _parse_reset_hour() {
   local s="${1,,}" h ampm
@@ -457,8 +469,8 @@ _set_cron() {
 
 cmd_cron() {
   case "${1:-}" in
-    --ensure)     _set_cron "*/15 * * * *" ;;
-    --remove)     _set_cron "" ;;
+    --ensure)     mkdir -p "$STATE_DIR" 2>/dev/null || true; : > "$STATE_DIR/cron.enabled"; _set_cron "*/15 * * * *" ;;
+    --remove)     rm -f "$STATE_DIR/cron.enabled" 2>/dev/null || true; _set_cron "" ;;
     --reschedule) local h; h="$(_parse_reset_hour "${2:-}")"
                   if [[ -n "$h" ]]; then _set_cron "0 $h * * *"
                   else _set_cron "0 */2 * * *"; fi ;;
@@ -553,25 +565,13 @@ Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove /
   claude -p "$prompt" --model claude-sonnet-4-6 --allowedTools "Bash,Edit,Write,Read,Glob,Grep"
 }
 
-# Re-arm this repo's heartbeat if the repo is cron-enabled but the */15 line is
-# missing (e.g. a prior quota reschedule replaced it). No-op if already correct or
-# if the repo was never cron-enabled — so a manual run never surprise-installs cron.
-_cron_selfarm() {
-  local root marker existing; root="$(resolve_root)"; marker="# deputy[$root]"
-  existing="$(_crontab -l 2>/dev/null || true)"
-  printf '%s\n' "$existing" | grep -qF "$marker" || return 0          # not enabled → skip
-  # Check the line that owns this repo's marker starts with */15 (schedule-only check,
-  # avoids quoting discrepancies in the cd path).
-  printf '%s\n' "$existing" | grep -F "$marker" | grep -q '^[*]/15 ' && return 0  # already armed
-  cmd_cron --ensure >/dev/null 2>&1 || true
-}
-
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
 cmd_run() {
   local once=0; [[ "${1:-}" == "--once" ]] && once=1
   cmd_recover >/dev/null 2>&1 || true
-  _cron_selfarm
   if _live_claim_exists; then return 0; fi
+  # Active run: remove this repo's heartbeat line; it is re-armed when we go idle (below).
+  _cron_enabled && _set_cron "" >/dev/null 2>&1 || true
   # Optional per-cycle cap; 0/empty/non-numeric = unlimited (run until the queue is
   # empty or Claude's session limit is hit).
   local cap; cap="$(_config_get max_items)"; cap="${cap:-0}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
@@ -580,8 +580,8 @@ cmd_run() {
     item="$(cmd_pick)"; [[ -n "$item" ]] || break
     avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
     if [[ "$decision" != "claude" ]]; then
-      cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
-      break
+      _cron_enabled && cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
+      return 0
     fi
     cmd_claim "$item" --pid "$$" >/dev/null 2>&1 || break
     running_line="$(cat "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$item")"
@@ -600,7 +600,7 @@ cmd_run() {
       # The orchestrator didn't finish this item — revert it for the next cycle,
       # reschedule cron for the reset time, and stop (research.sh behavior).
       _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
-      cmd_cron --reschedule "$reset" >/dev/null 2>&1 || true
+      _cron_enabled && cmd_cron --reschedule "$reset" >/dev/null 2>&1 || true
       printf 'deputy: Claude session limit reached — rescheduled for reset; stopping this cycle.\n'
       return 0
     fi
@@ -609,6 +609,8 @@ cmd_run() {
     [[ "$once" -eq 1 ]] && break
     [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
   done
+  # Reached idle (queue drained / cap / --once): re-arm the heartbeat if opted in.
+  _cron_enabled && _set_cron "*/15 * * * *" >/dev/null 2>&1 || true
   return 0
 }
 
