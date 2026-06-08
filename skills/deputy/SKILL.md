@@ -95,7 +95,7 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
 1. **Start or resume** (see §2c below).
 2. `deputy plan <slug> --step <n> --purpose "..."` for each step → **plan xReview**
    (Gemini reviews the full step list). No advance without a Gemini PASS.
-3. **For each pending step** (drive off `deputy steps <slug>` / `deputy resume <slug>`):
+3. **For each uncommitted step (pending, or in_progress from a prior interrupted run)** (drive off `deputy steps <slug>` / `deputy resume <slug>`):
    - `deputy set-step <slug> --step <n> [--expected "<done-condition>"]`
    - Do the work in `.deputy/wt`.
    - `git -C .deputy/wt add -A` (stage all changes before the gates).
@@ -104,9 +104,7 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
 4. When `deputy resume <slug>` is empty: `deputy done <slug>` → `deputy set "<item-line>" done`
    → open PR / leave branch → `deputy wt-remove`.
 
-**V1 note:** steps run **inline** — the orchestrator does the work itself
-(`_run_step_worker` is the seam for future cross-provider routing, but in V1 Claude
-executes each step directly). Cross-provider step routing is a later item.
+**V1 note:** steps run **inline** — in V1 Claude executes each step directly inside the step-loop body; the seam for future cross-provider routing is that step-loop body (a future `_run_step_worker`). Cross-provider step routing is a later item.
 
 ### 2c. Start or resume (shared by §2a and §2b)
 

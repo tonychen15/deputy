@@ -667,7 +667,13 @@ cmd_wp_start() {
 cmd_wp_done() {
   local id="${1:?done needs <id>}"; _wp_require_jq || return 1
   _wp_validate_id "$id" || return 1
-  _do_done() { _wp_jq "$id" '.status="completed" | .current_step=null | .updated_at=$now' --arg now "$(_wp_now)"; }
+  _do_done() {
+    # Guard (inside lock): all steps must be succeeded before marking the task done.
+    if jq -e 'any(.steps[]; .status!="succeeded")' "$(_wp_json "$id")" >/dev/null; then
+      printf 'deputy: done: not all steps succeeded for %s\n' "$id" >&2; return 1
+    fi
+    _wp_jq "$id" '.status="completed" | .current_step=null | .updated_at=$now' --arg now "$(_wp_now)"
+  }
   _with_lock _do_done
 }
 
@@ -683,6 +689,10 @@ cmd_wp_plan() {
   [[ -n "$sid" && -n "$purpose" ]] || { printf 'deputy: plan needs --step and --purpose\n' >&2; return 2; }
   _wp_require_jq || return 1
   _do_plan() {
+    # Guard (inside lock): reject duplicate step id.
+    if jq -e --arg sid "$sid" 'any(.steps[]; .id==$sid)' "$(_wp_json "$id")" >/dev/null; then
+      printf 'deputy: plan: step id %s already exists in %s\n' "$sid" "$id" >&2; return 1
+    fi
     _wp_jq "$id" \
       '.steps += [{id:$sid, purpose:$p, expected_result:"", status:"pending", completed_at:null, actual_result:null}] | .updated_at=$now' \
       --arg sid "$sid" --arg p "$purpose" --arg now "$(_wp_now)"
@@ -711,8 +721,13 @@ cmd_wp_setstep() {
     if ! jq -e --arg sid "$sid" 'any(.steps[]; .id == $sid)' "$(_wp_json "$id")" >/dev/null; then
       printf 'deputy: set-step: step id %s not found in %s\n' "$sid" "$id" >&2; return 1
     fi
+    # Guard: refuse to re-activate a step that already succeeded.
+    if jq -e --arg sid "$sid" 'any(.steps[]; .id==$sid and .status=="succeeded")' "$(_wp_json "$id")" >/dev/null; then
+      printf 'deputy: set-step: step %s already succeeded in %s\n' "$sid" "$id" >&2; return 1
+    fi
     _wp_jq "$id" \
-      '(.steps[] | select(.id==$sid) | .status) = "in_progress"
+      '.steps |= map(if .status=="in_progress" then .status="pending" else . end)
+       | (.steps[] | select(.id==$sid) | .status) = "in_progress"
        | (.steps[] | select(.id==$sid) | .expected_result) = $e
        | .current_step = $sid | .updated_at=$now' \
       --arg sid "$sid" --arg e "$expected" --arg now "$(_wp_now)"
@@ -744,6 +759,10 @@ cmd_wp_commit() {
   if ! jq -e 'any(.steps[]; .status=="in_progress")' "$(_wp_json "$id")" >/dev/null 2>&1; then
     printf 'deputy: commit: no in_progress step in %s\n' "$id" >&2; return 1
   fi
+  # NOTE: git commit happens before the ledger write (and outside the lock) on
+  # purpose. If we die between them, the step stays in_progress and resume re-runs
+  # it — producing one redundant (harmless) commit. Reversing this could mark a
+  # step succeeded with no commit. Do not reorder.
   # Stage ALL changes; commit only if something is staged.
   git -C "$wt" add -A
   if ! git -C "$wt" diff --cached --quiet; then

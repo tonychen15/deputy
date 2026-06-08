@@ -19,8 +19,17 @@ bash "$DEPUTY" plan demo-1 --step 1 --purpose "p" >/dev/null 2>&1 || true
 bash "$DEPUTY" start demo-1 "DIFFERENT goal"
 assert_eq "$(jq -r .goal "$j")" "Build the thing" "start idempotent (no clobber)"
 
-bash "$DEPUTY" done demo-1
-assert_eq "$(jq -r .status "$j")" "completed" "done marks completed"
-assert_eq "$(jq -r '.current_step==null' "$j")" "true" "done clears current_step"
-
 assert_contains "$(bash "$DEPUTY" _wp_show demo-1)" "\"task_id\": \"demo-1\"" "_wp_show prints the json"
+
+# done on a task with a non-succeeded step must be rejected (state-machine guard)
+bash "$DEPUTY" done demo-1 2>/dev/null && _rc=0 || _rc=$?
+assert_eq "$_rc" "1" "done rejects when a step is not yet succeeded"
+assert_eq "$(jq -r .status "$j")" "in_progress" "status unchanged after rejected done"
+
+# done succeeds on a zero-step task (any(.steps[];...) is false when steps is empty)
+setup_repo
+bash "$DEPUTY" start zero "Zero step task"
+j2="$DEPUTY_ROOT/.deputy/waypoints/zero/waypoint.json"
+bash "$DEPUTY" done zero
+assert_eq "$(jq -r .status "$j2")" "completed" "done marks zero-step task completed"
+assert_eq "$(jq -r '.current_step==null' "$j2")" "true" "done clears current_step"
