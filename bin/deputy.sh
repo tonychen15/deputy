@@ -785,11 +785,12 @@ cmd_wp_resume() {
 }
 
 cmd_wp_commit() {
-  local id="" summary="" ; local -a arts=()
+  local id="" summary="" allow_empty=0; local -a arts=()
   id="${1:?commit needs <id>}"; shift
   while [[ $# -gt 0 ]]; do case "$1" in
     --summary) [[ $# -ge 2 ]] || { printf 'deputy: commit --summary needs a value\n' >&2; return 2; }; summary="$2"; shift 2 ;;
     --artifact) [[ $# -ge 2 ]] || { printf 'deputy: commit --artifact needs a value\n' >&2; return 2; }; arts+=("$2"); shift 2 ;;
+    --allow-empty) allow_empty=1; shift ;;
     *) printf 'deputy: commit: unexpected arg %s\n' "$1" >&2; return 2 ;;
   esac; done
   _wp_require_jq || return 1
@@ -804,9 +805,16 @@ cmd_wp_commit() {
   # purpose. If we die between them, the step stays in_progress and resume re-runs
   # it — producing one redundant (harmless) commit. Reversing this could mark a
   # step succeeded with no commit. Do not reorder.
-  # Stage ALL changes; commit only if something is staged.
+  # Stage ALL changes. A step MUST produce a committed change to succeed: if nothing
+  # is staged, fail (step stays in_progress) unless --allow-empty was given.
   git -C "$wt" add -A
-  if ! git -C "$wt" diff --cached --quiet; then
+  if git -C "$wt" diff --cached --quiet; then
+    if [[ "$allow_empty" -ne 1 ]]; then
+      printf 'deputy: commit: no changes staged in %s — a step must produce a committed change (use --allow-empty to override)\n' "$wt" >&2
+      return 1
+    fi
+    git -C "$wt" commit -q --allow-empty -m "${summary:-deputy step (no changes)}"
+  else
     git -C "$wt" commit -q -m "${summary:-deputy step}"
   fi
   local sha; sha="$(git -C "$wt" rev-parse HEAD)"
