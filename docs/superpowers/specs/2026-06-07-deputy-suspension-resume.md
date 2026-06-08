@@ -4,7 +4,10 @@
 existing backlog items fold into this (priority preemption, dependencies, parallel
 worktrees, scheduled/due-dates, full Reflect, notifications).
 **Prerequisite:** waypoint must be wired into execution (see Rule R1) — this whole
-subsystem rests on waypoint forward-recovery.
+subsystem rests on waypoint forward-recovery. **STATUS: satisfied** — the checkpoint
+spine shipped (`2026-06-07-deputy-waypoint-spine-design.md`, merged `cac089d`), so R1's
+substrate now exists; the resumable family (preempted/interrupted/awaiting) can be built
+on it.
 
 ## 1. Problem
 A task is often neither `done` nor actively progressing. Today deputy only has

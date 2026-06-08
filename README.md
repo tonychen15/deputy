@@ -116,9 +116,9 @@ Run the test suite with `bash tests/run.sh`.
 
 ## Roadmap (V2 — see `BACKLOG.md` + `docs/superpowers/specs/`)
 
-- **Checkpoint spine** — absorb a forward-recovery, resumable-step mechanism into
+- **Checkpoint spine** — a forward-recovery, resumable-step mechanism absorbed into
   Deputy (pure bash, ledger under `.deputy/waypoints/`, per-step git commits).
-  *Designed + planned; implementation in progress.*
+  **Shipped** — every item runs as checkpointed, resumable steps via the spine.
 - **Suspension & resume** — `preempted` / `blocked` / `scheduled` / `awaiting` states,
   `surfaced` reasons (answer vs approve), dependency-aware scheduling.
 - Cross-provider step execution; parallel worktrees; external notifications;
