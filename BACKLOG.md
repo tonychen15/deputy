@@ -11,7 +11,7 @@
 ## Items
 
 
-[P1] Add cancelled and duplicate item statuses to the queue (parse/serialize/status)
+#[P1] Add cancelled and duplicate item statuses to the queue (parse/serialize/status)
 
 [P1] Install and wire the Codex CLI so simple-coding failover is live (probes absent today)
 
@@ -30,3 +30,5 @@ Add external notifications (push/desktop/email) when an item is surfaced or fini
 Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 
 Add intake from GitHub issues, failing CI, and TODO/FIXME scan
+
+[P0] rename jobflow folder name to deputy and update its reference
