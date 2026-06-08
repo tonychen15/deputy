@@ -468,7 +468,7 @@ _protected_violation() {
   return 1
 }
 
-_wt_path() { printf '%s/wt' "$STATE_DIR"; }
+_wt_path() { printf '%s' "${DEPUTY_WT:-$STATE_DIR/wt}"; }
 
 # Create the execution worktree on branch deputy/<slug>. New branch from HEAD, or
 # attach to it if it already exists (resume / forward-recovery).
@@ -728,6 +728,43 @@ cmd_wp_resume() {
     "$(_wp_json "$id")"
 }
 
+cmd_wp_commit() {
+  local id="" summary="" ; local -a arts=()
+  id="${1:?commit needs <id>}"; shift
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --summary) [[ $# -ge 2 ]] || { printf 'deputy: commit --summary needs a value\n' >&2; return 2; }; summary="$2"; shift 2 ;;
+    --artifact) [[ $# -ge 2 ]] || { printf 'deputy: commit --artifact needs a value\n' >&2; return 2; }; arts+=("$2"); shift 2 ;;
+    *) printf 'deputy: commit: unexpected arg %s\n' "$1" >&2; return 2 ;;
+  esac; done
+  _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  local wt; wt="$(_wt_path)"
+  [[ -d "$wt/.git" || -e "$wt/.git" ]] || { printf 'deputy: no worktree at %s\n' "$wt" >&2; return 1; }
+  # Guard: require an in_progress step; without one the ledger update is a no-op.
+  if ! jq -e 'any(.steps[]; .status=="in_progress")' "$(_wp_json "$id")" >/dev/null 2>&1; then
+    printf 'deputy: commit: no in_progress step in %s\n' "$id" >&2; return 1
+  fi
+  # Stage ALL changes; commit only if something is staged.
+  git -C "$wt" add -A
+  if ! git -C "$wt" diff --cached --quiet; then
+    git -C "$wt" commit -q -m "${summary:-deputy step}"
+  fi
+  local sha; sha="$(git -C "$wt" rev-parse HEAD)"
+  # artifacts: declared paths (or "." if none), each tagged with the SHA.
+  local arts_json
+  if [[ "${#arts[@]}" -eq 0 ]]; then arts=("."); fi
+  arts_json="$(printf '%s\n' "${arts[@]}" | jq -R --arg sha "$sha" '{path:., step_commit:$sha}' | jq -s '.')"
+  _do_commit() {
+    _wp_jq "$id" \
+      '(.steps[] | select(.status=="in_progress")) |=
+         (.status="succeeded" | .completed_at=$now
+          | .actual_result={summary:$sum, artifacts:$arts})
+       | .current_step=null | .updated_at=$now' \
+      --arg sum "$summary" --arg now "$(_wp_now)" --argjson arts "$arts_json"
+  }
+  _with_lock _do_commit
+}
+
 # Hidden helper for tests: print the raw waypoint.json.
 cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
 
@@ -764,6 +801,7 @@ main() {
     steps) shift; cmd_wp_steps "$@"; return $? ;;
     set-step) shift; cmd_wp_setstep "$@"; return $? ;;
     resume) shift; cmd_wp_resume "$@"; return $? ;;
+    commit) shift; cmd_wp_commit "$@"; return $? ;;
     _wp_show) shift; cmd_wp_show "$@"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
