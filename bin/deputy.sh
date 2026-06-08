@@ -609,19 +609,28 @@ _availability() {
 # Spawn the orchestrator for a claimed item. If DEPUTY_ORCHESTRATOR_CMD is set
 # (tests / custom drivers), call it as `<cmd> <item-line> <provider>`. Otherwise
 # build a headless prompt that runs the deputy orchestrator skill on this one item.
+# Reviewer is chosen as the best available provider that is NOT the orchestrator
+# (author≠reviewer invariant).
 _spawn_orchestrator() {
   local item="$1" provider="$2"
   if [[ -n "${DEPUTY_ORCHESTRATOR_CMD:-}" ]]; then
     "$DEPUTY_ORCHESTRATOR_CMD" "$item" "$provider"
     return $?
   fi
-  local prompt
+  local avail reviewer prompt
+  avail="$(_availability)"
+  reviewer="$(_route review "$avail" --not "$provider")"
+  # If no reviewer is available, default to gemini (best-effort; may be rate-limited).
+  [[ "$reviewer" == "wait" || "$reviewer" == "none" ]] && reviewer="gemini"
   prompt="You are the Deputy orchestrator — use the 'deputy' skill. Work this ONE claimed backlog item end-to-end per the skill's loop, then stop.
 Repo root: $ROOT
 Item (the exact current BACKLOG.md line — pass it verbatim to 'deputy set'): $item
 Provider for coding: $provider
-Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
-  claude -p "$prompt" --model claude-sonnet-4-6 --allowedTools "Bash,Edit,Write,Read,Glob,Grep"
+Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview ($reviewer) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
+  case "$provider" in
+    gemini) gemini -p "$prompt" ;;
+    *)      claude -p "$prompt" --model claude-sonnet-4-6 --allowedTools "Bash,Edit,Write,Read,Glob,Grep" ;;
+  esac
 }
 
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
@@ -638,7 +647,7 @@ cmd_run() {
   while :; do
     item="$(cmd_pick)"; [[ -n "$item" ]] || break
     avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
-    if [[ "$decision" != "claude" ]]; then
+    if [[ "$decision" == "wait" || "$decision" == "none" ]]; then
       _cron_enabled && cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
       return 0
     fi
@@ -651,7 +660,7 @@ cmd_run() {
     set -e
     rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
     cat "$log"   # surface the orchestrator's output (headless log / interactive)
-    outcome="$(_detect_outcome claude "$rc" "$log")"
+    outcome="$(_detect_outcome "$decision" "$rc" "$log")"
     if [[ "$outcome" == "quota_exhausted" ]]; then
       # Pass only the relevant reset/limit line(s) to the rescheduler (bounded;
       # avoids ARG_MAX on a large log). _parse_reset_hour scans for "<N>am/pm".
@@ -660,7 +669,7 @@ cmd_run() {
       # reschedule cron for the reset time, and stop (research.sh behavior).
       _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
       _cron_enabled && cmd_cron --reschedule "$reset" >/dev/null 2>&1 || true
-      printf 'deputy: Claude session limit reached — rescheduled for reset; stopping this cycle.\n'
+      printf 'deputy: %s session limit reached — rescheduled for reset; stopping this cycle.\n' "$decision"
       return 0
     fi
     rm -f "$log"
