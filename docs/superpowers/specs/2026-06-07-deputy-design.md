@@ -140,7 +140,7 @@ prunes an orphaned `.deputy/wt` left by a dead worker.
 # Deputy Backlog
 
 ## LEGEND
-**Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `#` done | `!` failed
+**Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `#` done | `!` failed | `%` cancelled | `=` duplicate
 **Priority (tag):** `[P0]` urgent+important | `[P1]` urgent | `[P2]` important | (none) lowest lane
 **Order:** P0 > P1 > P2 > untagged ; FIFO within a lane
 **Line format:** `<status?> <priority?> <description>`
@@ -175,7 +175,8 @@ an optional space after the prefix is accepted, so old-format lines like
 `<status-prefix?> <priority-tag?> <description>`
 
 **Status prefixes** (leading char): none = `waiting`, `~` = `triaging`,
-`@` = `running`, `?` = `surfaced`, `#` = `done`, `!` = `failed`.
+`@` = `running`, `?` = `surfaced`, `#` = `done`, `!` = `failed`,
+`%` = `cancelled`, `=` = `duplicate`.
 
 **Priority tags:** `[P0]` urgent+important, `[P1]` urgent, `[P2]` important,
 absent = lowest lane.
@@ -193,7 +194,7 @@ finds its target or is a safe no-op. The runner never caches a line index across
 the lock boundary.
 
 - **Reserved-prefix constraint:** an item description may not *begin* with a status
-  prefix char (`~ @ ? # !`) (with or without a following space), nor with a `[Px]` tag
+  prefix char (`~ @ ? # ! % =`) (with or without a following space), nor with a `[Px]` tag
   — those forms are ambiguous with the line grammar. `add` rejects them; hand-edited
   lines must avoid them too. (A future escaping scheme could lift this; out of scope for V1.)
 
@@ -503,7 +504,7 @@ Internal runner helpers (not for humans): `deputy.sh --set <line> <state>`,
 - Full Reflect: re-triage stale items, reprioritize, prune duplicates, capture learnings.
 - Parallel execution via *multiple* git worktrees (V1 already isolates a single one).
 - Richer attributes: due/scheduled dates, dependencies (`depends-on`), project/goal grouping.
-- Extra statuses (cancelled / duplicate); intake from GitHub issues / failing CI / `TODO:` scan.
+- Intake from GitHub issues / failing CI / `TODO:` scan.
 - Token/cost budget cap; precise per-provider reset parsing.
 
 ---

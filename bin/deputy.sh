@@ -45,10 +45,11 @@ _each_item() {
 _parse_item() {
   local line="$1" state="waiting" prio="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
-  if [[ "$line" =~ ^([~@?#!])[[:space:]]*(.*)$ ]]; then
+  if [[ "$line" =~ ^([~@?#!%=])[[:space:]]*(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
-      '~') state=triaging ;; '@') state=running ;;  '?') state=surfaced ;;
-      '#') state=done ;;     '!') state=failed ;;
+      '~') state=triaging ;;  '@') state=running ;;    '?') state=surfaced ;;
+      '#') state=done ;;      '!') state=failed ;;
+      '%') state=cancelled ;; '=') state=duplicate ;;
     esac
     line="${BASH_REMATCH[2]}"
   fi
@@ -66,8 +67,9 @@ _parse_item() {
 _serialize_item() {
   local state="$1" prio="$2" desc="$3" prefix="" body=""
   case "$state" in
-    waiting) prefix="" ;;  triaging) prefix="~" ;; running) prefix="@" ;;
-    surfaced) prefix="?" ;; done) prefix="#" ;;   failed) prefix="!" ;;
+    waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
+    surfaced)  prefix="?" ;; done)      prefix="#" ;; failed)    prefix="!" ;;
+    cancelled) prefix="%" ;; duplicate) prefix="=" ;;
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
   if [[ -n "$prio" ]]; then
@@ -134,8 +136,8 @@ cmd_add() {
   done
   [[ -n "$text" ]] || { printf 'deputy: add requires text\n' >&2; return 2; }
   text="${text#"${text%%[![:space:]]*}"}"   # left-trim (matches parser's own trim)
-  if [[ "$text" =~ ^[~@?#!] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
-    printf 'deputy: description may not begin with a status prefix (~@?#!) or a [Px] tag: %s\n' "$text" >&2
+  if [[ "$text" =~ ^[~@?#!%=] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?#!%%=) or a [Px] tag: %s\n' "$text" >&2
     return 2
   fi
   if [[ "$text" == *$'\n'* ]]; then
@@ -153,16 +155,17 @@ cmd_add() {
 }
 
 cmd_status() {
-  local raw state w=0 t=0 r=0 s=0 d=0 f=0 parsed
+  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 parsed
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
     case "$state" in
-      waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running) r=$((r+1)) ;;
-      surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;; failed) f=$((f+1)) ;;
+      waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
+      surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;;    failed)     f=$((f+1)) ;;
+      cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;;
     esac
   done < <(_each_item)
-  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\n' \
-    "$w" "$t" "$r" "$s" "$d" "$f"
+  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\n' \
+    "$w" "$t" "$r" "$s" "$d" "$f" "$c" "$u"
 }
 
 # Numeric rank for a priority tag: P0=0 P1=1 P2=2 (none)=3.
@@ -187,7 +190,7 @@ cmd_pick() {
 }
 
 _valid_state() {
-  case "$1" in waiting|triaging|running|surfaced|done|failed) return 0 ;; *) return 1 ;; esac
+  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate) return 0 ;; *) return 1 ;; esac
 }
 
 cmd_set() {
@@ -329,7 +332,7 @@ commands:
   review                          show surfaced items, their questions, and the digest
   help                            show this message
 
-states: waiting triaging running surfaced done failed
+states: waiting triaging running surfaced done failed cancelled duplicate
 EOF
 }
 
@@ -518,7 +521,7 @@ _spawn_orchestrator() {
 Repo root: $ROOT
 Item (the exact current BACKLOG.md line — pass it verbatim to 'deputy set'): $item
 Provider for coding: $provider
-Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced via 'deputy set \"<line>\" <state>'."
+Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
   claude -p "$prompt" --model claude-sonnet-4-6 --allowedTools "Bash,Edit,Write,Read,Glob,Grep"
 }
 
