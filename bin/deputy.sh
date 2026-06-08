@@ -611,6 +611,68 @@ cmd_clean() {
   printf 'deputy: cleaned %d untouched item(s)\n' "${#doomed[@]}"
 }
 
+# ── Checkpoint spine (absorbed waypoint), stored under .deputy/waypoints/ ──────
+_wp_dir()      { printf '%s/waypoints' "$STATE_DIR"; }
+_wp_task_dir() { printf '%s/waypoints/%s' "$STATE_DIR" "$1"; }
+_wp_json()     { printf '%s/waypoints/%s/waypoint.json' "$STATE_DIR" "$1"; }
+_wp_now()      { date -Iseconds; }
+_wp_require_jq(){ command -v jq >/dev/null 2>&1 || { printf 'deputy: jq is required for the checkpoint spine\n' >&2; return 1; }; }
+
+# Apply a jq filter to a task's waypoint.json, atomically; regenerate STATUS.md.
+# Caller holds .deputy/lock.
+_wp_jq() {
+  local id="$1" filter="$2"; shift 2
+  local f tmp; f="$(_wp_json "$id")"
+  tmp="$(mktemp "$(dirname "$f")/.wp.XXXXXX")"
+  # Guard the write: if jq fails, do NOT mv (an empty/partial tmp would truncate
+  # the ledger). Only replace on success.
+  if jq "$@" "$filter" "$f" > "$tmp"; then mv "$tmp" "$f"; else rm -f "$tmp"; return 1; fi
+  _wp_render_status "$id"
+}
+
+# Regenerate the human-readable STATUS.md from waypoint.json.
+# Writes to a temp file first then mv for atomicity.
+_wp_render_status() {
+  local id="$1" f td tmp; f="$(_wp_json "$id")"; td="$(_wp_task_dir "$id")"
+  tmp="$(mktemp "$td/.status.XXXXXX")"
+  { jq -r '"# Task: \(.task_id)   (\(.status))\n\n**Goal:** \(.goal)\n\n## Steps"' "$f"
+    jq -r '.steps[] | (if .status=="succeeded" then "[x] " elif .status=="in_progress" then "[>] " else "[ ] " end) + .id + "  " + .purpose' "$f"
+  } > "$tmp" && mv "$tmp" "$td/STATUS.md" || { rm -f "$tmp"; return 1; }
+}
+
+_wp_validate_id() {
+  [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || {
+    printf 'deputy: invalid waypoint id (alphanumeric, dot, dash, underscore only): %s\n' "$1" >&2
+    return 1
+  }
+}
+
+cmd_wp_start() {
+  local id="${1:?start needs <id>}" goal="${2:-}"
+  _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  _do_start() {
+    [[ -f "$(_wp_json "$id")" ]] && return 0        # idempotent: never clobber (checked inside lock)
+    local td; td="$(_wp_task_dir "$id")"; mkdir -p "$td"
+    local now; now="$(_wp_now)"
+    jq -n --arg id "$id" --arg g "$goal" --arg now "$now" \
+      '{task_id:$id, goal:$g, status:"in_progress", created_at:$now, updated_at:$now, note:"", current_step:null, steps:[]}' \
+      > "$(_wp_json "$id")" || { printf 'deputy: failed to write waypoint.json for %s\n' "$id" >&2; return 1; }
+    _wp_render_status "$id"
+  }
+  _with_lock _do_start
+}
+
+cmd_wp_done() {
+  local id="${1:?done needs <id>}"; _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  _do_done() { _wp_jq "$id" '.status="completed" | .current_step=null | .updated_at=$now' --arg now "$(_wp_now)"; }
+  _with_lock _do_done
+}
+
+# Hidden helper for tests: print the raw waypoint.json.
+cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -638,6 +700,9 @@ main() {
     wt-create) shift; _wt_create "${1:?slug}"; return $? ;;
     wt-remove) shift; _wt_remove; return $? ;;
     run) shift; cmd_run "$@"; return 0 ;;
+    start) shift; cmd_wp_start "$@"; return $? ;;
+    done) shift; cmd_wp_done "$@"; return $? ;;
+    _wp_show) shift; cmd_wp_show "$@"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
