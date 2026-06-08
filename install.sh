@@ -35,6 +35,7 @@ cmd_link() {
   done
   [[ -f "$RUNNER" ]] || { printf 'install: runner not found: %s\n' "$RUNNER" >&2; return 1; }
   [[ -x "$RUNNER" ]] || { printf 'install: runner is not executable: %s\n' "$RUNNER" >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || printf 'install: NOTE: jq not found — the checkpoint spine needs jq (apt install jq / brew install jq).\n' >&2
   mkdir -p "$prefix"
   local target="$prefix/deputy"
   if [[ -L "$target" || -e "$target" ]]; then

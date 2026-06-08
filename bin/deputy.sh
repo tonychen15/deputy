@@ -468,7 +468,7 @@ _protected_violation() {
   return 1
 }
 
-_wt_path() { printf '%s/wt' "$STATE_DIR"; }
+_wt_path() { printf '%s' "${DEPUTY_WT:-$STATE_DIR/wt}"; }
 
 # Create the execution worktree on branch deputy/<slug>. New branch from HEAD, or
 # attach to it if it already exists (resume / forward-recovery).
@@ -611,6 +611,182 @@ cmd_clean() {
   printf 'deputy: cleaned %d untouched item(s)\n' "${#doomed[@]}"
 }
 
+# ── Checkpoint spine (absorbed waypoint), stored under .deputy/waypoints/ ──────
+_wp_task_dir() { printf '%s/waypoints/%s' "$STATE_DIR" "$1"; }
+_wp_json()     { printf '%s/waypoints/%s/waypoint.json' "$STATE_DIR" "$1"; }
+_wp_now()      { date -Iseconds; }
+_wp_require_jq(){ command -v jq >/dev/null 2>&1 || { printf 'deputy: jq is required for the checkpoint spine\n' >&2; return 1; }; }
+
+# Apply a jq filter to a task's waypoint.json, atomically; regenerate STATUS.md.
+# Caller holds .deputy/lock.
+_wp_jq() {
+  local id="$1" filter="$2"; shift 2
+  local f tmp; f="$(_wp_json "$id")"
+  tmp="$(mktemp "$(dirname "$f")/.wp.XXXXXX")"
+  # Guard the write: if jq fails, do NOT mv (an empty/partial tmp would truncate
+  # the ledger). Only replace on success.
+  if jq "$@" "$filter" "$f" > "$tmp"; then mv "$tmp" "$f"; else rm -f "$tmp"; return 1; fi
+  _wp_render_status "$id"
+}
+
+# Regenerate the human-readable STATUS.md from waypoint.json.
+# Writes to a temp file first then mv for atomicity.
+_wp_render_status() {
+  local id="$1" f td tmp; f="$(_wp_json "$id")"; td="$(_wp_task_dir "$id")"
+  tmp="$(mktemp "$td/.status.XXXXXX")"
+  { jq -r '"# Task: \(.task_id)   (\(.status))\n\n**Goal:** \(.goal)\n\n## Steps"' "$f"
+    jq -r '.steps[] | (if .status=="succeeded" then "[x] " elif .status=="in_progress" then "[>] " else "[ ] " end) + .id + "  " + .purpose' "$f"
+  } > "$tmp" && mv "$tmp" "$td/STATUS.md" || { rm -f "$tmp"; return 1; }
+}
+
+_wp_validate_id() {
+  [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] || {
+    printf 'deputy: invalid waypoint id (alphanumeric, dot, dash, underscore only): %s\n' "$1" >&2
+    return 1
+  }
+}
+
+cmd_wp_start() {
+  local id="${1:?start needs <id>}" goal="${2:-}"
+  _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  _do_start() {
+    [[ -f "$(_wp_json "$id")" ]] && return 0        # idempotent: never clobber (checked inside lock)
+    local td; td="$(_wp_task_dir "$id")"; mkdir -p "$td"
+    local now; now="$(_wp_now)"
+    local _jtmp; _jtmp="$(mktemp "$td/.wp.XXXXXX")"
+    jq -n --arg id "$id" --arg g "$goal" --arg now "$now" \
+      '{task_id:$id, goal:$g, status:"in_progress", created_at:$now, updated_at:$now, note:"", current_step:null, steps:[]}' \
+      > "$_jtmp" && mv "$_jtmp" "$(_wp_json "$id")" \
+      || { rm -f "$_jtmp"; printf 'deputy: failed to write waypoint.json for %s\n' "$id" >&2; return 1; }
+    _wp_render_status "$id"
+  }
+  _with_lock _do_start
+}
+
+cmd_wp_done() {
+  local id="${1:?done needs <id>}"; _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  _do_done() {
+    # Guard (inside lock): all steps must be succeeded before marking the task done.
+    if jq -e 'any(.steps[]; .status!="succeeded")' "$(_wp_json "$id")" >/dev/null; then
+      printf 'deputy: done: not all steps succeeded for %s\n' "$id" >&2; return 1
+    fi
+    _wp_jq "$id" '.status="completed" | .current_step=null | .updated_at=$now' --arg now "$(_wp_now)"
+  }
+  _with_lock _do_done
+}
+
+cmd_wp_plan() {
+  local id="" sid="" purpose=""
+  id="${1:?plan needs <id>}"; shift
+  _wp_validate_id "$id" || return 1
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --step)    [[ $# -ge 2 ]] || { printf 'deputy: plan: --step requires a value\n' >&2; return 2; }; sid="$2"; shift 2 ;;
+    --purpose) [[ $# -ge 2 ]] || { printf 'deputy: plan: --purpose requires a value\n' >&2; return 2; }; purpose="$2"; shift 2 ;;
+    *) printf 'deputy: plan: unexpected arg %s\n' "$1" >&2; return 2 ;;
+  esac; done
+  [[ -n "$sid" && -n "$purpose" ]] || { printf 'deputy: plan needs --step and --purpose\n' >&2; return 2; }
+  _wp_require_jq || return 1
+  _do_plan() {
+    # Guard (inside lock): reject duplicate step id.
+    if jq -e --arg sid "$sid" 'any(.steps[]; .id==$sid)' "$(_wp_json "$id")" >/dev/null; then
+      printf 'deputy: plan: step id %s already exists in %s\n' "$sid" "$id" >&2; return 1
+    fi
+    _wp_jq "$id" \
+      '.steps += [{id:$sid, purpose:$p, expected_result:"", status:"pending", completed_at:null, actual_result:null}] | .updated_at=$now' \
+      --arg sid "$sid" --arg p "$purpose" --arg now "$(_wp_now)"
+  }
+  _with_lock _do_plan
+}
+
+cmd_wp_steps() {
+  local id="${1:?steps needs <id>}"; _wp_validate_id "$id" || return 1; _wp_require_jq || return 1
+  jq -r '.steps[] | "\(.id)|\(.status)|\(.purpose)"' "$(_wp_json "$id")"
+}
+
+cmd_wp_setstep() {
+  local id="" sid="" expected=""
+  id="${1:?set-step needs <id>}"; shift
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --step) [[ $# -ge 2 ]] || { printf 'deputy: set-step --step needs a value\n' >&2; return 2; }; sid="$2"; shift 2 ;;
+    --expected) [[ $# -ge 2 ]] || { printf 'deputy: set-step --expected needs a value\n' >&2; return 2; }; expected="$2"; shift 2 ;;
+    *) printf 'deputy: set-step: unexpected arg %s\n' "$1" >&2; return 2 ;;
+  esac; done
+  [[ -n "$sid" ]] || { printf 'deputy: set-step needs --step\n' >&2; return 2; }
+  _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  _do_setstep() {
+    # Guard: refuse to advance current_step to a non-existent step id.
+    if ! jq -e --arg sid "$sid" 'any(.steps[]; .id == $sid)' "$(_wp_json "$id")" >/dev/null; then
+      printf 'deputy: set-step: step id %s not found in %s\n' "$sid" "$id" >&2; return 1
+    fi
+    # Guard: refuse to re-activate a step that already succeeded.
+    if jq -e --arg sid "$sid" 'any(.steps[]; .id==$sid and .status=="succeeded")' "$(_wp_json "$id")" >/dev/null; then
+      printf 'deputy: set-step: step %s already succeeded in %s\n' "$sid" "$id" >&2; return 1
+    fi
+    _wp_jq "$id" \
+      '.steps |= map(if .status=="in_progress" then .status="pending" else . end)
+       | (.steps[] | select(.id==$sid) | .status) = "in_progress"
+       | (.steps[] | select(.id==$sid) | .expected_result) = $e
+       | .current_step = $sid | .updated_at=$now' \
+      --arg sid "$sid" --arg e "$expected" --arg now "$(_wp_now)"
+  }
+  _with_lock _do_setstep
+}
+
+# Print "<id>|<purpose>" of the first step not yet succeeded (empty if none).
+cmd_wp_resume() {
+  local id="${1:?resume needs <id>}"; _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  jq -r 'first(.steps[] | select(.status!="succeeded")) | "\(.id)|\(.purpose)"' \
+    "$(_wp_json "$id")"
+}
+
+cmd_wp_commit() {
+  local id="" summary="" ; local -a arts=()
+  id="${1:?commit needs <id>}"; shift
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --summary) [[ $# -ge 2 ]] || { printf 'deputy: commit --summary needs a value\n' >&2; return 2; }; summary="$2"; shift 2 ;;
+    --artifact) [[ $# -ge 2 ]] || { printf 'deputy: commit --artifact needs a value\n' >&2; return 2; }; arts+=("$2"); shift 2 ;;
+    *) printf 'deputy: commit: unexpected arg %s\n' "$1" >&2; return 2 ;;
+  esac; done
+  _wp_require_jq || return 1
+  _wp_validate_id "$id" || return 1
+  local wt; wt="$(_wt_path)"
+  [[ -d "$wt/.git" || -e "$wt/.git" ]] || { printf 'deputy: no worktree at %s\n' "$wt" >&2; return 1; }
+  # Guard: require an in_progress step; without one the ledger update is a no-op.
+  if ! jq -e 'any(.steps[]; .status=="in_progress")' "$(_wp_json "$id")" >/dev/null 2>&1; then
+    printf 'deputy: commit: no in_progress step in %s\n' "$id" >&2; return 1
+  fi
+  # NOTE: git commit happens before the ledger write (and outside the lock) on
+  # purpose. If we die between them, the step stays in_progress and resume re-runs
+  # it — producing one redundant (harmless) commit. Reversing this could mark a
+  # step succeeded with no commit. Do not reorder.
+  # Stage ALL changes; commit only if something is staged.
+  git -C "$wt" add -A
+  if ! git -C "$wt" diff --cached --quiet; then
+    git -C "$wt" commit -q -m "${summary:-deputy step}"
+  fi
+  local sha; sha="$(git -C "$wt" rev-parse HEAD)"
+  # artifacts: declared paths (or "." if none), each tagged with the SHA.
+  local arts_json
+  if [[ "${#arts[@]}" -eq 0 ]]; then arts=("."); fi
+  arts_json="$(printf '%s\n' "${arts[@]}" | jq -R --arg sha "$sha" '{path:., step_commit:$sha}' | jq -s '.')"
+  _do_commit() {
+    _wp_jq "$id" \
+      '(.steps[] | select(.status=="in_progress")) |=
+         (.status="succeeded" | .completed_at=$now
+          | .actual_result={summary:$sum, artifacts:$arts})
+       | .current_step=null | .updated_at=$now' \
+      --arg sum "$summary" --arg now "$(_wp_now)" --argjson arts "$arts_json"
+  }
+  _with_lock _do_commit
+}
+
+# Hidden helper for tests: print the raw waypoint.json.
+cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -638,6 +814,14 @@ main() {
     wt-create) shift; _wt_create "${1:?slug}"; return $? ;;
     wt-remove) shift; _wt_remove; return $? ;;
     run) shift; cmd_run "$@"; return 0 ;;
+    start) shift; cmd_wp_start "$@"; return $? ;;
+    done) shift; cmd_wp_done "$@"; return $? ;;
+    plan) shift; cmd_wp_plan "$@"; return $? ;;
+    steps) shift; cmd_wp_steps "$@"; return $? ;;
+    set-step) shift; cmd_wp_setstep "$@"; return $? ;;
+    resume) shift; cmd_wp_resume "$@"; return $? ;;
+    commit) shift; cmd_wp_commit "$@"; return $? ;;
+    _wp_show) shift; cmd_wp_show "$@"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac
 }
