@@ -27,4 +27,39 @@ out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="gemini" DEPUTY_CRONTAB=/bin
 assert_eq "$rc" "0" "run exits 0 when claude unavailable"
 assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|later" "item stays waiting when claude down"
 
+# --- session limit (quota) stops the cycle and reschedules ---
+setup_repo
+mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=0\n' > "$DEPUTY_ROOT/.deputy/config"
+bash "$DEPUTY" add "first job" --p0
+bash "$DEPUTY" add "second job" --p0
+LIMIT="$(mktemp)"
+cat > "$LIMIT" <<'EOF'
+#!/usr/bin/env bash
+echo "You have hit your limit; resets 11pm"
+exit 1
+EOF
+chmod +x "$LIMIT"
+STORE="$(mktemp)"; : > "$STORE"; FAKE="$(mktemp)"
+cat > "$FAKE" <<EOF
+#!/usr/bin/env bash
+[[ "\${1:-}" == "-l" ]] && { cat "$STORE"; exit 0; }
+[[ "\${1:-}" == "-" ]] && { cat > "$STORE"; exit 0; }
+exit 0
+EOF
+chmod +x "$FAKE"
+out="$(DEPUTY_ORCHESTRATOR_CMD="$LIMIT" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB="$FAKE" bash "$DEPUTY" run 2>&1)"
+assert_contains "$out" "session limit" "run reports the session limit"
+assert_eq "$(bash "$DEPUTY" list | grep -c 'waiting|P0')" "2" "both items remain waiting (first reverted, second never started)"
+assert_eq "$(grep -c 'deputy' "$STORE")" "1" "session limit triggered a cron reschedule"
+rm -f "$LIMIT" "$STORE" "$FAKE"
+
+# --- max_items caps items per cycle ---
+setup_repo
+mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=1\n' > "$DEPUTY_ROOT/.deputy/config"
+bash "$DEPUTY" add "one" --p0
+bash "$DEPUTY" add "two" --p0
+out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
+assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "1" "max_items=1 processes exactly one item"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|two" "the second item is left for the next cycle"
+
 rm -f "$ORCH"

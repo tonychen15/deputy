@@ -2,5 +2,7 @@
 test_cmd=
 lint_cmd=
 build_cmd=
-max_items=5
+# max_items: optional per-cycle cap. 0 (or empty) = unlimited — run until the queue
+# is empty or Claude's session limit is hit (then deputy reschedules cron for reset).
+max_items=0
 time_cap_mins=30

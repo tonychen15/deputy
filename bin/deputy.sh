@@ -531,23 +531,43 @@ cmd_run() {
   local once=0; [[ "${1:-}" == "--once" ]] && once=1
   cmd_recover >/dev/null 2>&1 || true
   if _live_claim_exists; then return 0; fi
-  local item; item="$(cmd_pick)"
-  [[ -n "$item" ]] || return 0
-  local avail decision; avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
-  if [[ "$decision" != "claude" ]]; then
-    cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
-    return 0
-  fi
-  cmd_claim "$item" --pid "$$" >/dev/null 2>&1 || return 0
-  local running_line; running_line="$(cat "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s\n' "$item")"
-  set +e
-  _spawn_orchestrator "$running_line" "$decision"
-  set -e
-  rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
-  if [[ "$once" -eq 0 ]]; then
-    local remaining; remaining="$(cmd_pick)"
-    [[ -n "$remaining" ]] && cmd_run
-  fi
+  # Optional per-cycle cap; 0/empty/non-numeric = unlimited (run until the queue is
+  # empty or Claude's session limit is hit).
+  local cap; cap="$(_config_get max_items)"; cap="${cap:-0}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+  local processed=0 item avail decision running_line log rc outcome reset
+  while :; do
+    item="$(cmd_pick)"; [[ -n "$item" ]] || break
+    avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
+    if [[ "$decision" != "claude" ]]; then
+      cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
+      break
+    fi
+    cmd_claim "$item" --pid "$$" >/dev/null 2>&1 || break
+    running_line="$(cat "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$item")"
+    log="$(mktemp)"
+    set +e
+    _spawn_orchestrator "$running_line" "$decision" >"$log" 2>&1
+    rc=$?
+    set -e
+    rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
+    cat "$log"   # surface the orchestrator's output (headless log / interactive)
+    outcome="$(_detect_outcome claude "$rc" "$log")"
+    if [[ "$outcome" == "quota_exhausted" ]]; then
+      # Pass only the relevant reset/limit line(s) to the rescheduler (bounded;
+      # avoids ARG_MAX on a large log). _parse_reset_hour scans for "<N>am/pm".
+      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
+      # The orchestrator didn't finish this item — revert it for the next cycle,
+      # reschedule cron for the reset time, and stop (research.sh behavior).
+      _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
+      cmd_cron --reschedule "$reset" >/dev/null 2>&1 || true
+      printf 'deputy: Claude session limit reached — rescheduled for reset; stopping this cycle.\n'
+      return 0
+    fi
+    rm -f "$log"
+    processed=$((processed + 1))
+    [[ "$once" -eq 1 ]] && break
+    [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
+  done
   return 0
 }
 
