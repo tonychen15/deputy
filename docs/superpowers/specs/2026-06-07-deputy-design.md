@@ -495,9 +495,9 @@ Internal runner helpers (not for humans): `deputy.sh --set <line> <state>`,
   branch-per-item + PR/fallback; serial guard; guardrails (max-items, time cap,
   protected paths, dry-run).
 - SessionStart surfacing + light Reflect/morning report.
-- **Separate task:** install + wire the Codex CLI.
 
 **V2**
+- **Install + wire the Codex CLI** (so the `codex` simple-coding failover is live; today it probes `absent`).
 - Migrate waypoint + xReview to run on Gemini/Codex (so complex items can fail over too).
 - External notifications (push/desktop/email).
 - Full Reflect: re-triage stale items, reprioritize, prune duplicates, capture learnings.
