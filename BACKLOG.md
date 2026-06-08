@@ -31,4 +31,4 @@ Add richer item attributes: due dates, dependencies (depends-on), project/goal g
 
 Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 
-[P0] rename jobflow folder name to deputy and update its reference
+#[P0] rename jobflow folder name to deputy and update its reference
