@@ -20,12 +20,19 @@ assert_eq "$(ls "$DEPUTY_ROOT"/.deputy/*.claim 2>/dev/null | wc -l | tr -d ' ')"
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run --once 2>&1)"; rc=$?
 assert_eq "$rc" "0" "run no-op exits 0"
 
-# claude unavailable -> run reschedules (no crash) and leaves item waiting
+# gemini available -> run proceeds with gemini as orchestrator
+setup_repo
+bash "$DEPUTY" add "gemini item" --p1
+out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="gemini" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run --once 2>&1)"; rc=$?
+assert_eq "$rc" "0" "run exits 0 with gemini orchestrator"
+assert_contains "$(bash "$DEPUTY" list)" "done|P1|gemini item" "gemini orchestrates item to done"
+
+# no orchestrator (codex only) -> run reschedules and leaves item waiting
 setup_repo
 bash "$DEPUTY" add "later" --p1
-out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="gemini" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run --once 2>&1)"; rc=$?
-assert_eq "$rc" "0" "run exits 0 when claude unavailable"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|later" "item stays waiting when claude down"
+out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="codex" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run --once 2>&1)"; rc=$?
+assert_eq "$rc" "0" "run exits 0 when no orchestrator available"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|later" "item stays waiting when no orchestrator"
 
 # --- session limit (quota) stops the cycle and reschedules (only when cron-enabled) ---
 setup_repo
