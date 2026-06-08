@@ -38,19 +38,31 @@ deputy has the cron *machinery* (`cron --ensure`/`--reschedule`, `_set_cron`) an
      same delimited marker so it updates this repo's line in place.
    - `cd '<ABS_ROOT>'` fixes cwd so `resolve_root` finds the repo; output appended to the
      already-gitignored `.deputy/cron.log`.
-4. **Running-check / no concurrency** (the wake-up behavior): on each 15-min wake,
-   `deputy run` first checks `_live_claim_exists` (a task is running). If yes → it
-   **returns immediately without starting a second run**; the fixed `*/15` schedule
-   fires again in 15 minutes and retries. If no → it drains the queue. (This guard
-   already exists in `cmd_run`; the design just relies on it under the `*/15` cron.)
-5. **Self-arming (idempotent, write-only-if-needed).** `cmd_run` re-ensures this repo's
-   `*/15` heartbeat **only if the repo is already cron-enabled** (its `# deputy[<ROOT>]`
-   line exists) — so the line self-heals, without a manual `deputy run` in a
-   non-autonomous repo surprising the user by installing cron. Crucially, self-arm
-   **reads the crontab first and only rewrites if the expected line is missing or wrong**
-   — so a healthy heartbeat is a no-op, which cuts churn and shrinks the window for a
-   cross-repo `crontab -` write race. `deputy cron --ensure` (and `install.sh cron`) is
-   how a repo opts in.
+4. **Heartbeat lifecycle — present only when IDLE (REVISED 2026-06-08, research.sh model).**
+   The cron line exists only while deputy is *waiting for work*; it is **removed while
+   deputy is actively running**. This supersedes the original "self-arm `*/15` at the
+   start, always-on" behavior.
+   - **On `deputy add` and `deputy run`** (whether fired by the user OR by the cron):
+     **remove this repo's cron line at the start** — deputy is now active, so a periodic
+     heartbeat is redundant (no point firing a run while one is in progress).
+   - **Drain:** after each task completes, pick the next (the existing `cmd_run` loop).
+   - **On going idle** (`cmd_pick` returns nothing → no task left): **(re)create this
+     repo's cron line** so the heartbeat wakes deputy later to pick up newly-added work.
+   - **Two creation paths, same behavior:** the re-arm-when-idle fires whether the run was
+     triggered by **(a) the cron itself** (a cron-fired run re-arms on its way out) or
+     **(b) a `deputy` command** (`add`/`run` re-arms when it finishes idle).
+   - Re-arm also happens on the quota path via `cron --reschedule` (arm at the reset hour),
+     so autonomy survives a session-limit stop.
+5. **Autonomous flag (persistent) — gates the lifecycle.** Because the cron line is
+   *absent during active runs*, its presence can no longer signal "this repo wants a
+   heartbeat." A persistent flag records the opt-in: `.deputy/config: autonomous=1`, set by
+   `deputy cron --ensure` (and `install.sh cron`), cleared by `deputy cron --remove`. The
+   remove-on-active and re-arm-on-idle steps **only act when `autonomous=1`**, so a manual
+   `deputy run`/`add` in a non-autonomous repo never touches the crontab. `_live_claim_exists`
+   still guards the brief window before removal against a concurrent cron fire.
+   - *Robustness note:* removing the line at start means a hard crash mid-run (after remove,
+     before re-arm) leaves no heartbeat until the next manual `deputy add`/`run` re-arms it.
+     Accepted (this is research.sh's model); the quota path and normal idle-exit both re-arm.
 6. **Logs/ignore:** `.deputy/` is already gitignored, so `.deputy/cron.log` needs no
    change.
 7. **Stale-claim safety (already satisfied):** the no-concurrency guard
@@ -59,20 +71,27 @@ deputy has the cron *machinery* (`cron --ensure`/`--reschedule`, `_set_cron`) an
    starve the heartbeat indefinitely.
 
 ## Decisions
-- Interval **`*/15`** (user). Fixed schedule + the live-claim guard *is* the
-  "if a task is running, wait for the next 15-min tick; else run" behavior — no
-  one-shot reschedule needed.
+- Interval **`*/15`** (user), but the cron is **idle-only** (removed while running, re-armed
+  when idle) — NOT a fixed always-on `*/15`. (Revised 2026-06-08, §4.)
 - **Per-repo markers** so deputy + stock-pick (and any future repo) each get their own
   cron line and coexist.
-- Self-arm is **gated on cron-enabled** (line present) to avoid surprising installs.
+- Opt-in is a **persistent `autonomous` flag** (not "is the line present?", since the line
+  is removed during runs). (§5.)
+- This consolidates with the **P0 "make `deputy add` trigger run + preemption"** item: the
+  same entry points (`add`/`run`) own the remove-on-active / arm-on-idle lifecycle; the
+  preemption half (higher-priority `add` preempts a running lower-priority task) is the
+  remaining piece, built on the checkpoint spine + a `paused`/`preempted` status.
 
 ## Testing
-- `_set_cron` writes the repo-aware line with the per-repo marker; a second repo's
-  `--ensure` preserves the first repo's line (multi-repo).
-- `--reschedule` updates only this repo's line; `--remove` removes only this repo's line.
-- `cmd_run` self-arms iff the repo's cron line is present (mock `DEPUTY_CRONTAB`).
-- `cmd_run` no-ops under a live claim (existing behavior — keep a test).
-- PATH export present and idempotent (doesn't duplicate on re-source).
+- `cron --ensure` sets `autonomous=1` AND arms the repo-aware line (per-repo marker);
+  a second repo's `--ensure` preserves the first repo's line (multi-repo, prefix-safe).
+- `cron --remove` clears `autonomous=1` and removes only this repo's line.
+- `deputy run` / `deputy add` in an `autonomous=1` repo **removes** the line at start;
+  on going idle (empty queue) **re-creates** it. In a non-autonomous repo, neither
+  touches the crontab.
+- `--reschedule` arms this repo's line at the reset hour (quota path).
+- `cmd_run` no-ops/declines a second run under a live claim (keep the existing test).
+- PATH export present and idempotent (doesn't duplicate on re-invoke).
 
 ## Rollout
 Install for **both** repos: `deputy cron --ensure` in `/home/tong/src/tonychen15/deputy`
