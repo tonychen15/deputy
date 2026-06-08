@@ -23,3 +23,13 @@ printf '%s\n' '# done item' >> "$DEPUTY_ROOT/BACKLOG.md"
 out="$(bash "$DEPUTY" pick)"; rc=$?
 assert_eq "$out" "" "pick empty when nothing waits"
 assert_eq "$rc" "0" "pick exits 0 when empty"
+
+# Paused items are pickable and compete by priority/FIFO.
+setup_repo
+printf '%s\n' '^[P1] paused job' '[P2] waiting job' >> "$DEPUTY_ROOT/BACKLOG.md"
+assert_eq "$(bash "$DEPUTY" pick)" "^[P1] paused job" "pick prefers paused P1 over waiting P2"
+
+# Paused item at same priority as waiting: FIFO (file position) wins.
+setup_repo
+printf '%s\n' '[P0] waiting top' '^[P0] paused top' >> "$DEPUTY_ROOT/BACKLOG.md"
+assert_eq "$(bash "$DEPUTY" pick)" "[P0] waiting top" "pick FIFO within lane: waiting before paused"

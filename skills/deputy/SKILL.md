@@ -65,6 +65,11 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
 8. `deputy commit <slug> --summary "<what was done>"` — commits the already-staged
    changes (internally runs `git add -A` again as a safety net, then commits); do not
    cherry-pick files.
+   - **Preemption check:** after the commit, run `deputy pick`. If the returned line
+     is non-empty and its priority is strictly higher than the current item's priority
+     (P0=0 P1=1 P2=2 untagged=3 — lower number wins), run
+     `deputy set "<item-line>" paused` and stop cleanly (do not call `deputy done`).
+     The runner will execute the higher-priority item next, then resume this one.
 9. When `deputy resume <slug>` returns empty (all steps succeeded):
    `deputy done <slug>` → `deputy set "<item-line>" done` → open PR from
    `deputy/<slug>` if a remote and `gh` are present, else leave the branch → `deputy wt-remove`.
@@ -101,6 +106,8 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    - `git -C .deputy/wt add -A` (stage all changes before the gates).
    - Quality gate → protected-path gate (mandatory) → implementation xReview (Gemini).
    - `deputy commit <slug> --summary "..."` (commits the already-staged changes).
+   - **Preemption check:** same as §2a step 8 — after the commit, check `deputy pick`;
+     if higher priority exists, `deputy set "<item-line>" paused` and stop.
 4. When `deputy resume <slug>` is empty: `deputy done <slug>` → `deputy set "<item-line>" done`
    → open PR / leave branch → `deputy wt-remove`.
 

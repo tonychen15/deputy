@@ -26,3 +26,11 @@ echo '@ [P0] live work' > "$DEPUTY_ROOT/.deputy/$LIVE.claim"
 bash "$DEPUTY" recover
 assert_contains "$(bash "$DEPUTY" list)" "running|P0|live work" "live claim preserved"
 kill "$LIVE" 2>/dev/null
+
+# Paused items must NOT be reverted — they represent checkpointed work.
+setup_repo
+printf '%s\n' '^[P0] paused midway' '^plain paused' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" recover
+out="$(bash "$DEPUTY" list)"
+assert_contains "$out" "paused|P0|paused midway" "recover leaves paused P0 intact"
+assert_contains "$out" "paused||plain paused"     "recover leaves paused untagged intact"

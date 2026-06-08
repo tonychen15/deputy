@@ -8,6 +8,9 @@ DEPUTY="$REPO/bin/deputy.sh"
 TESTS_RUN=0
 TESTS_FAILED=0
 
+# Suppress auto-run triggered by cmd_add; override per test when testing auto-run.
+export DEPUTY_NO_AUTORUN=1
+
 # Create an isolated temp repo with a fresh BACKLOG.md and point the runner at it.
 setup_repo() {
   TMP="$(mktemp -d)"

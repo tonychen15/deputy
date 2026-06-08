@@ -54,11 +54,11 @@ _each_item() {
 _parse_item() {
   local line="$1" state="waiting" prio="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
-  if [[ "$line" =~ ^([~@?#!%=])[[:space:]]*(.*)$ ]]; then
+  if [[ "$line" =~ ^([~@?#!%=^])[[:space:]]*(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
       '~') state=triaging ;;  '@') state=running ;;    '?') state=surfaced ;;
       '#') state=done ;;      '!') state=failed ;;
-      '%') state=cancelled ;; '=') state=duplicate ;;
+      '%') state=cancelled ;; '=') state=duplicate ;; '^') state=paused ;;
     esac
     line="${BASH_REMATCH[2]}"
   fi
@@ -78,7 +78,7 @@ _serialize_item() {
   case "$state" in
     waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
     surfaced)  prefix="?" ;; done)      prefix="#" ;; failed)    prefix="!" ;;
-    cancelled) prefix="%" ;; duplicate) prefix="=" ;;
+    cancelled) prefix="%" ;; duplicate) prefix="=" ;; paused)    prefix="^" ;;
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
   if [[ -n "$prio" ]]; then
@@ -145,8 +145,8 @@ cmd_add() {
   done
   [[ -n "$text" ]] || { printf 'deputy: add requires text\n' >&2; return 2; }
   text="${text#"${text%%[![:space:]]*}"}"   # left-trim (matches parser's own trim)
-  if [[ "$text" =~ ^[~@?#!%=] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
-    printf 'deputy: description may not begin with a status prefix (~@?#!%%=) or a [Px] tag: %s\n' "$text" >&2
+  if [[ "$text" =~ ^[~@?#!%=^] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?#!%%=^) or a [Px] tag: %s\n' "$text" >&2
     return 2
   fi
   if [[ "$text" == *$'\n'* ]]; then
@@ -161,20 +161,25 @@ cmd_add() {
     printf 'deputy: added: %s\n' "$text"
   }
   _with_lock _do_add
+  # Trigger execution immediately if nothing is running and work is available.
+  # Set DEPUTY_NO_AUTORUN=1 to suppress (used in tests that exercise add in isolation).
+  if [[ "${DEPUTY_NO_AUTORUN:-0}" != "1" ]] && ! _live_claim_exists && [[ -n "$(cmd_pick)" ]]; then
+    cmd_run --once
+  fi
 }
 
 cmd_status() {
-  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 parsed
+  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 parsed
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
     case "$state" in
       waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
       surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;;    failed)     f=$((f+1)) ;;
-      cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;;
+      cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;; paused)  p=$((p+1)) ;;
     esac
   done < <(_each_item)
-  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\n' \
-    "$w" "$t" "$r" "$s" "$d" "$f" "$c" "$u"
+  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\n' \
+    "$w" "$t" "$r" "$s" "$d" "$f" "$c" "$u" "$p"
 }
 
 # Numeric rank for a priority tag: P0=0 P1=1 P2=2 (none)=3.
@@ -187,7 +192,7 @@ cmd_pick() {
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     state="${parsed%%|*}"
-    [[ "$state" == "waiting" ]] || continue
+    [[ "$state" == "waiting" || "$state" == "paused" ]] || continue
     prio="${parsed#*|}"; prio="${prio%%|*}"
     rank="$(_prio_rank "$prio")"
     if (( rank < best_rank )); then          # strict < preserves FIFO on ties
@@ -199,7 +204,7 @@ cmd_pick() {
 }
 
 _valid_state() {
-  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate) return 0 ;; *) return 1 ;; esac
+  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate|paused) return 0 ;; *) return 1 ;; esac
 }
 
 cmd_set() {
@@ -245,7 +250,7 @@ cmd_claim() {
     _live_claim_exists && { printf 'deputy: busy (a live claim exists)\n' >&2; return 3; }
     local parsed state
     parsed="$(_parse_item "$from")"; state="${parsed%%|*}"
-    [[ "$state" == "waiting" ]] || { printf 'deputy: item is not waiting (%s)\n' "$state" >&2; return 4; }
+    [[ "$state" == "waiting" || "$state" == "paused" ]] || { printf 'deputy: item is not waiting/paused (%s)\n' "$state" >&2; return 4; }
     grep -qxF -- "$from" "$BACKLOG" || { printf 'deputy: item not found\n' >&2; return 1; }
     local prio desc to
     prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
@@ -324,9 +329,10 @@ usage() {
 usage: deputy <command> [args]
 
 commands:
-  add "<text>" [-ui|-u|-i]        add a waiting item (-ui=P0 -u=P1 -i=P2;
-                                  --p0/--p1/--p2 also accepted; use -- before a
-                                  description that starts with "-")
+  add "<text>" [-ui|-u|-i]        add a waiting item and run it immediately if idle
+                                  (-ui=P0 -u=P1 -i=P2; --p0/--p1/--p2 also accepted;
+                                  use -- before a description that starts with "-";
+                                  set DEPUTY_NO_AUTORUN=1 to enqueue without running)
   list                            print parsed items (state|priority|description)
   status                          counts by state
   run [--once]                    work the backlog: claim the top item, run the orchestrator
@@ -342,7 +348,7 @@ commands:
   clean [--dry-run]               remove untouched (waiting) items; keeps everything deputy has touched
   help                            show this message
 
-states: waiting triaging running surfaced done failed cancelled duplicate
+states: waiting triaging running surfaced done failed cancelled duplicate paused
 EOF
 }
 

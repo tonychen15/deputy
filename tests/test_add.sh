@@ -65,3 +65,27 @@ assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|-5% drop alert" "-- allows 
 bash "$DEPUTY" add "task" -x 2>/dev/null; rc=$?
 assert_eq "$rc" "2" "unknown single-dash flag rejected"
 assert_eq "$(bash "$DEPUTY" list | grep -c -- '-x')" "0" "unknown single-dash flag not absorbed"
+
+# ── Auto-run: add triggers execution when nothing is running ──────────────────
+setup_repo
+ORCH="$(mktemp)"
+cat > "$ORCH" <<EOF
+#!/usr/bin/env bash
+bash "$DEPUTY" set "\$1" done >/dev/null 2>&1 || true
+EOF
+chmod +x "$ORCH"
+
+DEPUTY_NO_AUTORUN=0 DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true \
+  bash "$DEPUTY" add "auto run me" --p0
+assert_contains "$(bash "$DEPUTY" list)" "done|P0|auto run me" "add triggers immediate execution when idle"
+
+# add does NOT trigger a second run when a live claim already exists
+setup_repo
+sleep 300 & LIVE=$!
+printf '@[P0] already running\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+printf '@[P0] already running\n' > "$DEPUTY_ROOT/.deputy/$LIVE.claim"
+DEPUTY_NO_AUTORUN=0 DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true \
+  bash "$DEPUTY" add "new lower" --p1
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|new lower" "add queues item but does not run when claim exists"
+kill "$LIVE" 2>/dev/null
+rm -f "$ORCH"

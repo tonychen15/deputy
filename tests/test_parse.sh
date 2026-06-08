@@ -18,6 +18,8 @@ assert_eq "$(parse '% Dropped')"          "cancelled||Dropped"     "cancelled un
 assert_eq "$(parse '%[P1] Skip this')"    "cancelled|P1|Skip this" "cancelled P1"
 assert_eq "$(parse '= Dup of #3')"        "duplicate||Dup of #3"   "duplicate untagged"
 assert_eq "$(parse '=[P0] Same as X')"    "duplicate|P0|Same as X" "duplicate P0"
+assert_eq "$(parse '^ Interrupted')"      "paused||Interrupted"    "paused untagged"
+assert_eq "$(parse '^[P1] Paused job')"   "paused|P1|Paused job"   "paused P1"
 
 # list + legend-skip
 printf '%s\n' '[P0] one' '~ [P1] two' '# three' >> "$DEPUTY_ROOT/BACKLOG.md"
@@ -36,3 +38,5 @@ assert_eq "$(ser cancelled P1 'Skip this')"  "%[P1] Skip this"  "serialize cance
 assert_eq "$(ser cancelled '' 'Dropped')"    "%Dropped"          "serialize cancelled untagged"
 assert_eq "$(ser duplicate P0 'Same as X')"  "=[P0] Same as X"  "serialize duplicate P0"
 assert_eq "$(ser duplicate '' 'Dup of #3')"  "=Dup of #3"        "serialize duplicate untagged"
+assert_eq "$(ser paused P0 'Halted')"        "^[P0] Halted"      "serialize paused P0"
+assert_eq "$(ser paused '' 'Bare halt')"     "^Bare halt"         "serialize paused untagged"
