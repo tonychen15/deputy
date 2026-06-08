@@ -104,19 +104,28 @@ by stale-recovery (§13). Concurrent runner invocations (cron + interactive) are
 therefore safe: they contend only for the short lock, and only one can hold a live
 claim at a time.
 
-**Worktree isolation (V1):** Deputy **never mutates your main working tree.** All
-execution happens in a dedicated, gitignored **`.deputy/wt` worktree**. On a fresh
-item the runner creates it from the *committed* base HEAD with a new branch
+**Worktree isolation (V1):** All *execution* happens in a dedicated, gitignored
+**`.deputy/wt` worktree** — Deputy does not touch your main working tree during a run.
+On a fresh item the runner creates it from the *committed* base HEAD with a new branch
 (`git worktree add .deputy/wt -b deputy/<slug> <base-HEAD>`). On **resume /
 forward-recovery** the `deputy/<slug>` branch already exists, so the runner attaches
 to it **without `-b`** (`git worktree add .deputy/wt deputy/<slug>`) to continue
 from the last committed checkpoint — the `-b` form would error on an existing
-branch. The runner therefore branches on "does `deputy/<slug>` already exist?". This means a background cron run cannot move your main HEAD,
-cannot collide with your uncommitted edits, and cannot leave you on the wrong
-branch if it is killed mid-run. It is still **serial** — one worktree, one worker
+branch. The runner therefore branches on "does `deputy/<slug>` already exist?". This means a background cron run cannot collide with your uncommitted edits
+during execution. It is still **serial** — one worktree, one worker
 at a time (this is isolation for *safety*, not the V2 parallelism, which would use
 *multiple* worktrees). The worktree is removed on completion; stale-recovery also
 prunes an orphaned `.deputy/wt` left by a dead worker.
+
+**Done gate (V1 update):** Once all steps succeed the orchestrator attempts a safe merge
+of `deputy/<slug>` into the local default branch. "Safe" means the main working tree is
+already on the default branch **and** is clean (no uncommitted changes). If those
+conditions hold the orchestrator runs `git merge --no-ff deputy/<slug>` from the repo
+root; on conflict it runs `git merge --abort` and surfaces the item. If the conditions do
+not hold (dirty tree or different branch) the orchestrator surfaces a "ready for merge"
+message with manual instructions — it does **not** force a checkout or push. Only after a
+clean merge does it call `deputy done` / `deputy set … done`. Pushing the default branch
+to the remote remains the **user's decision** — Deputy never auto-pushes.
 
 ---
 
@@ -366,8 +375,9 @@ and the degradation is **surfaced in the morning report**
 
 | Guardrail | V1 default |
 |---|---|
-| Worktree isolation | all execution in a dedicated `.deputy/wt` worktree; **main tree never mutated** (§3) |
-| Branch isolation | every item on `deputy/<slug>`; PR if remote+`gh`, else leave branch |
+| Worktree isolation | all *execution* in a dedicated `.deputy/wt` worktree; no mutations during a run (§3) |
+| Done gate | on completion orchestrator merges `deputy/<slug>` into local default branch **iff** main tree is clean and already on that branch; otherwise surfaces "ready for merge"; never auto-pushes (§3) |
+| Branch isolation | every item on `deputy/<slug>`; branch kept after merge; remote push is user's call |
 | Serial guard | **refuse to start** an item while a live claim exists (one worker at a time) |
 | Max items / cycle | `5` |
 | Per-item time cap | `30` min → kill + `! failed` |
@@ -492,9 +502,9 @@ Internal runner helpers (not for humans): `deputy.sh --set <line> <state>`,
   `auto`/`interactive` modes.
 - waypoint execution (Claude-bound), xReview at plan/design/commit (Gemini).
 - LLM routing with **Codex simple-coding failover**; complex items wait for Claude.
-- **Worktree-isolated** execution (`.deputy/wt`, main tree never mutated);
-  branch-per-item + PR/fallback; serial guard; guardrails (max-items, time cap,
-  protected paths, dry-run).
+- **Worktree-isolated** execution (`.deputy/wt`, no mutations during execution);
+  branch-per-item; on completion: merge into local default branch (never auto-push);
+  serial guard; guardrails (max-items, time cap, protected paths, dry-run).
 - SessionStart surfacing + light Reflect/morning report.
 
 **V2**
@@ -537,8 +547,11 @@ Internal runner helpers (not for humans): `deputy.sh --set <line> <state>`,
 
 ### Escalated by the Gemini review — now resolved (2026-06-07)
 - **[P0] Background isolation → adopted in V1.** All execution runs in a dedicated
-  `.deputy/wt` worktree; the main tree is never mutated (§3, §6.4a, §9). Still
+  `.deputy/wt` worktree; no mutations during execution (§3, §6.4a, §9). Still
   serial; multi-worktree parallelism remains V2.
+- **[P0] Done gate → local-master merge (2026-06-08).** Task is done only when
+  `deputy/<slug>` is merged into the local default branch. Deputy never auto-pushes;
+  remote push stays the user's decision (§3 done gate, §9 guardrails).
 - **[P2] Surfacing priority inversion → kept one-at-a-time, by design.** A blocked
   high-priority item must **not** starve lower-priority runnable items; Deputy keeps
   draining the queue while you have not answered (§6.4b non-starvation rule). The

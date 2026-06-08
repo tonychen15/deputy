@@ -71,8 +71,15 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
      `deputy set "<item-line>" paused` and stop cleanly (do not call `deputy done`).
      The runner will execute the higher-priority item next, then resume this one.
 9. When `deputy resume <slug>` returns empty (all steps succeeded):
-   `deputy done <slug>` → `deputy set "<item-line>" done` → open PR from
-   `deputy/<slug>` if a remote and `gh` are present, else leave the branch → `deputy wt-remove`.
+   **Merge into the local default branch** (safe-only):
+   a. Detect the default branch using this sequence: `git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||'`; if empty, check if local `main` exists (`git show-ref --quiet refs/heads/main`), then `master`; last resort: `git config init.defaultBranch`.
+   b. Check main-tree readiness from the repo root: `git status --porcelain` (dirty?) and `git rev-parse --abbrev-ref HEAD` (current branch?).
+      - **Proceed** only if the main tree is **clean** (no uncommitted changes) **and already on the default branch**.
+      - **Surface** the item (do not call `deputy done`) if the main tree is dirty or on a different branch — message: *"branch `deputy/<slug>` is ready; merge blocked — main tree is [dirty / on `<branch>`]; merge manually: `git checkout <default-branch> && git merge --no-ff deputy/<slug>`"*.
+   c. Merge: `git merge --no-ff deputy/<slug>` (from repo root, already confirmed on default branch + clean).
+   d. On merge failure: run `git merge --abort`, then **surface** the item with conflict details; do **not** call `deputy done`.
+   Then: `deputy done <slug>` → `deputy set "<item-line>" done` → `deputy wt-remove`.
+   **Never auto-push** to the remote — pushing is the user's decision.
 
 **Failover (quota/rate-limit):** not a failure — route the *coding* to **Codex**
 (`deputy route code-simple "<avail>"` → `codex`). Keep **Gemini** as the reviewer
@@ -108,8 +115,11 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    - `deputy commit <slug> --summary "..."` (commits the already-staged changes).
    - **Preemption check:** same as §2a step 8 — after the commit, check `deputy pick`;
      if higher priority exists, `deputy set "<item-line>" paused` and stop.
-4. When `deputy resume <slug>` is empty: `deputy done <slug>` → `deputy set "<item-line>" done`
-   → open PR / leave branch → `deputy wt-remove`.
+4. When `deputy resume <slug>` is empty:
+   **Merge into the local default branch** — follow the identical safe-merge procedure
+   described in §2a step 9 (detect default branch, check main-tree readiness, merge or
+   surface, abort on conflict). Then: `deputy done <slug>` → `deputy set "<item-line>" done`
+   → `deputy wt-remove`. **Never auto-push** to the remote.
 
 **V1 note:** steps run **inline** — in V1 Claude executes each step directly inside the step-loop body; the seam for future cross-provider routing is that step-loop body (a future `_run_step_worker`). Cross-provider step routing is a later item.
 
