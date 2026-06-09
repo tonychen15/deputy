@@ -608,7 +608,10 @@ commands:
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
   detect <cli> <rc> <log>         (internal) classify a CLI outcome
   review                          show surfaced items, their questions, and the digest
-  clean [--dry-run]               remove untouched (waiting) items; keeps everything deputy has touched
+  clean [--dry-run] [--state <state>]
+                                  remove items of <state> (default: waiting = untouched items)
+                                  cleanable states: waiting, done, failed, cancelled, duplicate
+                                  refuses running, triaging, surfaced, paused (active/checkpointed/awaiting)
   reflect [--apply]               re-triage report: learnings, untagged items, reprioritization list,
                                   surfaced items, duplicate candidates; --apply writes .deputy/learnings.md
   help                            show this message
@@ -1078,21 +1081,50 @@ cmd_run() {
   return 0
 }
 
-# Remove UNTOUCHED (waiting) items from BACKLOG.md — the ones deputy has never
-# acted on. Keeps everything deputy has touched (triaging/running/surfaced/done/
-# failed/cancelled/duplicate). --dry-run previews only. The real pass is
-# lock-serialized + atomic and squeezes any resulting consecutive blanks.
+# Remove items of a given state from BACKLOG.md. Default state is "waiting"
+# (backward-compatible: bare `deputy clean` removes untouched/waiting items only).
+# --dry-run previews only. --state <state> selects a different state to clean.
+# Only terminal/inert states are cleanable: waiting, done, failed, cancelled, duplicate.
+# Active/checkpointed/awaiting states (running, triaging, surfaced, paused) are refused.
 cmd_clean() {
-  local dry=0; [[ "${1:-}" == "--dry-run" ]] && dry=1
+  local dry=0 filter_state="waiting"
+
+  # Arg parsing: tolerant of order; support --state X and --state=X.
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)   dry=1; shift ;;
+      --state=*)   filter_state="${1#--state=}"; shift ;;
+      --state)
+        [[ $# -ge 2 ]] || { printf 'deputy: --state requires an argument\n' >&2; return 2; }
+        filter_state="$2"; shift 2 ;;
+      *) printf 'deputy: clean: unexpected argument: %s\n' "$1" >&2; return 2 ;;
+    esac
+  done
+
+  # Safety: refuse to clean active/checkpointed/awaiting states.
+  case "$filter_state" in
+    waiting|done|failed|cancelled|duplicate)
+      ;;  # cleanable terminal/inert states — ok
+    running|triaging|surfaced|paused)
+      printf 'deputy: refusing to clean %s items (active/checkpointed/awaiting) — recover or resolve them first\n' \
+        "$filter_state" >&2
+      return 1 ;;
+    *)
+      printf 'deputy: clean: unknown state: %s (cleanable: waiting, done, failed, cancelled, duplicate)\n' \
+        "$filter_state" >&2
+      return 2 ;;
+  esac
+
   local raw parsed state
   local -a doomed=()
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
-    case "$state" in waiting) doomed+=("$raw") ;; esac
+    [[ "$state" == "$filter_state" ]] && doomed+=("$raw")
   done < <(_each_item)
+
   if [[ "${#doomed[@]}" -eq 0 ]]; then printf 'deputy: nothing to clean\n'; return 0; fi
   if [[ "$dry" -eq 1 ]]; then
-    printf 'deputy: would remove %d untouched item(s):\n' "${#doomed[@]}"
+    printf 'deputy: would remove %d %s item(s):\n' "${#doomed[@]}" "$filter_state"
     printf '  %s\n' "${doomed[@]}"
     return 0
   fi
@@ -1116,7 +1148,7 @@ cmd_clean() {
     _regroup_backlog
   }
   _with_lock _do_clean
-  printf 'deputy: cleaned %d untouched item(s)\n' "${#doomed[@]}"
+  printf 'deputy: cleaned %d %s item(s)\n' "${#doomed[@]}" "$filter_state"
 }
 
 # Find all duplicate candidate pairs from a list of descriptions (one per stdin line).
