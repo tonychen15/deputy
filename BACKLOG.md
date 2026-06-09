@@ -13,9 +13,10 @@
 [P2] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 [P2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 Add intake from GitHub issues, failing CI, and TODO/FIXME scan
-[P1] BUG (breaking): install.sh link run from inside a .deputy/wt-* worktree repoints the GLOBAL ~/.claude/skills/deputy (and ~/.local/bin/deputy) symlink to the ephemeral worktree path; when the worktree is torn down at task end the symlink dangles and /deputy breaks. Fix: install.sh must resolve the symlink target to the CANONICAL repo root (git --git-common-dir / main worktree), never a linked worktree; autonomous task runs must NOT run install.sh link; emit a notification on such breaking changes.
 Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
+[P2] E2E test: interrupt a run mid-step and verify orchestrator-driven resume — recover reverts the orphaned @running item, the next run re-picks it, SKILL §2c purges dirty worktree state + calls 'deputy resume', and execution continues from the first uncommitted step to completion. Covers the one untested hole in the resume story (SKILL §2c is prompt-only today).
 
+#[P1] BUG (breaking): install.sh link run from inside a .deputy/wt-* worktree repoints the GLOBAL ~/.claude/skills/deputy (and ~/.local/bin/deputy) symlink to the ephemeral worktree path; when the worktree is torn down at task end the symlink dangles and /deputy breaks. Fix: install.sh must resolve the symlink target to the CANONICAL repo root (git --git-common-dir / main worktree), never a linked worktree; autonomous task runs must NOT run install.sh link; emit a notification on such breaking changes.
 #[P1] Add cancelled and duplicate item statuses to the queue (parse/serialize/status)
 #[P1] Install and wire the Codex CLI so simple-coding failover is live (probes absent today)
 #[P1] Add a token/cost budget cap to the run loop (stop a cycle past N output tokens)
