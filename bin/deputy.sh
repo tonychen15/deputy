@@ -109,11 +109,51 @@ _flip_line() {
     if [[ "$line" == "$from" ]]; then printf '%s\n' "$to"; else printf '%s\n' "$line"; fi
   done < "$BACKLOG" > "$tmp"
   mv "$tmp" "$BACKLOG"
+  _regroup_backlog
 }
 
 # Append a raw line preceded by a blank line so items stay blank-separated.
 # Caller holds the lock.
-_append_item() { printf '\n%s\n' "$1" >> "$BACKLOG"; }
+_append_item() {
+  printf '\n%s\n' "$1" >> "$BACKLOG"
+  _regroup_backlog
+}
+
+# Rewrite BACKLOG.md with items grouped by state: waiting first, active
+# (triaging/running/surfaced/paused) next, terminal (done/failed/cancelled/
+# duplicate) last. Each non-empty group is preceded by a blank line; items
+# within a group are consecutive. No-ops if no '## Items' heading is found.
+# Caller holds the lock.
+_regroup_backlog() {
+  grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null || return 0
+  local line tmp
+  local -a waiting_items=() active_items=() terminal_items=()
+
+  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "$line" >> "$tmp"
+    if [[ "$line" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]]; then break; fi
+  done < "$BACKLOG"
+
+  local raw parsed state
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    case "$state" in
+      waiting)                              waiting_items+=("$raw") ;;
+      triaging|running|surfaced|paused)     active_items+=("$raw") ;;
+      done|failed|cancelled|duplicate)      terminal_items+=("$raw") ;;
+    esac
+  done < <(_each_item)
+
+  [[ ${#waiting_items[@]} -gt 0 ]]  && { printf '\n' >> "$tmp"; printf '%s\n' "${waiting_items[@]}"  >> "$tmp"; }
+  [[ ${#active_items[@]} -gt 0 ]]   && { printf '\n' >> "$tmp"; printf '%s\n' "${active_items[@]}"   >> "$tmp"; }
+  [[ ${#terminal_items[@]} -gt 0 ]] && { printf '\n' >> "$tmp"; printf '%s\n' "${terminal_items[@]}" >> "$tmp"; }
+
+  mv "$tmp" "$BACKLOG"
+}
 
 # True if any item's parsed description equals $1.
 _desc_exists() {
@@ -788,6 +828,7 @@ cmd_clean() {
       printf '%s\n' "$line"
     done < "$BACKLOG" > "$tmp"
     mv "$tmp" "$BACKLOG"
+    _regroup_backlog
   }
   _with_lock _do_clean
   printf 'deputy: cleaned %d untouched item(s)\n' "${#doomed[@]}"
