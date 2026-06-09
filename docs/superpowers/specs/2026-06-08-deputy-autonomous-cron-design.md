@@ -72,9 +72,64 @@ deputy has the cron *machinery* (`cron --ensure`/`--reschedule`, `_set_cron`) an
    and `cmd_run` calls `cmd_recover` first to revert orphans — so a crashed run cannot
    starve the heartbeat indefinitely.
 
+## REVISION 2026-06-09 — always-on heartbeat supersedes the idle-only lifecycle (§4/§5)
+The idle-only model (remove-on-run, re-arm-on-idle) has a real **stall-on-abnormal-death**
+flaw — the very "Robustness note" in §5: if a run dies by crash/kill/API-failure/reboot
+*before* the re-arm step, the cron stays off and **nothing ever retries the stuck task**
+(the human must notice and type `deputy run`). Replace it with a persistent heartbeat that
+is *also* the recovery trigger.
+
+**Model:** a fixed recurring **`*/15 * * * *`** line that is **never removed while
+running**. Opt-in still gated by `.deputy/cron.enabled`. Each tick (and each `deputy run`)
+is **state-aware**:
+- **Live task running** (`_live_claim_exists` via `kill -0`) → **skip** (no-op). The
+  single-claim lock already prevents a second concurrent task, so a mid-run tick is
+  harmless. → This removes the need for *both* remove-on-run *and* self-rescheduling the
+  line (a recurring cron simply fires again next interval).
+- **Dead/orphaned task** (stale claim, or `@running`/`~triaging` with no live pid) →
+  `cmd_recover` reverts to `waiting`, then the spine **resumes** it (forward-recovery from
+  the first uncommitted step) — not a blind restart.
+- **Quota-blocked task** → record the provider's reset time; each tick **skip** it (a
+  per-task skip) and resume once quota is back. Do **NOT** `cron --reschedule` the shared
+  line for a quota block — moving the whole heartbeat to the reset hour would also delay
+  recovery and unrelated work (Gemini). The fixed `*/15` keeps serving everything; quota is
+  a per-task skip, not a heartbeat change. (`cron --reschedule` is dropped in this model.)
+- **Surfaced or failed task** → **leave it.** `surfaced` is blocked on the human
+  (auto-resuming would loop / re-surface); `failed` needs review. Only **interrupted** and
+  **quota-blocked** are auto-resumable (the suspension-resume taxonomy).
+- **Idle + runnable work** → pick the highest-priority item and run it.
+
+**Concurrency hardening (Gemini, required for always-on).** Always-on + instant-trigger
+raises the chance of concurrent run attempts, so:
+- **Atomic claim:** the `_live_claim_exists` check and the claim write must occur in ONE
+  flock-held critical section (or via an atomic create) — never check-then-act — so two
+  ticks (or a tick + a manual `run`) can't both pass the check and double-claim (TOCTOU).
+- **PID validation:** `_live_claim_exists` must validate the PID **and** its process
+  start-time (or a boot id), not a bare `kill -0` — after a reboot/PID-reuse a stale claim's
+  number can belong to an unrelated process, falsely reading "live" and starving recovery.
+
+**Durable retry budget (NEW requirement).** A self-healing heartbeat that revives dead
+tasks can **crash-loop** if a task fails the same way every tick. The spine's 2-retry
+budget is per-run and resets across cron re-triggers, so add a **durable attempt counter in
+the waypoint ledger**: after N (e.g. 3) cron-resumes with no progress (no new committed
+step), stop reviving — mark the item `failed`/`surfaced` so a poisoned task can't loop
+forever.
+
+**Kept:** instant-trigger on `deputy add` (research.sh-style responsiveness) — it coexists
+with the always-on cron because the lock serializes (a concurrent tick just skips). Per-repo
+markers unchanged.
+
+**Net:** simpler (no remove/re-arm dance, no self-reschedule except quota), self-healing
+(survives any death mode), and it closes the recovery-trigger gap.
+
+**Scope note:** this is the recovery mechanism for the **headless/autonomous** flow (the
+cron re-spawns the orchestrator, which retries a failed API). It does **not** cover an
+interactive session where Claude is driving and a tool call dies — that's a different layer.
+
 ## Decisions
-- Interval **`*/15`** (user), but the cron is **idle-only** (removed while running, re-armed
-  when idle) — NOT a fixed always-on `*/15`. (Revised 2026-06-08, §4.)
+- Interval **`*/15`**, **always-on** (recurring, never removed; state-aware tick) — this
+  SUPERSEDES the idle-only remove/re-arm model of §4/§5. (Revised 2026-06-09; see the
+  REVISION section above.)
 - **Per-repo markers** so deputy + stock-pick (and any future repo) each get their own
   cron line and coexist.
 - Opt-in is a **marker file `.deputy/cron.enabled`** (not a config key, not "is the line
