@@ -14,11 +14,11 @@ EOF
 chmod +x "$FAKE"
 export DEPUTY_CRONTAB="$FAKE"
 
-# ── Test 1: ensure installs a line with */15, cd '<root>', deputy, and marker # deputy[<root>] ──
+# ── Test 1: ensure installs a line with */10 (always-on default), cd '<root>', deputy, and marker # deputy[<root>] ──
 ROOT_A="$DEPUTY_ROOT"
 bash "$DEPUTY" cron --ensure
 assert_eq "$(grep -c "deputy\[$ROOT_A\]" "$STORE")" "1" "ensure installs one entry with repo marker"
-assert_contains "$(cat "$STORE")" "*/15 * * * *" "ensure uses */15 schedule"
+assert_contains "$(cat "$STORE")" "*/10 * * * *" "ensure uses */10 schedule (always-on default)"
 assert_contains "$(cat "$STORE")" "cd '$ROOT_A'" "ensure uses cd '<root>'"
 assert_contains "$(cat "$STORE")" "# deputy[$ROOT_A]" "ensure writes per-repo marker"
 
@@ -127,13 +127,13 @@ assert_eq "$(DEPUTY_NOW_HOUR="10:00" bash "$DEPUTY" _resethour 'retry after: 360
 assert_eq "$(bash "$DEPUTY" _resetsecs 'try again in 5 minutes')" "300" \
   "seconds-based: _resetsecs 5min = 300s (no time injection needed)"
 
-# ── Test 9: cron --ensure creates cron.enabled marker AND writes */15 line ──
+# ── Test 9: cron --ensure creates cron.enabled marker AND writes */10 line (always-on default) ──
 : > "$STORE"
 ROOT_MARKER="$DEPUTY_ROOT"
 bash "$DEPUTY" cron --ensure
 assert_eq "$(test -f "$ROOT_MARKER/.deputy/cron.enabled" && echo yes || echo no)" "yes" \
   "ensure creates cron.enabled marker"
-assert_contains "$(cat "$STORE")" "*/15 * * * *" "ensure writes */15 line (marker present)"
+assert_contains "$(cat "$STORE")" "*/10 * * * *" "ensure writes */10 line (always-on default)"
 # _cron_enabled via the marker (indirect: ensure it's a file, covered above)
 
 # ── Test 10: cron --remove deletes the marker AND removes the line ──
@@ -162,7 +162,7 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH_LC" DEPUTY_AVAIL="claude,gemini" \
 assert_eq "$(grep -c 'deputy\[' "$STORE" 2>/dev/null || true)" "0" \
   "no marker: run must NOT add cron line"
 
-# ── Test 12 (Lifecycle): marker present → deputy run re-arms */15 at idle-exit ──
+# ── Test 12 (Always-on): marker present → deputy run does NOT remove cron line ──
 : > "$STORE"
 # Re-enable (sets marker + arms initial line)
 bash "$DEPUTY" cron --ensure
@@ -170,10 +170,11 @@ bash "$DEPUTY" cron --ensure
 bash "$DEPUTY" add "lifecycle item 1" --p0
 bash "$DEPUTY" add "lifecycle item 2" --p0
 
-# Record what the crontab looks like before run (should have */15 from --ensure)
+# Record what the crontab looks like before run (should have */10 from --ensure)
 STORE_BEFORE_RUN="$(cat "$STORE")"
 
-# Capture-script: record the crontab at orchestrator-call time (proves line removed during run)
+# Capture-script: record the crontab at orchestrator-call time
+# (always-on model: the line should STILL BE PRESENT during run)
 CAPTURE_FILE="$(mktemp)"
 ORCH_CAP="$(mktemp)"
 cat > "$ORCH_CAP" <<EOFCAP
@@ -189,15 +190,15 @@ chmod +x "$ORCH_CAP"
 DEPUTY_ORCHESTRATOR_CMD="$ORCH_CAP" DEPUTY_AVAIL="claude,gemini" \
   bash "$DEPUTY" run >/dev/null 2>&1 || true
 
-# At orchestrator time, the deputy line should have been REMOVED
-assert_eq "$(grep -c "deputy\[$ROOT_MARKER\]" "$CAPTURE_FILE" 2>/dev/null || true)" "0" \
-  "lifecycle: cron line absent at orchestrator-call time (removed while active)"
+# Always-on model: the deputy line must be PRESENT during the run (NOT removed)
+assert_eq "$(grep -c "deputy\[$ROOT_MARKER\]" "$CAPTURE_FILE" 2>/dev/null || true)" "1" \
+  "always-on: cron line present at orchestrator-call time (NOT removed)"
 
-# After idle exit, the */15 line should be RESTORED
+# After idle exit, the */10 line should still be present (never removed)
 assert_eq "$(grep -c "deputy\[$ROOT_MARKER\]" "$STORE")" "1" \
-  "lifecycle: cron line present after run goes idle"
-assert_contains "$(cat "$STORE")" "*/15 * * * *" \
-  "lifecycle: re-armed line uses */15 schedule"
+  "always-on: cron line still present after run goes idle"
+assert_contains "$(cat "$STORE")" "*/10 * * * *" \
+  "always-on: persistent line uses */10 schedule"
 
 rm -f "$ORCH_LC" "$ORCH_CAP" "$CAPTURE_FILE"
 

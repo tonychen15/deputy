@@ -441,15 +441,32 @@ cmd_set() {
   return "$_set_rc"
 }
 
-# True if any .deputy/<pid>.claim is owned by a live process.
+# Get the start-time of a pid using ps lstart (portable; empty if unavailable).
+_pid_start_time() {
+  local pid="$1"
+  ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//' || true
+}
+
+# True if any .deputy/<pid>.claim is owned by a LIVE process with matching start-time.
+# Claim file format:
+#   Line 1: the running item line
+#   Line 2: the PID start-time (optional; if present, must match to count as live)
+# A claim is live only if: pid exists (kill -0) AND (no start-time recorded OR start-time matches).
 _live_claim_exists() {
   local f pid
   for f in "$STATE_DIR"/*.claim; do
     [[ -e "$f" ]] || continue
     pid="${f##*/}"; pid="${pid%.claim}"
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      return 0
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    # PID is alive; validate start-time if recorded in claim.
+    local recorded_start actual_start
+    recorded_start="$(sed -n '2p' "$f" 2>/dev/null || true)"
+    if [[ -n "$recorded_start" ]]; then
+      actual_start="$(_pid_start_time "$pid")"
+      [[ "$actual_start" == "$recorded_start" ]] || continue  # start-time mismatch → stale
     fi
+    return 0
   done
   return 1
 }
@@ -476,7 +493,9 @@ cmd_claim() {
     desc="${_cid_rest#*|}"
     to="$(_serialize_item running "$prio" "$_cid" "$desc")"
     _flip_line "$from" "$to"
-    printf '%s\n' "$to" > "$STATE_DIR/$pid.claim"
+    # Write claim file: line 1 = running item line; line 2 = PID start-time for liveness validation.
+    local _claim_start; _claim_start="$(_pid_start_time "$pid")"
+    printf '%s\n%s\n' "$to" "$_claim_start" > "$STATE_DIR/$pid.claim"
   }
   _with_lock _do_claim
 }
@@ -494,25 +513,44 @@ _revert_to_waiting() {
 
 cmd_recover() {
   _do_recover() {
-    local f pid line
-    # (1) Dead-claim recovery.
+    local f pid line recorded_start actual_start
+    # (1) Dead-claim recovery: a claim is dead if the pid is gone OR start-time mismatches.
     for f in "$STATE_DIR"/*.claim; do
       [[ -e "$f" ]] || continue
       pid="${f##*/}"; pid="${pid%.claim}"
-      if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
-        line="$(cat "$f")"
-        _revert_to_waiting "$line"
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      local _claim_dead=0
+      if ! kill -0 "$pid" 2>/dev/null; then
+        _claim_dead=1
+      else
+        # PID alive — check start-time (line 2 of claim file).
+        recorded_start="$(sed -n '2p' "$f" 2>/dev/null || true)"
+        if [[ -n "$recorded_start" ]]; then
+          actual_start="$(_pid_start_time "$pid")"
+          [[ "$actual_start" != "$recorded_start" ]] && _claim_dead=1
+        fi
+      fi
+      if [[ "$_claim_dead" -eq 1 ]]; then
+        # Read item line from line 1 of claim file.
+        line="$(sed -n '1p' "$f" 2>/dev/null || true)"
+        [[ -n "$line" ]] && _revert_to_waiting "$line" || true
         rm -f "$f"
       fi
     done
-    # Collect lines still claimed by LIVE pids.
+    # Collect item lines still claimed by LIVE pids (with matching start-time).
     local -a claimed=()
     for f in "$STATE_DIR"/*.claim; do
       [[ -e "$f" ]] || continue
       pid="${f##*/}"; pid="${pid%.claim}"
-      if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-        claimed+=("$(cat "$f")")
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      kill -0 "$pid" 2>/dev/null || continue
+      recorded_start="$(sed -n '2p' "$f" 2>/dev/null || true)"
+      if [[ -n "$recorded_start" ]]; then
+        actual_start="$(_pid_start_time "$pid")"
+        [[ "$actual_start" == "$recorded_start" ]] || continue
       fi
+      # Claim is live; record item line (line 1 of claim file).
+      claimed+=("$(sed -n '1p' "$f" 2>/dev/null || true)")
     done
     # (2) Orphan recovery: any @/~ item not in a live claim.
     local raw parsed state c found
@@ -740,7 +778,17 @@ _set_cron() {
 
 cmd_cron() {
   case "${1:-}" in
-    --ensure)     mkdir -p "$STATE_DIR" 2>/dev/null || true; : > "$STATE_DIR/cron.enabled"; _set_cron "*/15 * * * *" ;;
+    --ensure)
+      mkdir -p "$STATE_DIR" 2>/dev/null || true
+      : > "$STATE_DIR/cron.enabled"
+      # Read heartbeat_mins from config; validate integer in 1–59; default 10.
+      local _hm; _hm="$(_config_get heartbeat_mins)"
+      if [[ "$_hm" =~ ^[0-9]+$ ]] && [[ "$_hm" -ge 1 ]] && [[ "$_hm" -le 59 ]]; then
+        _set_cron "*/$_hm * * * *"
+      else
+        _set_cron "*/10 * * * *"
+      fi
+      ;;
     --remove)     rm -f "$STATE_DIR/cron.enabled" 2>/dev/null || true; _set_cron "" ;;
     --reschedule) local h; h="$(_parse_reset_hour "${2:-}")"
                   if [[ -n "$h" ]]; then _set_cron "0 $h * * *"
@@ -887,8 +935,8 @@ cmd_run() {
 
   cmd_recover >/dev/null 2>&1 || true
   if _live_claim_exists; then return 0; fi
-  # Active run: remove this repo's heartbeat line; it is re-armed when we go idle (below).
-  _cron_enabled && _set_cron "" >/dev/null 2>&1 || true
+  # Always-on model: do NOT remove the cron line while running. The line persists;
+  # each tick is state-aware (skip when live, recover orphans, etc.).
   local cap; cap="$(_config_get max_items)"; cap="${cap:-0}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
   local processed=0 item avail decision running_line log rc outcome reset
 
@@ -915,12 +963,11 @@ cmd_run() {
 
     avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
     if [[ "$decision" != "claude" ]]; then
-      _cron_enabled && cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
-      _cron_enabled && _set_cron "*/15 * * * *" >/dev/null 2>&1 || true
       return 0
     fi
     cmd_claim "$found_line" --pid "$$" >/dev/null 2>&1 || return 1
-    running_line="$(cat "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
+    # Read item line from line 1 of claim file (claim file now has 2 lines).
+    running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
     log="$(mktemp)"
     set +e
     _spawn_orchestrator "$running_line" "$decision" >"$log" 2>&1
@@ -932,12 +979,12 @@ cmd_run() {
     if [[ "$outcome" == "quota_exhausted" ]]; then
       reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
       _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
-      _cron_enabled && cmd_cron --reschedule "$reset" >/dev/null 2>&1 || true
-      printf 'deputy: Claude session limit reached — rescheduled for reset; stopping this cycle.\n'
+      # Always-on: do NOT reschedule the shared cron line for quota.
+      # The fixed */N heartbeat will retry on the next tick; quota is a per-task skip.
+      printf 'deputy: Claude session limit reached — will retry on next heartbeat tick.\n'
       return 0
     fi
     rm -f "$log"
-    _cron_enabled && _set_cron "*/15 * * * *" >/dev/null 2>&1 || true
     return 0
   fi
 
@@ -946,11 +993,31 @@ cmd_run() {
     item="$(cmd_pick)"; [[ -n "$item" ]] || break
     avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
     if [[ "$decision" != "claude" ]]; then
-      _cron_enabled && cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
+      # Provider unavailable: leave item waiting; the next heartbeat tick will retry.
       return 0
     fi
     cmd_claim "$item" --pid "$$" >/dev/null 2>&1 || break
-    running_line="$(cat "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$item")"
+    # Read item line from line 1 of claim file (claim file now has 2 lines).
+    running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$item")"
+
+    # ── Retry budget check (before spawning) ─────────────────────────────────
+    # Extract item id for waypoint lookup; if budget exhausted, mark failed instead.
+    local _rb_id _rb_parsed _rb_id_rest
+    _rb_parsed="$(_parse_item "$running_line")"
+    _rb_id_rest="${_rb_parsed#*|}"; _rb_id_rest="${_rb_id_rest#*|}"; _rb_id="${_rb_id_rest%%|*}"
+    if [[ -n "$_rb_id" ]] && _wp_retry_budget_exhausted "$_rb_id"; then
+      local _rb_desc; _rb_desc="${_rb_id_rest#*|}"
+      local _rb_slug; _rb_slug="$(_wp_slug "$_rb_id" "$_rb_desc")"
+      local _fail_reason="cron resume budget exhausted (3 attempts, no step progress)"
+      printf '%s\n' "$_fail_reason" > "$STATE_DIR/$_rb_slug.fail.md"
+      _with_lock _do_set_item_failed "$running_line" || true
+      rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
+      processed=$((processed + 1))
+      [[ "$once" -eq 1 ]] && break
+      [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
+      continue
+    fi
+
     log="$(mktemp)"
     set +e
     _spawn_orchestrator "$running_line" "$decision" >"$log" 2>&1
@@ -963,20 +1030,51 @@ cmd_run() {
       # Pass only the relevant reset/limit line(s) to the rescheduler (bounded;
       # avoids ARG_MAX on a large log). _parse_reset_hour scans for "<N>am/pm".
       reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
-      # The orchestrator didn't finish this item — revert it for the next cycle,
-      # reschedule cron for the reset time, and stop (research.sh behavior).
+      # The orchestrator didn't finish this item — revert it for the next tick.
+      # Always-on: do NOT reschedule the shared cron line for quota.
       _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
-      _cron_enabled && cmd_cron --reschedule "$reset" >/dev/null 2>&1 || true
-      printf 'deputy: Claude session limit reached — rescheduled for reset; stopping this cycle.\n'
+      # Track that a cron-triggered resume attempt happened with no step progress.
+      if [[ -n "$_rb_id" ]]; then
+        _wp_increment_resume_attempts "$_rb_id"
+        if _wp_retry_budget_exhausted "$_rb_id"; then
+          local _qrb_desc; _qrb_desc="${_rb_id_rest#*|}"
+          local _qrb_slug; _qrb_slug="$(_wp_slug "$_rb_id" "$_qrb_desc")"
+          printf '%s\n' "cron resume budget exhausted (3 attempts, no step progress)" \
+            > "$STATE_DIR/$_qrb_slug.fail.md"
+          local _qrb_cur_line
+          _qrb_cur_line="$(grep -F "[#$_rb_id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+          if [[ -n "$_qrb_cur_line" ]]; then
+            _with_lock _revert_to_waiting "$_qrb_cur_line" >/dev/null 2>&1 || true
+            _qrb_cur_line="$(grep -F "[#$_rb_id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+            [[ -n "$_qrb_cur_line" ]] && { _with_lock _do_set_item_failed "$_qrb_cur_line" || true; }
+          fi
+        fi
+      fi
+      printf 'deputy: Claude session limit reached — will retry on next heartbeat tick.\n'
       return 0
+    fi
+    # Successful orchestrator exit: track attempt progress.
+    # If a new step was committed, the budget resets; otherwise increments attempt counter.
+    if [[ -n "$_rb_id" ]]; then
+      _wp_track_resume_attempt "$_rb_id"
+      # Post-track: if budget is now exhausted (just hit threshold), mark failed.
+      if _wp_retry_budget_exhausted "$_rb_id"; then
+        local _rb_desc2; _rb_desc2="${_rb_id_rest#*|}"
+        local _rb_slug2; _rb_slug2="$(_wp_slug "$_rb_id" "$_rb_desc2")"
+        printf '%s\n' "cron resume budget exhausted (3 attempts, no step progress)" \
+          > "$STATE_DIR/$_rb_slug2.fail.md"
+        # Look up the current BACKLOG line for this item (running_line may still be in BACKLOG
+        # if the orchestrator didn't mark the item terminal; search by id tag [#N]).
+        local _rb_cur_line
+        _rb_cur_line="$(grep -F "[#$_rb_id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+        [[ -n "$_rb_cur_line" ]] && { _with_lock _do_set_item_failed "$_rb_cur_line" || true; }
+      fi
     fi
     rm -f "$log"
     processed=$((processed + 1))
     [[ "$once" -eq 1 ]] && break
     [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
   done
-  # Reached idle (queue drained / cap / --once): re-arm the heartbeat if opted in.
-  _cron_enabled && _set_cron "*/15 * * * *" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -1350,6 +1448,105 @@ cmd_wp_commit() {
 
 # Hidden helper for tests: print the raw waypoint.json.
 cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
+
+# ── Retry budget helpers ─────────────────────────────────────────────────────
+# Budget: if an item has been cron-resumed 3 times with no new committed step,
+# stop reviving it (mark it failed). Stored in waypoint.json as `resume_attempts`
+# (an integer; absent = 0) and `resume_attempts_committed_steps` (count of
+# succeeded steps at the last attempt; if step count grew → reset budget).
+#
+# The budget only applies when a waypoint exists for the item.
+# Items without a waypoint (no waypoints/ dir) are not budgeted.
+
+# Maximum no-progress resumes before marking the item failed.
+_WP_RETRY_BUDGET=3
+
+# Convert item id + description to a safe filesystem slug for .fail.md filenames.
+_wp_slug() {
+  local id="$1" desc="$2"
+  local slug="${id}-${desc}"
+  # Replace non-alphanumeric characters with dashes; collapse consecutive dashes; trim.
+  slug="$(printf '%s' "$slug" | tr -cs 'a-zA-Z0-9' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')"
+  printf '%s' "${slug:0:64}"
+}
+
+# Return 0 (true) if the retry budget is exhausted for item <id>.
+# Budget is exhausted if resume_attempts >= _WP_RETRY_BUDGET AND no new step committed.
+_wp_retry_budget_exhausted() {
+  local id="$1"
+  local f; f="$(_wp_json "$id")"
+  [[ -f "$f" ]] || return 1   # no waypoint → not budgeted
+  command -v jq >/dev/null 2>&1 || return 1
+  local attempts prev_steps current_steps
+  attempts="$(jq -r '.resume_attempts // 0' "$f" 2>/dev/null || printf '0')"
+  prev_steps="$(jq -r '.resume_attempts_committed_steps // 0' "$f" 2>/dev/null || printf '0')"
+  current_steps="$(jq -r '[.steps[] | select(.status=="succeeded")] | length' "$f" 2>/dev/null || printf '0')"
+  # If steps grew since last attempt, reset: not exhausted.
+  if [[ "$current_steps" -gt "$prev_steps" ]]; then return 1; fi
+  # Otherwise check attempt counter.
+  [[ "$attempts" -ge "$_WP_RETRY_BUDGET" ]]
+}
+
+# Increment resume_attempts for item <id> (no-op if no waypoint). Lock-free; caller
+# may or may not hold the lock — this uses its own atomic write.
+_wp_increment_resume_attempts() {
+  local id="$1"
+  local f; f="$(_wp_json "$id")"
+  [[ -f "$f" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  _do_inc() {
+    local current_steps
+    current_steps="$(jq -r '[.steps[] | select(.status=="succeeded")] | length' "$f" 2>/dev/null || printf '0')"
+    _wp_jq "$id" \
+      '.resume_attempts = ((.resume_attempts // 0) + 1)
+       | .resume_attempts_committed_steps = ($cs | tonumber)
+       | .updated_at = $now' \
+      --arg cs "$current_steps" --arg now "$(_wp_now)"
+  }
+  _with_lock _do_inc 2>/dev/null || true
+}
+
+# After a successful (non-quota) orchestrator exit: if step count grew, reset budget;
+# otherwise increment attempt counter. No-op if no waypoint exists.
+_wp_track_resume_attempt() {
+  local id="$1"
+  local f; f="$(_wp_json "$id")"
+  [[ -f "$f" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  _do_track() {
+    local prev_steps current_steps
+    prev_steps="$(jq -r '.resume_attempts_committed_steps // 0' "$f" 2>/dev/null || printf '0')"
+    current_steps="$(jq -r '[.steps[] | select(.status=="succeeded")] | length' "$f" 2>/dev/null || printf '0')"
+    if [[ "$current_steps" -gt "$prev_steps" ]]; then
+      # Progress was made: reset the retry budget.
+      _wp_jq "$id" \
+        '.resume_attempts = 0
+         | .resume_attempts_committed_steps = ($cs | tonumber)
+         | .updated_at = $now' \
+        --arg cs "$current_steps" --arg now "$(_wp_now)"
+    else
+      # No progress: increment attempt counter.
+      _wp_jq "$id" \
+        '.resume_attempts = ((.resume_attempts // 0) + 1)
+         | .resume_attempts_committed_steps = ($cs | tonumber)
+         | .updated_at = $now' \
+        --arg cs "$current_steps" --arg now "$(_wp_now)"
+    fi
+  }
+  _with_lock _do_track 2>/dev/null || true
+}
+
+# Set a running item's state to failed in BACKLOG (used by retry budget exhaustion).
+# Caller holds no lock (this acquires its own via _with_lock).
+_do_set_item_failed() {
+  local raw="$1" parsed prio desc to _fsid_rest _fsid
+  parsed="$(_parse_item "$raw")"
+  prio="${parsed#*|}"; prio="${prio%%|*}"
+  _fsid_rest="${parsed#*|}"; _fsid_rest="${_fsid_rest#*|}"; _fsid="${_fsid_rest%%|*}"
+  desc="${_fsid_rest#*|}"
+  to="$(_serialize_item failed "$prio" "$_fsid" "$desc")"
+  _flip_line "$raw" "$to"
+}
 
 main() {
   local cmd="${1:-help}"
