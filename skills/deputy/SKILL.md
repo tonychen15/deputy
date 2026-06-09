@@ -37,8 +37,10 @@ Read the item's description and the repo. Decide **simple** or **complex**.
 - A *simple* item is a well-specified, low-risk, single-concern change (a clear bug fix,
   a small addition with an obvious approach). Everything else is *complex*.
 
-Derive a **slug** from the description: kebab-case, ~6 words max, plus a short hash for
-uniqueness (e.g. `fix-login-bug-a1b2`). Use it for the branch and the questions file.
+Derive a **slug** from the description: kebab-case, ~6 words max.  If the item has an
+`[#N]` ID tag, append it as a suffix for guaranteed uniqueness (e.g. `fix-login-bug-7`).
+If the item has no ID, append a short hash instead (e.g. `fix-login-bug-a1b2`).  Use the
+slug for the branch name and all state files (questions, fail, etc.).
 
 ### 2a. Simple → spine loop (1 step)
 

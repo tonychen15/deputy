@@ -5,12 +5,16 @@ source "$(dirname "$0")/lib.sh"
 setup_repo
 printf '%s\n' '[P1] alpha' '[P2] beta' >> "$DEPUTY_ROOT/BACKLOG.md"
 
-bash "$DEPUTY" set "[P1] alpha" done
+# Trigger allocation so items get IDs before we use them with set
+bash "$DEPUTY" list >/dev/null
+alpha_line="$(grep 'alpha' "$DEPUTY_ROOT/BACKLOG.md")"
+
+bash "$DEPUTY" set "$alpha_line" done
 body="$(awk '/^## Items/{found=1; next} found{print}' "$DEPUTY_ROOT/BACKLOG.md")"
 # waiting item should appear before done item
-alpha_line="$(echo "$body" | grep -n 'alpha' | cut -d: -f1)"
-beta_line="$(echo  "$body" | grep -n 'beta'  | cut -d: -f1)"
-if [[ "$beta_line" -lt "$alpha_line" ]]; then
+alpha_line_n="$(echo "$body" | grep -n 'alpha' | cut -d: -f1)"
+beta_line_n="$(echo  "$body" | grep -n 'beta'  | cut -d: -f1)"
+if [[ "$beta_line_n" -lt "$alpha_line_n" ]]; then
   TESTS_RUN=$((TESTS_RUN + 1))
 else
   TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
@@ -38,8 +42,11 @@ fi
 # ── active items (running) land between waiting and terminal ──────────────────
 setup_repo
 printf '%s\n' '[P2] waiting one' '@[P1] running one' '#[P0] done one' >> "$DEPUTY_ROOT/BACKLOG.md"
+# Trigger allocation, then get the actual running line (with [#N])
+bash "$DEPUTY" list >/dev/null
+running_line="$(grep '^@' "$DEPUTY_ROOT/BACKLOG.md" | head -1)"
 # trigger regroup via a no-op state change on the running item
-bash "$DEPUTY" set "@[P1] running one" running
+bash "$DEPUTY" set "$running_line" running
 body="$(awk '/^## Items/{found=1; next} found{print}' "$DEPUTY_ROOT/BACKLOG.md")"
 wait_line=$(echo "$body" | grep -n 'waiting one' | cut -d: -f1)
 run_line=$(echo  "$body" | grep -n 'running one' | cut -d: -f1)

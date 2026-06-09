@@ -7,15 +7,19 @@ printf '%s\n' '[P0] active one' 'second waiting' '#[P1] finished thing' '%[P2] c
 # --- dry-run lists the untouched (waiting) items but changes nothing ---
 out="$(bash "$DEPUTY" clean --dry-run)"
 assert_contains "$out" "would remove 2" "dry-run counts untouched (waiting) items"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|active one" "dry-run leaves the file intact"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "dry-run leaves the file intact"
+assert_contains "$(bash "$DEPUTY" list)" "active one"  "dry-run leaves active one"
 
 # --- real clean removes untouched (waiting), keeps everything deputy has touched ---
 bash "$DEPUTY" clean
 out="$(bash "$DEPUTY" list)"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'active one\|second waiting')" "0" "clean removed the untouched items"
-assert_contains "$out" "done|P1|finished thing"      "clean keeps done items"
-assert_contains "$out" "cancelled|P2|cancelled thing" "clean keeps cancelled items"
-assert_contains "$out" "failed|P1|broken thing"      "clean keeps failed items"
+assert_contains "$out" "done|P1|"           "clean keeps done items"
+assert_contains "$out" "finished thing"     "clean keeps done item description"
+assert_contains "$out" "cancelled|P2|"      "clean keeps cancelled items"
+assert_contains "$out" "cancelled thing"    "clean keeps cancelled item description"
+assert_contains "$out" "failed|P1|"         "clean keeps failed items"
+assert_contains "$out" "broken thing"       "clean keeps failed item description"
 
 # --- legend/header survives ---
 assert_eq "$(grep -c 'LEGEND' "$DEPUTY_ROOT/BACKLOG.md")" "1" "clean preserves the legend header"
