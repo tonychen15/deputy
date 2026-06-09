@@ -194,6 +194,23 @@ surfaced` with a note explaining why) — do not try to work around the block. A
 data/DB operations, production/service changes, repo or directory renames, and
 mass/irreversible rewrites.
 
+## Item states
+
+| Symbol | State | Meaning |
+|--------|-------|---------|
+| (none) | `waiting` | Queued, ready to run |
+| `~` | `triaging` | Being classified |
+| `@` | `running` | Actively executing |
+| `?` | `surfaced` | Awaiting human input |
+| `#` | `done` | Completed |
+| `!` | `failed` | Terminal failure |
+| `%` | `cancelled` | Won't-do, terminal |
+| `=` | `duplicate` | Redundant, terminal |
+| `^` | `paused` | Mid-execution checkpoint; auto-resumes |
+| `>` | `deferred` | Parked for future consideration; inert + intentional; never auto-scheduled; revive with `deputy set "<line>" waiting` |
+
+states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
+
 ## CLI quick reference
 
 **Public** (in `deputy help`):

@@ -60,11 +60,12 @@ _each_item() {
 _parse_item() {
   local line="$1" state="waiting" prio="" id="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
-  if [[ "$line" =~ ^([~@?#!%=^])[[:space:]]*(.*)$ ]]; then
+  if [[ "$line" =~ ^([~@?#!%=^>])[[:space:]]*(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
       '~') state=triaging ;;  '@') state=running ;;    '?') state=surfaced ;;
       '#') state=done ;;      '!') state=failed ;;
       '%') state=cancelled ;; '=') state=duplicate ;; '^') state=paused ;;
+      '>') state=deferred ;;
     esac
     line="${BASH_REMATCH[2]}"
   fi
@@ -92,6 +93,7 @@ _serialize_item() {
     waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
     surfaced)  prefix="?" ;; done)      prefix="#" ;; failed)    prefix="!" ;;
     cancelled) prefix="%" ;; duplicate) prefix="=" ;; paused)    prefix="^" ;;
+    deferred)  prefix=">" ;;
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
   body=""
@@ -144,7 +146,7 @@ _append_item() {
 _regroup_backlog() {
   grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null || return 0
   local line tmp
-  local -a waiting_items=() active_items=() terminal_items=()
+  local -a waiting_items=() active_items=() deferred_items=() terminal_items=()
 
   tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
@@ -161,13 +163,15 @@ _regroup_backlog() {
     case "$state" in
       waiting)                              waiting_items+=("$raw") ;;
       triaging|running|surfaced|paused)     active_items+=("$raw") ;;
+      deferred)                             deferred_items+=("$raw") ;;
       done|failed|cancelled|duplicate)      terminal_items+=("$raw") ;;
     esac
   done < <(_each_item)
 
-  [[ ${#waiting_items[@]} -gt 0 ]]  && { printf '\n' >> "$tmp"; printf '%s\n' "${waiting_items[@]}"  >> "$tmp"; }
-  [[ ${#active_items[@]} -gt 0 ]]   && { printf '\n' >> "$tmp"; printf '%s\n' "${active_items[@]}"   >> "$tmp"; }
-  [[ ${#terminal_items[@]} -gt 0 ]] && { printf '\n' >> "$tmp"; printf '%s\n' "${terminal_items[@]}" >> "$tmp"; }
+  [[ ${#waiting_items[@]} -gt 0 ]]   && { printf '\n' >> "$tmp"; printf '%s\n' "${waiting_items[@]}"   >> "$tmp"; }
+  [[ ${#active_items[@]} -gt 0 ]]    && { printf '\n' >> "$tmp"; printf '%s\n' "${active_items[@]}"    >> "$tmp"; }
+  [[ ${#deferred_items[@]} -gt 0 ]]  && { printf '\n' >> "$tmp"; printf '%s\n' "${deferred_items[@]}"  >> "$tmp"; }
+  [[ ${#terminal_items[@]} -gt 0 ]]  && { printf '\n' >> "$tmp"; printf '%s\n' "${terminal_items[@]}"  >> "$tmp"; }
 
   mv "$tmp" "$BACKLOG"
 }
@@ -266,8 +270,11 @@ cmd_add() {
   done
   [[ -n "$text" ]] || { printf 'deputy: add requires text\n' >&2; return 2; }
   text="${text#"${text%%[![:space:]]*}"}"   # left-trim (matches parser's own trim)
-  if [[ "$text" =~ ^[~@?#!%=^] ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
-    printf 'deputy: description may not begin with a status prefix (~@?#!%%=^) or a [Px] tag: %s\n' "$text" >&2
+  local _pfx="${text:0:1}"
+  if [[ "$_pfx" == '~' || "$_pfx" == '@' || "$_pfx" == '?' || "$_pfx" == '#' || \
+        "$_pfx" == '!' || "$_pfx" == '%' || "$_pfx" == '=' || "$_pfx" == '^' || \
+        "$_pfx" == '>' ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?#!%%=^>) or a [Px] tag: %s\n' "$text" >&2
     return 2
   fi
   if [[ "$text" == *$'\n'* ]]; then
@@ -301,17 +308,18 @@ _autorun() {
 
 cmd_status() {
   _with_lock _allocate_ids
-  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 parsed
+  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 parsed
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
     case "$state" in
       waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
       surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;;    failed)     f=$((f+1)) ;;
       cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;; paused)  p=$((p+1)) ;;
+      deferred) df=$((df+1)) ;;
     esac
   done < <(_each_item)
-  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\n' \
-    "$w" "$t" "$r" "$s" "$d" "$f" "$c" "$u" "$p"
+  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\n' \
+    "$w" "$t" "$r" "$s" "$d" "$f" "$c" "$u" "$p" "$df"
 }
 
 # Numeric rank for a priority tag: P0=0 P1=1 P2=2 (none)=3.
@@ -337,7 +345,7 @@ cmd_pick() {
 }
 
 _valid_state() {
-  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate|paused) return 0 ;; *) return 1 ;; esac
+  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate|paused|deferred) return 0 ;; *) return 1 ;; esac
 }
 
 # ── Notifications ─────────────────────────────────────────────────────────────
@@ -610,7 +618,7 @@ commands:
   review                          show surfaced items, their questions, and the digest
   clean [--dry-run] [--state <state>]
                                   remove items of <state> (default: waiting = untouched items)
-                                  cleanable states: waiting, done, failed, cancelled, duplicate
+                                  cleanable states: waiting, done, failed, cancelled, duplicate, deferred
                                   refuses running, triaging, surfaced, paused (active/checkpointed/awaiting)
   reflect [--apply]               re-triage report: learnings, untagged items, reprioritization list,
                                   surfaced items, duplicate candidates; --apply writes .deputy/learnings.md
@@ -621,7 +629,8 @@ config keys (.deputy/config):
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
-states: waiting triaging running surfaced done failed cancelled duplicate paused
+states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
+symbols: (none)=waiting ~=triaging @=running ?=surfaced #=done !=failed %=cancelled ==duplicate ^=paused >=deferred
 EOF
 }
 
@@ -1103,14 +1112,14 @@ cmd_clean() {
 
   # Safety: refuse to clean active/checkpointed/awaiting states.
   case "$filter_state" in
-    waiting|done|failed|cancelled|duplicate)
+    waiting|done|failed|cancelled|duplicate|deferred)
       ;;  # cleanable terminal/inert states — ok
     running|triaging|surfaced|paused)
       printf 'deputy: refusing to clean %s items (active/checkpointed/awaiting) — recover or resolve them first\n' \
         "$filter_state" >&2
       return 1 ;;
     *)
-      printf 'deputy: clean: unknown state: %s (cleanable: waiting, done, failed, cancelled, duplicate)\n' \
+      printf 'deputy: clean: unknown state: %s (cleanable: waiting, done, failed, cancelled, duplicate, deferred)\n' \
         "$filter_state" >&2
       return 2 ;;
   esac
