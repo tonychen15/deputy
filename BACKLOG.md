@@ -15,6 +15,7 @@
 Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 [P2] E2E test: interrupt a run mid-step and verify orchestrator-driven resume — recover reverts the orphaned @running item, the next run re-picks it, SKILL §2c purges dirty worktree state + calls 'deputy resume', and execution continues from the first uncommitted step to completion. Covers the one untested hole in the resume story (SKILL §2c is prompt-only today).
+[P2] extend deputy clean with augment, such as duplicate, waiting, running, paused. With this augment, deputy can remove tasks with a specific state.
 
 #[P1] BUG (breaking): install.sh link run from inside a .deputy/wt-* worktree repoints the GLOBAL ~/.claude/skills/deputy (and ~/.local/bin/deputy) symlink to the ephemeral worktree path; when the worktree is torn down at task end the symlink dangles and /deputy breaks. Fix: install.sh must resolve the symlink target to the CANONICAL repo root (git --git-common-dir / main worktree), never a linked worktree; autonomous task runs must NOT run install.sh link; emit a notification on such breaking changes.
 #[P1] Add cancelled and duplicate item statuses to the queue (parse/serialize/status)
