@@ -171,6 +171,27 @@ until clean).
   lose it, re-fetch with `deputy list` and reconstruct the running-form line.
 - Do not manage cron yourself except via `deputy cron --reschedule` on quota exhaustion.
 
+## Guardrail (enforced + judgment)
+A PreToolUse hook **blocks** these in headless runs — never attempt them (and never hand
+them to a failover `codex`/`gemini`, which run unhooked):
+- **Edit/Write/MultiEdit/NotebookEdit** to a path outside `.deputy/wt` (the worktree) —
+  only the state files `.deputy/<slug>.questions.md` and `.deputy/<slug>.fail.md` are
+  exceptions. *(Bash file-writes aren't path-checked — a best-effort limitation; still
+  never write outside the worktree.)*
+- **Bash:** `git push`, `git --git-dir`/`--work-tree` (and `GIT_DIR=`/`GIT_WORK_TREE=`
+  env), `crontab`, `install.sh`, `rm -r`/`-rf`/`-f`, `git branch -d`/`-D`/`-f`,
+  `git config --global`/`--system`, `git update-ref`, `git remote …`, `git worktree remove
+  --force`, `git reset --hard`/`clean -f` outside the worktree, `sudo`, `gh pr merge`,
+  `gh … --delete-branch`, global installs (`npm/pnpm/yarn -g`, `pip install`, `apt`, `brew
+  install`), and `deputy cron --ensure`/`--remove` — **but `deputy cron --reschedule` on
+  quota is allowed** (the sanctioned failover).
+
+**If a tool call is blocked, that means SURFACE the item** (`deputy set "<item-line>"
+surfaced` with a note explaining why) — do not try to work around the block. Additionally,
+**surface (do not execute) judgment-call risky ops** the hook can't catch: destructive
+data/DB operations, production/service changes, repo or directory renames, and
+mass/irreversible rewrites.
+
 ## CLI quick reference
 
 **Public** (in `deputy help`):

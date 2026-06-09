@@ -12,6 +12,10 @@ if [[ "${DEPUTY_NO_PATH_FIX:-0}" != "1" ]]; then
   export PATH; unset _d
 fi
 
+# Deputy install dir (where hooks/ lives). Allow env override for tests.
+# Resolve symlinks so this works when deputy is installed as a symlink in PATH.
+SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/.." && pwd)}"
+
 # ── Root + paths ────────────────────────────────────────────────────────────
 resolve_root() {
   if [[ -n "${DEPUTY_ROOT:-}" ]]; then
@@ -726,6 +730,20 @@ _availability() {
   printf '%s\n' "$avail"
 }
 
+# Write a per-spawn Claude settings file registering the guardrail PreToolUse hook
+# (absolute hook path), and echo its path. SRC_DIR is the deputy install dir.
+# Uses jq for JSON encoding and printf %q for shell-quoting, so paths with
+# spaces or shell metacharacters are handled correctly.
+_guardrail_settings_path() {
+  local hook; hook="$(printf '%q' "$SRC_DIR/hooks/guardrail.sh")"
+  local f="$STATE_DIR/guardrail-settings.json"
+  mkdir -p "$STATE_DIR"
+  jq -n --arg hook "$hook" \
+    '{"hooks":{"PreToolUse":[{"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit",
+      "hooks":[{"type":"command","command":$hook}]}]}}' > "$f"
+  printf '%s' "$f"
+}
+
 # Spawn the orchestrator for a claimed item. If DEPUTY_ORCHESTRATOR_CMD is set
 # (tests / custom drivers), call it as `<cmd> <item-line> <provider>`. Otherwise
 # build a headless prompt that runs the deputy orchestrator skill on this one item.
@@ -741,7 +759,11 @@ Repo root: $ROOT
 Item (the exact current BACKLOG.md line — pass it verbatim to 'deputy set'): $item
 Provider for coding: $provider
 Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
-  claude -p "$prompt" --model claude-sonnet-4-6 --allowedTools "Bash,Edit,Write,Read,Glob,Grep"
+  local gset; gset="$(_guardrail_settings_path)"
+  DEPUTY_GUARDED=1 DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
+    claude -p "$prompt" --model claude-sonnet-4-6 \
+      --allowedTools "Bash,Edit,Write,Read,Glob,Grep" \
+      --settings "$gset"
 }
 
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
@@ -1204,4 +1226,4 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
