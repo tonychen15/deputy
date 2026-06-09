@@ -53,10 +53,12 @@ _each_item() {
   done < "$BACKLOG"
 }
 
-# Parse one raw line -> "state|priority|description". Lenient: accepts an optional
+# Parse one raw line -> "state|priority|id|description". Lenient: accepts an optional
 # space after the status prefix (so both `#[P0] x` and `# [P0] x` parse the same).
+# [#N] is recognized ONLY in the tag zone (immediately after status + optional [Pn]),
+# never inside the description body. Either order [Pn][#N] or [#N][Pn] is accepted.
 _parse_item() {
-  local line="$1" state="waiting" prio="" desc=""
+  local line="$1" state="waiting" prio="" id="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
   if [[ "$line" =~ ^([~@?#!%=^])[[:space:]]*(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
@@ -66,27 +68,37 @@ _parse_item() {
     esac
     line="${BASH_REMATCH[2]}"
   fi
-  if [[ "$line" =~ ^\[(P[0-2])\][[:space:]]*(.*)$ ]]; then
-    prio="${BASH_REMATCH[1]}"
-    desc="${BASH_REMATCH[2]}"
-  else
-    desc="$line"
-  fi
-  printf '%s|%s|%s' "$state" "$prio" "$desc"
+  # Tag zone: consume [Pn] and [#N] in either order (both optional, at most one each).
+  local consumed=1
+  while [[ "$consumed" -eq 1 ]]; do
+    consumed=0
+    if [[ -z "$prio" && "$line" =~ ^\[(P[0-2])\][[:space:]]*(.*) ]]; then
+      prio="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[2]}"; consumed=1
+    fi
+    if [[ -z "$id" && "$line" =~ ^\[#([0-9]+)\][[:space:]]*(.*) ]]; then
+      id="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[2]}"; consumed=1
+    fi
+  done
+  desc="$line"
+  printf '%s|%s|%s|%s' "$state" "$prio" "$id" "$desc"
 }
 
-# Build a canonical line from (state, priority, description). The status symbol
-# directly abuts what follows (no space): `#[P0] x`, `#Refactor`, `[P2] x`, `Plain`.
+# Build a canonical line from (state, priority, id, description).
+# Canonical order: <status>[Pn][#N] description
+# The status symbol directly abuts what follows (no space): `#[P0][#3] x`, `[#7] x`, `Plain`.
 _serialize_item() {
-  local state="$1" prio="$2" desc="$3" prefix="" body=""
+  local state="$1" prio="$2" id="$3" desc="$4" prefix="" body=""
   case "$state" in
     waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
     surfaced)  prefix="?" ;; done)      prefix="#" ;; failed)    prefix="!" ;;
     cancelled) prefix="%" ;; duplicate) prefix="=" ;; paused)    prefix="^" ;;
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
-  if [[ -n "$prio" ]]; then
-    if [[ -n "$desc" ]]; then body="[$prio] $desc"; else body="[$prio]"; fi
+  body=""
+  [[ -n "$prio" ]] && body="${body}[${prio}]"
+  [[ -n "$id"   ]] && body="${body}[#${id}]"
+  if [[ -n "$body" ]]; then
+    [[ -n "$desc" ]] && body="${body} ${desc}"
   else
     body="$desc"
   fi
@@ -94,6 +106,7 @@ _serialize_item() {
 }
 
 cmd_list() {
+  _with_lock _allocate_ids
   local raw
   while IFS= read -r raw; do
     _parse_item "$raw"; printf '\n'
@@ -159,12 +172,76 @@ _regroup_backlog() {
   mv "$tmp" "$BACKLOG"
 }
 
-# True if any item's parsed description equals $1.
-_desc_exists() {
-  local want="$1" raw parsed
+# Assign sequential [#N] IDs to any item that lacks one. Lock-held, idempotent,
+# append-only: existing IDs are never changed. Writes back atomically only if
+# something changed (so status/list calls are pure no-op after the first pass).
+# Caller holds the lock.
+_allocate_ids() {
+  [[ -f "$BACKLOG" ]] || return 0
+  # Pass 1: find max existing ID across ALL items (including done/failed/etc.)
+  local max_id=0 raw parsed _ai_id
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
-    [[ "${parsed#*|*|}" == "$want" ]] && return 0
+    _ai_id="${parsed#*|}"; _ai_id="${_ai_id#*|}"; _ai_id="${_ai_id%%|*}"  # third field
+    if [[ "$_ai_id" =~ ^[0-9]+$ && "$_ai_id" -gt "$max_id" ]]; then max_id="$_ai_id"; fi
+  done < <(_each_item)
+
+  # Pass 2: rewrite only items lacking an ID. Track whether anything changed.
+  local changed=0 next_id=$(( max_id + 1 ))
+  local tmp
+  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+
+  # Rewrite the whole file, replacing un-id'd item lines in-place.
+  local _ai_line _ai_seen=0 _ai_mode=none
+  if grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null; then _ai_mode=items
+  elif grep -q -- '-->' "$BACKLOG" 2>/dev/null; then _ai_mode=comment
+  fi
+  while IFS= read -r _ai_line || [[ -n "$_ai_line" ]]; do
+    # Copy header lines verbatim until the items section starts
+    if [[ "$_ai_seen" -eq 0 && "$_ai_mode" != "none" ]]; then
+      printf '%s\n' "$_ai_line" >> "$tmp"
+      if [[ "$_ai_mode" == "items" && "$_ai_line" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]]; then _ai_seen=1; fi
+      [[ "$_ai_mode" == "comment" && "$_ai_line" == *'-->'* ]] && _ai_seen=1
+      continue
+    fi
+    # Preserve blank lines
+    if [[ -z "${_ai_line//[[:space:]]/}" ]]; then
+      printf '%s\n' "$_ai_line" >> "$tmp"; continue
+    fi
+    # Check if this item line needs an ID
+    parsed="$(_parse_item "$_ai_line")"
+    _ai_id="${parsed#*|}"; _ai_id="${_ai_id#*|}"; _ai_id="${_ai_id%%|*}"
+    if [[ -z "$_ai_id" ]]; then
+      local _ai_state="${parsed%%|*}"
+      local _ai_prio="${parsed#*|}"; _ai_prio="${_ai_prio%%|*}"
+      local _ai_desc_rest="${parsed#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"
+      local _ai_new_line
+      _ai_new_line="$(_serialize_item "$_ai_state" "$_ai_prio" "$next_id" "$_ai_desc_rest")"
+      printf '%s\n' "$_ai_new_line" >> "$tmp"
+      next_id=$(( next_id + 1 ))
+      changed=1
+    else
+      printf '%s\n' "$_ai_line" >> "$tmp"
+    fi
+  done < "$BACKLOG"
+
+  if [[ "$changed" -eq 1 ]]; then
+    mv "$tmp" "$BACKLOG"
+    _regroup_backlog
+  else
+    rm -f "$tmp"
+  fi
+}
+
+# True if any item's parsed description equals $1.
+_desc_exists() {
+  local want="$1" raw parsed _rest
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    # Extract 4th field (description): strip state|prio|id|
+    _rest="${parsed#*|}"; _rest="${_rest#*|}"; _rest="${_rest#*|}"
+    [[ "$_rest" == "$want" ]] && return 0
   done < <(_each_item)
   return 1
 }
@@ -198,10 +275,11 @@ cmd_add() {
     return 2
   fi
   _do_add() {
+    _allocate_ids
     if _desc_exists "$text"; then
       printf 'deputy: already present: %s\n' "$text"; return 0
     fi
-    _append_item "$(_serialize_item waiting "$prio" "$text")"
+    _append_item "$(_serialize_item waiting "$prio" "" "$text")"
     printf 'deputy: added: %s\n' "$text"
   }
   _with_lock _do_add
@@ -222,6 +300,7 @@ _autorun() {
 }
 
 cmd_status() {
+  _with_lock _allocate_ids
   local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 parsed
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
@@ -241,6 +320,7 @@ _prio_rank() {
 }
 
 cmd_pick() {
+  _with_lock _allocate_ids
   local raw parsed state prio best_rank=99 best_line="" rank
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
@@ -336,19 +416,20 @@ cmd_set() {
   _valid_state "$newstate" || { printf 'deputy: invalid state: %s\n' "$newstate" >&2; return 2; }
   _do_set() {
     grep -qxF -- "$from" "$BACKLOG" || return 1     # exact-line existence
-    local parsed prio desc to
+    local parsed prio desc to _id_rest _id
     parsed="$(_parse_item "$from")"
     prio="${parsed#*|}"; prio="${prio%%|*}"
-    desc="${parsed#*|*|}"
-    to="$(_serialize_item "$newstate" "$prio" "$desc")"
+    _id_rest="${parsed#*|}"; _id_rest="${_id_rest#*|}"; _id="${_id_rest%%|*}"
+    desc="${_id_rest#*|}"
+    to="$(_serialize_item "$newstate" "$prio" "$_id" "$desc")"
     _flip_line "$from" "$to"
   }
   local _set_rc=0
   _with_lock _do_set || _set_rc=$?
   if [[ "$_set_rc" -eq 0 ]]; then
-    local _parsed _desc
+    local _parsed _desc _id_rest2
     _parsed="$(_parse_item "$from")"
-    _desc="${_parsed#*|*|}"
+    _id_rest2="${_parsed#*|}"; _id_rest2="${_id_rest2#*|}"; _desc="${_id_rest2#*|}"
     # Background by default so slow channels (e.g. push/curl) don't block the CLI.
     # Set DEPUTY_NOTIFY_SYNC=1 to run synchronously (used in tests).
     if [[ "${DEPUTY_NOTIFY_SYNC:-0}" == "1" ]]; then
@@ -389,9 +470,11 @@ cmd_claim() {
     parsed="$(_parse_item "$from")"; state="${parsed%%|*}"
     [[ "$state" == "waiting" || "$state" == "paused" ]] || { printf 'deputy: item is not waiting/paused (%s)\n' "$state" >&2; return 4; }
     grep -qxF -- "$from" "$BACKLOG" || { printf 'deputy: item not found\n' >&2; return 1; }
-    local prio desc to
-    prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
-    to="$(_serialize_item running "$prio" "$desc")"
+    local prio desc to _cid_rest _cid
+    prio="${parsed#*|}"; prio="${prio%%|*}"
+    _cid_rest="${parsed#*|}"; _cid_rest="${_cid_rest#*|}"; _cid="${_cid_rest%%|*}"
+    desc="${_cid_rest#*|}"
+    to="$(_serialize_item running "$prio" "$_cid" "$desc")"
     _flip_line "$from" "$to"
     printf '%s\n' "$to" > "$STATE_DIR/$pid.claim"
   }
@@ -400,10 +483,12 @@ cmd_claim() {
 
 # Revert a running/triaging line back to waiting (strip the prefix). Caller holds lock.
 _revert_to_waiting() {
-  local raw="$1" parsed prio desc to
+  local raw="$1" parsed prio desc to _rid_rest _rid
   parsed="$(_parse_item "$raw")"
-  prio="${parsed#*|}"; prio="${prio%%|*}"; desc="${parsed#*|*|}"
-  to="$(_serialize_item waiting "$prio" "$desc")"
+  prio="${parsed#*|}"; prio="${prio%%|*}"
+  _rid_rest="${parsed#*|}"; _rid_rest="${_rid_rest#*|}"; _rid="${_rid_rest%%|*}"
+  desc="${_rid_rest#*|}"
+  to="$(_serialize_item waiting "$prio" "$_rid" "$desc")"
   _flip_line "$raw" "$to"
 }
 
@@ -443,11 +528,12 @@ cmd_recover() {
 }
 
 cmd_review() {
-  local any=0 raw parsed state desc f
+  _with_lock _allocate_ids
+  local any=0 raw parsed state desc f _rv_rest
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
     [[ "$state" == "surfaced" ]] || continue
-    desc="${parsed#*|*|}"
+    _rv_rest="${parsed#*|}"; _rv_rest="${_rv_rest#*|}"; desc="${_rv_rest#*|}"
     printf '? %s\n' "$desc"; any=1
   done < <(_each_item)
   shopt -s nullglob
@@ -470,9 +556,11 @@ commands:
                                   (-ui=P0 -u=P1 -i=P2; --p0/--p1/--p2 also accepted;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
-  list                            print parsed items (state|priority|description)
+  list                            print parsed items (state|priority|id|description)
   status                          counts by state
-  run [--once]                    work the backlog: claim the top item, run the orchestrator
+  run [<id>] [--once]             work the backlog: claim the top item, run the orchestrator
+                                  if <id> given (integer; '#7' also accepted), run that
+                                  specific item bypassing priority order (targeted, one item only)
   pick                            print the highest-priority waiting item (raw line)
   set "<exact line>" <state>      transition an item's state by exact-line match
   claim "<exact line>" [--pid N]  mark an item running and write a claim (serial)
@@ -769,16 +857,91 @@ Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove /
 }
 
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
+# If an integer <id> is given (deputy run <id> or deputy run '#<id>'), run that
+# specific item bypassing priority, then return (targeted = one item only).
 cmd_run() {
-  local once=0; [[ "${1:-}" == "--once" ]] && once=1
+  local once=0 target_id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --once) once=1; shift ;;
+      '#'*) target_id="${1#'#'}"; shift ;;
+      *)
+        if [[ "$1" =~ ^[0-9]+$ ]]; then
+          target_id="$1"; shift
+        elif [[ -n "$1" ]]; then
+          printf 'deputy: run: id must be an integer (got: %s)\n' "$1" >&2; return 2
+        else
+          shift
+        fi
+        ;;
+    esac
+  done
+
+  # Validate target_id: strip leading # and verify integer
+  if [[ -n "$target_id" ]]; then
+    target_id="${target_id#'#'}"
+    if [[ ! "$target_id" =~ ^[0-9]+$ ]]; then
+      printf 'deputy: run: id must be an integer (got: %s)\n' "$target_id" >&2; return 2
+    fi
+  fi
+
   cmd_recover >/dev/null 2>&1 || true
   if _live_claim_exists; then return 0; fi
   # Active run: remove this repo's heartbeat line; it is re-armed when we go idle (below).
   _cron_enabled && _set_cron "" >/dev/null 2>&1 || true
-  # Optional per-cycle cap; 0/empty/non-numeric = unlimited (run until the queue is
-  # empty or Claude's session limit is hit).
   local cap; cap="$(_config_get max_items)"; cap="${cap:-0}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
   local processed=0 item avail decision running_line log rc outcome reset
+
+  # ── Targeted run: find item by id and run it (bypasses priority) ─────────────
+  if [[ -n "$target_id" ]]; then
+    _with_lock _allocate_ids
+    local found_line="" found_state="" _tr_raw _tr_p _tr_id
+    while IFS= read -r _tr_raw; do
+      _tr_p="$(_parse_item "$_tr_raw")"
+      _tr_id="${_tr_p#*|}"; _tr_id="${_tr_id#*|}"; _tr_id="${_tr_id%%|*}"
+      if [[ "$_tr_id" == "$target_id" ]]; then
+        found_line="$_tr_raw"
+        found_state="${_tr_p%%|*}"
+        break
+      fi
+    done < <(_each_item)
+
+    if [[ -z "$found_line" ]]; then
+      printf 'deputy: no item with id %s\n' "$target_id" >&2; return 1
+    fi
+    if [[ "$found_state" != "waiting" && "$found_state" != "paused" ]]; then
+      printf 'deputy: item %s is %s, not runnable\n' "$target_id" "$found_state" >&2; return 1
+    fi
+
+    avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
+    if [[ "$decision" != "claude" ]]; then
+      _cron_enabled && cmd_cron --reschedule "orchestrator unavailable" >/dev/null 2>&1 || true
+      _cron_enabled && _set_cron "*/15 * * * *" >/dev/null 2>&1 || true
+      return 0
+    fi
+    cmd_claim "$found_line" --pid "$$" >/dev/null 2>&1 || return 1
+    running_line="$(cat "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
+    log="$(mktemp)"
+    set +e
+    _spawn_orchestrator "$running_line" "$decision" >"$log" 2>&1
+    rc=$?
+    set -e
+    rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
+    cat "$log"
+    outcome="$(_detect_outcome claude "$rc" "$log")"
+    if [[ "$outcome" == "quota_exhausted" ]]; then
+      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
+      _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
+      _cron_enabled && cmd_cron --reschedule "$reset" >/dev/null 2>&1 || true
+      printf 'deputy: Claude session limit reached — rescheduled for reset; stopping this cycle.\n'
+      return 0
+    fi
+    rm -f "$log"
+    _cron_enabled && _set_cron "*/15 * * * *" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  # ── Normal priority-driven run loop ──────────────────────────────────────────
   while :; do
     item="$(cmd_pick)"; [[ -n "$item" ]] || break
     avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
@@ -891,13 +1054,14 @@ _reflect_find_duplicates() {
 # (untagged), full reprioritization list, surfaced items, and potential duplicates.
 # --apply: also writes .deputy/learnings.md (fresh snapshot of done items).
 cmd_reflect() {
+  _with_lock _allocate_ids
   local apply=0
   while [[ $# -gt 0 ]]; do case "$1" in
     --apply) apply=1; shift ;;
     *) printf 'deputy: reflect: unexpected arg: %s\n' "$1" >&2; return 2 ;;
   esac; done
 
-  local raw parsed state prio desc
+  local raw parsed state prio desc _rrest _rid
   local -a done_items=() waiting_items=() surfaced_items=()
 
   while IFS= read -r raw; do
@@ -905,7 +1069,7 @@ cmd_reflect() {
     state="${parsed%%|*}"
     local rest="${parsed#*|}"
     prio="${rest%%|*}"
-    desc="${parsed#*|*|}"
+    _rrest="${rest#*|}"; _rid="${_rrest%%|*}"; desc="${_rrest#*|}"
     case "$state" in
       done)     done_items+=("${prio}|${desc}") ;;
       waiting|paused) waiting_items+=("${prio}|${desc}") ;;
@@ -1193,7 +1357,7 @@ main() {
     help|-h|--help) usage; return 0 ;;
     _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
     list) cmd_list; return 0 ;;
-    _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" && printf '\n' || return 1 ;;
+    _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
     status) cmd_status; return 0 ;;
     pick) cmd_pick; return 0 ;;

@@ -13,7 +13,8 @@ chmod +x "$ORCH"
 
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true \
   bash "$DEPUTY" run --once 2>&1)"
-assert_contains "$(bash "$DEPUTY" list)" "done|P0|do a thing" "run drove orchestrator to done"
+assert_contains "$(bash "$DEPUTY" list)" "done|P0|"     "run drove orchestrator to done"
+assert_contains "$(bash "$DEPUTY" list)" "do a thing"   "run: item description preserved"
 assert_eq "$(ls "$DEPUTY_ROOT"/.deputy/*.claim 2>/dev/null | wc -l | tr -d ' ')" "0" "no stale claim left"
 
 # Nothing waiting -> run is a clean no-op
@@ -25,7 +26,8 @@ setup_repo
 bash "$DEPUTY" add "later" --p1
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="gemini" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run --once 2>&1)"; rc=$?
 assert_eq "$rc" "0" "run exits 0 when claude unavailable"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|later" "item stays waiting when claude down"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|" "item stays waiting when claude down"
+assert_contains "$(bash "$DEPUTY" list)" "later"       "item 'later' stays waiting"
 
 # --- session limit (quota) stops the cycle and reschedules (only when cron-enabled) ---
 setup_repo
@@ -62,6 +64,7 @@ bash "$DEPUTY" add "one" --p0
 bash "$DEPUTY" add "two" --p0
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
 assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "1" "max_items=1 processes exactly one item"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|two" "the second item is left for the next cycle"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "the second item is left for the next cycle"
+assert_contains "$(bash "$DEPUTY" list)" "two"         "item 'two' is left for the next cycle"
 
 rm -f "$ORCH"

@@ -7,9 +7,12 @@ bash "$DEPUTY" add "Urgent one" --p0
 bash "$DEPUTY" add "Important one" --p2
 
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting||First task"       "add untagged"
-assert_contains "$out" "waiting|P0|Urgent one"     "add --p0"
-assert_contains "$out" "waiting|P2|Important one"  "add --p2"
+assert_contains "$out" "waiting||"       "add untagged (has id)"
+assert_contains "$out" "First task"      "add untagged: description"
+assert_contains "$out" "waiting|P0|"     "add --p0 (has id)"
+assert_contains "$out" "Urgent one"      "add --p0: description"
+assert_contains "$out" "waiting|P2|"     "add --p2 (has id)"
+assert_contains "$out" "Important one"   "add --p2: description"
 
 # Dedup by description (no duplicate even with a different flag).
 bash "$DEPUTY" add "First task" --p1
@@ -26,7 +29,7 @@ assert_eq "$(bash "$DEPUTY" list | grep -c -- '--p3')" "0" "unknown flag not abs
 
 # Bare multi-word descriptions still join.
 bash "$DEPUTY" add Buy the milk
-assert_contains "$(bash "$DEPUTY" list)" "waiting||Buy the milk" "bare multi-word add joins"
+assert_contains "$(bash "$DEPUTY" list)" "Buy the milk" "bare multi-word add joins"
 
 # Descriptions that collide with the line grammar are rejected (would corrupt state).
 bash "$DEPUTY" add "@ ping the oncall" 2>/dev/null; rc=$?
@@ -37,7 +40,7 @@ n="$(bash "$DEPUTY" list | grep -c 'oncall\|looks like a tag')"
 assert_eq "$n" "0" "rejected descriptions are not written"
 # A description merely CONTAINING @ (not a leading prefix+space) is still allowed.
 bash "$DEPUTY" add "email @bob about it"
-assert_contains "$(bash "$DEPUTY" list)" "waiting||email @bob about it" "non-prefix @ still allowed"
+assert_contains "$(bash "$DEPUTY" list)" "email @bob about it" "non-prefix @ still allowed"
 
 # Newlines in a description are rejected (would corrupt the one-line-per-item queue).
 bash "$DEPUTY" add "$(printf 'line one\nline two')" 2>/dev/null; rc=$?
@@ -49,17 +52,21 @@ bash "$DEPUTY" add "urgent important" -ui
 bash "$DEPUTY" add "just urgent" -u
 bash "$DEPUTY" add "just important" -i
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting|P0|urgent important" "-ui maps to P0"
-assert_contains "$out" "waiting|P1|just urgent"      "-u maps to P1"
-assert_contains "$out" "waiting|P2|just important"   "-i maps to P2"
+assert_contains "$out" "waiting|P0|"     "-ui maps to P0"
+assert_contains "$out" "urgent important" "-ui: description"
+assert_contains "$out" "waiting|P1|"     "-u maps to P1"
+assert_contains "$out" "just urgent"     "-u: description"
+assert_contains "$out" "waiting|P2|"     "-i maps to P2"
+assert_contains "$out" "just important"  "-i: description"
 
 # Flag may come before or after the text; last priority flag wins.
 bash "$DEPUTY" add -ui "flag first"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|flag first" "flag may precede text"
+assert_contains "$(bash "$DEPUTY" list)" "flag first" "flag may precede text"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "flag first has P0"
 
 # `--` ends flag parsing so a description can start with a dash.
 bash "$DEPUTY" add -u -- "-5% drop alert"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|-5% drop alert" "-- allows leading-dash description"
+assert_contains "$(bash "$DEPUTY" list)" "-5% drop alert" "-- allows leading-dash description"
 
 # An unknown single-dash flag is rejected (not silently absorbed).
 bash "$DEPUTY" add "task" -x 2>/dev/null; rc=$?
@@ -96,7 +103,8 @@ printf '@[P0] already running\n' >> "$DEPUTY_ROOT/BACKLOG.md"
 printf '@[P0] already running\n' > "$DEPUTY_ROOT/.deputy/$LIVE.claim"
 DEPUTY_NO_AUTORUN=0 DEPUTY_AUTORUN_CMD="$AUTORUN_MOCK2" \
   bash "$DEPUTY" add "new lower" --p1
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|new lower" "add queues item but does not run when claim exists"
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|" "add queues item but does not run when claim exists"
+assert_contains "$(bash "$DEPUTY" list)" "new lower"   "add queues item description present"
 assert_eq "$(test -f "$AUTORUN_FIRED2" && echo yes || echo no)" "no" \
   "add does not dispatch autorun when live claim exists"
 kill "$LIVE" 2>/dev/null
