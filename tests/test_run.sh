@@ -29,10 +29,10 @@ assert_eq "$rc" "0" "run exits 0 when claude unavailable"
 assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|" "item stays waiting when claude down"
 assert_contains "$(bash "$DEPUTY" list)" "later"       "item 'later' stays waiting"
 
-# --- session limit (quota) stops the cycle and reschedules (only when cron-enabled) ---
+# --- session limit (quota) stops the cycle, reverts item, uses always-on heartbeat for retry ---
 setup_repo
 mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=0\n' > "$DEPUTY_ROOT/.deputy/config"
-# Opt in to autonomous mode so the reschedule path fires.
+# Opt in to autonomous mode.
 : > "$DEPUTY_ROOT/.deputy/cron.enabled"
 bash "$DEPUTY" add "first job" --p0
 bash "$DEPUTY" add "second job" --p0
@@ -54,7 +54,9 @@ chmod +x "$FAKE"
 out="$(DEPUTY_ORCHESTRATOR_CMD="$LIMIT" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB="$FAKE" bash "$DEPUTY" run 2>&1)"
 assert_contains "$out" "session limit" "run reports the session limit"
 assert_eq "$(bash "$DEPUTY" list | grep -c 'waiting|P0')" "2" "both items remain waiting (first reverted, second never started)"
-assert_eq "$(grep -c 'deputy' "$STORE")" "1" "session limit triggered a cron reschedule"
+# Always-on model: do NOT reschedule the shared cron line for quota.
+# The fixed heartbeat retries; quota is a per-task skip (no cron line written).
+assert_eq "$(grep -c 'deputy' "$STORE")" "0" "always-on: session limit does NOT reschedule cron (heartbeat handles retry)"
 rm -f "$LIMIT" "$STORE" "$FAKE"
 
 # --- max_items caps items per cycle ---
