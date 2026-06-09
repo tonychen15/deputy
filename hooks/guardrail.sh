@@ -19,7 +19,11 @@ deny() {
   exit 2
 }
 
-# Normalize whitespace (tabs -> space) and collapse runs for pattern matching.
+# Normalize whitespace (tabs/newlines -> space) for pattern matching. We deliberately do
+# NOT strip shell quotes/backslashes: doing so causes false positives on legitimate
+# commands that mention risky tokens as DATA (e.g. `grep "rm -rf" .`, a commit message
+# saying "remove rm -rf"). Quote/escape-based evasion (--re'move') is the accepted
+# adversarial out-of-scope class per the spec threat model (best-effort tripwire).
 _norm() { printf '%s' "$1" | tr '\t' ' ' | tr '\n' ' '; }
 
 _bash_risky() {
@@ -50,10 +54,22 @@ _bash_risky() {
     '(^| )pip[0-9]* +install' \
     '(^| )apt(-get)?( |$)' \
     '(^| )brew +install' \
-    '(^| )deputy +cron' \
     ; do
     printf '%s' "$bare_n" | grep -Eq "$p" && return 0
   done
+  # deputy cron lifecycle is user-owned; check EACH segment — a segment touching
+  # `deputy cron` is allowed only if it is --reschedule (the SKILL's quota failover) AND
+  # carries no --ensure/--remove. Per-segment catches chained bypasses
+  # (e.g. `deputy cron --reschedule x; deputy cron --remove`).
+  local _seg
+  while IFS= read -r _seg; do
+    printf '%s' "$_seg" | grep -Eq '(^| )deputy +cron' || continue
+    if printf '%s' "$_seg" | grep -Eq '(^| )deputy +cron +--reschedule' \
+       && ! printf '%s' "$_seg" | grep -Eq -- '--(ensure|remove)'; then
+      continue
+    fi
+    return 0
+  done < <(printf '%s\n' "$bare_n" | tr ';|&' '\n')
   # reset --hard / clean -f: check each command segment independently.
   # Split on shell separators (;, &&, ||, |) and check each segment that contains
   # reset --hard or clean -f is also scoped to DEPUTY_WT via -C with canonical path.

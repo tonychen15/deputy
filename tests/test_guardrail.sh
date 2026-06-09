@@ -39,7 +39,11 @@ assert_eq "$(bash_cmd 'sudo apt-get update')" "2" "sudo denied"
 assert_eq "$(bash_cmd 'gh pr merge 5')" "2" "gh pr merge denied"
 assert_eq "$(bash_cmd 'npm install -g foo')" "2" "global npm install denied"
 assert_eq "$(bash_cmd 'pip install foo')" "2" "pip install denied"
-assert_eq "$(bash_cmd 'deputy cron --ensure')" "2" "deputy cron denied"
+assert_eq "$(bash_cmd 'deputy cron --ensure')" "2" "deputy cron --ensure denied"
+assert_eq "$(bash_cmd 'deputy cron --remove')" "2" "deputy cron --remove denied"
+assert_eq "$(bash_cmd 'deputy cron --reschedule \"5pm reset\"')" "0" "deputy cron --reschedule allowed (quota failover)"
+assert_eq "$(bash_cmd 'deputy cron --reschedule x; deputy cron --remove')" "2" "chained reschedule then remove denied"
+assert_eq "$(bash_cmd 'deputy cron --reschedule x --ensure')" "2" "reschedule+ensure in one segment denied"
 assert_eq "$(bash_cmd 'echo ok && git push')" "2" "chained git push denied"
 
 # --- benign Bash → allow (exit 0) ---
