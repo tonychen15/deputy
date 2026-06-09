@@ -1,7 +1,7 @@
 # Deputy Backlog
 
 ## LEGEND
-**Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `#` done | `!` failed | `%` cancelled | `=` duplicate
+**Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `#` done | `!` failed | `%` cancelled | `=` duplicate | `^` paused | `>` deferred
 **Priority (tag):** `[P0]` urgent+important | `[P1]` urgent | `[P2]` important | (none) lowest lane
 **Order:** P0 > P1 > P2 > untagged ; FIFO within a lane
 **Line format:** `<status?> <priority?> <description>`
@@ -14,7 +14,7 @@
 [P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 [#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 [#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
-[P0] Add a new 'deferred' item state (line symbol '>') for items parked for FUTURE consideration. Semantics: INERT + intentional — never scheduled/picked by run/pick, and the always-on heartbeat LEAVES it (never auto-resumes, unlike paused). User-driven: 'deputy set <item> deferred' parks it, 'deputy set <item> waiting' revives. Distinct from cancelled (terminal/won't-do) and paused (mid-execution checkpoint, auto-resumable). Group deferred items in their own BACKLOG.md section between active and done. Cleanable ONLY via explicit 'deputy clean --state deferred' (never bare clean — it's revivable). Implement across: parse/serialize the '>' prefix, set/transitions, scheduler+heartbeat skip (not-runnable), group-by-state writer, clean --state allowlist, and SKILL.md legend + states list. Name/symbol 'deferred'/'>' is the recommended default; confirm/adjust at build.
+[P0][#24] Add a new 'deferred' item state (line symbol '>') for items parked for FUTURE consideration. Semantics: INERT + intentional — never scheduled/picked by run/pick, and the always-on heartbeat LEAVES it (never auto-resumes, unlike paused). User-driven: 'deputy set <item> deferred' parks it, 'deputy set <item> waiting' revives. Distinct from cancelled (terminal/won't-do) and paused (mid-execution checkpoint, auto-resumable). Group deferred items in their own BACKLOG.md section between active and done. Cleanable ONLY via explicit 'deputy clean --state deferred' (never bare clean — it's revivable). Implement across: parse/serialize the '>' prefix, set/transitions, scheduler+heartbeat skip (not-runnable), group-by-state writer, clean --state allowlist, and SKILL.md legend + states list. Name/symbol 'deferred'/'>' is the recommended default; confirm/adjust at build.
 
 #[P2][#6] extend deputy clean with augment, such as duplicate, waiting, running, paused. With this augment, deputy can remove tasks with a specific state.
 #[P2][#5] E2E test: interrupt a run mid-step and verify orchestrator-driven resume — recover reverts the orphaned @running item, the next run re-picks it, SKILL §2c purges dirty worktree state + calls 'deputy resume', and execution continues from the first uncommitted step to completion. Covers the one untested hole in the resume story (SKILL §2c is prompt-only today).
