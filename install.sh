@@ -11,6 +11,19 @@
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve to the canonical (main) worktree so running install.sh from inside a transient
+# git worktree (e.g. .deputy/wt-<slug>) never points the GLOBAL symlinks at an ephemeral
+# path that vanishes on wt-remove. `git worktree list`'s FIRST entry is always the main
+# worktree (robust even with --separate-git-dir); clear GIT_DIR/GIT_COMMON_DIR so an
+# inherited env can't redirect resolution to an unrelated repo.
+_wl="$(env -u GIT_DIR -u GIT_COMMON_DIR git -C "$SRC_DIR" worktree list --porcelain 2>/dev/null || true)"
+if [[ "$_wl" == "worktree "* ]]; then          # first line is always the main worktree
+  _main="${_wl%%$'\n'*}"; _main="${_main#worktree }"   # pure-bash first line, no pipe/SIGPIPE
+  [[ -n "$_main" && -d "$_main" ]] && SRC_DIR="$_main"
+fi
+unset _wl _main
+# Defense-in-depth: refuse to link from a transient deputy worktree path even if resolution failed.
+case "$SRC_DIR" in *"/.deputy/wt"*) printf 'install: refusing to link from a transient worktree: %s\n' "$SRC_DIR" >&2; exit 1 ;; esac
 RUNNER="$SRC_DIR/bin/deputy.sh"
 TEMPLATE="$SRC_DIR/templates/BACKLOG.md"
 
