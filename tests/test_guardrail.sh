@@ -17,6 +17,16 @@ ROOT="$(mktemp -d)"; WT="$ROOT/.deputy/wt"; mkdir -p "$WT" "$ROOT/.deputy"
 # bash() helper: pass a command string as Bash tool_input.
 bash_cmd() { gr Bash "$(printf '{"command":%s}' "$(printf '%s' "$1" | jq -Rs .)")"; }
 
+# bash_cwd() helper: pass a command + a top-level .cwd field (session cwd).
+bash_cwd() {
+  local cmd="$1" cwd="$2"
+  printf '{"tool_name":"Bash","tool_input":{"command":%s},"cwd":%s}' \
+    "$(printf '%s' "$cmd" | jq -Rs .)" \
+    "$(printf '%s' "$cwd" | jq -Rs .)" \
+    | DEPUTY_GUARDED=1 DEPUTY_WT="$WT" DEPUTY_ROOT="$ROOT" bash "$HOOK" >/dev/null 2>&1
+  echo $?
+}
+
 # --- self-gate: unguarded = allow everything ---
 out="$(printf '{"tool_name":"Bash","tool_input":{"command":"git push"}}' | bash "$HOOK"; echo $?)"
 assert_eq "$out" "0" "unguarded (no DEPUTY_GUARDED) allows everything"
@@ -57,6 +67,38 @@ assert_eq "$(bash_cmd "git -C \"$WT\" reset --hard HEAD")" "0" "reset --hard ins
 assert_eq "$(bash_cmd 'git reset --hard HEAD')" "2" "reset --hard outside wt denied"
 assert_eq "$(bash_cmd 'git clean -fd')" "2" "clean -fd outside wt denied"
 assert_eq "$(bash_cmd "git -C $WT clean -fd")" "0" "clean -fd inside wt allowed"
+
+# --- regression: false-positive fixes (Fix 1 — command-position anchoring) ---
+# Risky token appears only in DATA (quoted arg / commit message) — must ALLOW.
+assert_eq "$(bash_cmd "deputy commit --summary 'remove rm -rf usage'")" "0" "deputy commit with rm-rf in summary allowed (data FP)"
+assert_eq "$(bash_cmd 'git commit -m "fix: handle rm -rf safely"')" "0" "git commit with rm-rf in message allowed (data FP)"
+assert_eq "$(bash_cmd "echo 'remember to git push later'")" "0" "echo with git-push in string allowed (data FP)"
+assert_eq "$(bash_cmd 'grep "git push" README.md')" "0" "grep for git push pattern allowed (data FP)"
+assert_eq "$(bash_cmd 'sed -n "/rm -rf/d" file.txt')" "0" "sed pattern mentioning rm-rf allowed (data FP)"
+
+# True positives still deny after Fix 1.
+assert_eq "$(bash_cmd 'echo ok && git push origin main')" "2" "chained git push still denied (Fix 1 TP)"
+assert_eq "$(bash_cmd 'ls; rm -rf /tmp/x')" "2" "semicolon-chained rm -rf still denied (Fix 1 TP)"
+assert_eq "$(bash_cmd '(rm -rf foo)')" "2" "subshell rm -rf still denied (Fix 1 TP)"
+
+# --- regression: newline-bypass (later-line risky command must still be caught) ---
+assert_eq "$(bash_cmd "$(printf 'ls\ngit push origin main')")" "2" "git push on a later line still denied (newline bypass)"
+assert_eq "$(bash_cmd "$(printf 'echo hello\nrm -rf build')")" "2" "rm -rf on a later line still denied (newline bypass)"
+assert_eq "$(bash_cmd "$(printf 'echo a\necho b')")" "0" "benign multi-line allowed"
+# --- regression: risky tokens as DATA in arguments are anchored away (no false positive) ---
+assert_eq "$(bash_cmd 'echo "remember to git reset --hard later"')" "0" "git reset --hard as echo data allowed"
+assert_eq "$(bash_cmd 'deputy commit --summary "use git reset --hard to undo"')" "0" "git reset --hard in commit summary allowed"
+assert_eq "$(bash_cmd 'echo "pass --git-dir to git"')" "0" "--git-dir as echo data allowed"
+
+# --- regression: false-positive fixes (Fix 2 — cwd-aware reset/clean) ---
+# reset --hard with no -C BUT cwd is inside the worktree (session already cd'd in) — ALLOW.
+assert_eq "$(bash_cwd 'git reset --hard HEAD' "$WT")" "0" "reset --hard with cwd=WT allowed (cwd FP)"
+assert_eq "$(bash_cwd 'git clean -fd' "$WT")" "0" "clean -fd with cwd=WT allowed (cwd FP)"
+assert_eq "$(bash_cwd 'git reset --hard HEAD' "$WT/src")" "0" "reset --hard with cwd=WT/subdir allowed (cwd FP)"
+# reset --hard with no -C and cwd is repo ROOT — still DENY.
+assert_eq "$(bash_cwd 'git reset --hard HEAD' "$ROOT")" "2" "reset --hard with cwd=ROOT denied (cwd TP)"
+# cd into wt then reset — ALLOW.
+assert_eq "$(bash_cmd "cd $WT && git reset --hard HEAD")" "0" "cd WT then reset --hard allowed (cd FP)"
 
 # --- fail-closed: Bash with no command → deny ---
 assert_eq "$(gr Bash '{}')" "2" "Bash with no command denied (fail-closed)"
