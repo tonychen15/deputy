@@ -79,9 +79,11 @@ flaw — the very "Robustness note" in §5: if a run dies by crash/kill/API-fail
 (the human must notice and type `deputy run`). Replace it with a persistent heartbeat that
 is *also* the recovery trigger.
 
-**Model:** a fixed recurring **`*/15 * * * *`** line that is **never removed while
-running**. Opt-in still gated by `.deputy/cron.enabled`. Each tick (and each `deputy run`)
-is **state-aware**:
+**Model:** a fixed recurring heartbeat line — default **`*/10`** (every 10 min),
+**configurable** via `heartbeat_mins` in `.deputy/config` (default 10) — that is **never
+removed while running**. `deputy cron --ensure` reads `heartbeat_mins` and writes the
+matching `*/N` schedule (validate N is an integer in 1–59; fall back to 10). Opt-in still
+gated by `.deputy/cron.enabled`. Each tick (and each `deputy run`) is **state-aware**:
 - **Live task running** (`_live_claim_exists` via `kill -0`) → **skip** (no-op). The
   single-claim lock already prevents a second concurrent task, so a mid-run tick is
   harmless. → This removes the need for *both* remove-on-run *and* self-rescheduling the
@@ -127,7 +129,8 @@ cron re-spawns the orchestrator, which retries a failed API). It does **not** co
 interactive session where Claude is driving and a tool call dies — that's a different layer.
 
 ## Decisions
-- Interval **`*/15`**, **always-on** (recurring, never removed; state-aware tick) — this
+- Interval default **10 min** (`*/10`), **configurable** via `heartbeat_mins` in
+  `.deputy/config`; **always-on** (recurring, never removed; state-aware tick) — this
   SUPERSEDES the idle-only remove/re-arm model of §4/§5. (Revised 2026-06-09; see the
   REVISION section above.)
 - **Per-repo markers** so deputy + stock-pick (and any future repo) each get their own
