@@ -10,10 +10,10 @@
 
 ## Items
 
-[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
-[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
-[#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
-[#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
+>[#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
+>[#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
+>[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
+>[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
 #[P0][#24] Add a new 'deferred' item state (line symbol '>') for items parked for FUTURE consideration. Semantics: INERT + intentional — never scheduled/picked by run/pick, and the always-on heartbeat LEAVES it (never auto-resumes, unlike paused). User-driven: 'deputy set <item> deferred' parks it, 'deputy set <item> waiting' revives. Distinct from cancelled (terminal/won't-do) and paused (mid-execution checkpoint, auto-resumable). Group deferred items in their own BACKLOG.md section between active and done. Cleanable ONLY via explicit 'deputy clean --state deferred' (never bare clean — it's revivable). Implement across: parse/serialize the '>' prefix, set/transitions, scheduler+heartbeat skip (not-runnable), group-by-state writer, clean --state allowlist, and SKILL.md legend + states list. Name/symbol 'deferred'/'>' is the recommended default; confirm/adjust at build.
 #[P2][#6] extend deputy clean with augment, such as duplicate, waiting, running, paused. With this augment, deputy can remove tasks with a specific state.
