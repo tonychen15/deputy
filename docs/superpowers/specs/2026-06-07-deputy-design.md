@@ -105,7 +105,7 @@ therefore safe: they contend only for the short lock, and only one can hold a li
 claim at a time.
 
 **Worktree isolation (V1):** All *execution* happens in a dedicated, gitignored
-**`.deputy/wt` worktree** — Deputy does not touch your main working tree during a run.
+**`.deputy/wt` worktree** — all *execution* is isolated here; Deputy doesn't touch your main working tree mid-run. (At **done**, the done-gate does a *guarded* merge of `deputy/<slug>` into the local default branch — only when that tree is clean and on the default branch, else it surfaces; it never pushes.)
 On a fresh item the runner creates it from the *committed* base HEAD with a new branch
 (`git worktree add .deputy/wt -b deputy/<slug> <base-HEAD>`). On **resume /
 forward-recovery** the `deputy/<slug>` branch already exists, so the runner attaches
@@ -251,10 +251,12 @@ call"), rather than silently marked `! failed`; (c) the per-item **time cap** an
 3. Run **waypoint** (worker = Claude Sonnet) to execute the steps.
 4. **xReview** (Gemini) at each waypoint **commit checkpoint**.
 5. **Quality gate:** tests + lint + build must pass before `done`.
-6. On success → mark `# done`; **open a PR** via `gh` if a remote exists, else
-   **leave the `deputy/<slug>` branch** for manual merge (A→B fallback). Either way,
-   the branch's commits are durable; the `.deputy/wt` worktree is then **removed**
-   (the branch survives).
+6. On success → **done-gate:** merge `deputy/<slug>` into the local default branch —
+   *safe-only* (proceed only if the main tree is clean and on the default branch; else
+   **surface** for a manual merge, preserving the branch). On conflict: `git merge
+   --abort` + surface. Then mark `# done` and **remove** the `.deputy/wt` worktree (the
+   branch survives). **Never auto-push** — pushing the local default branch to the
+   remote is the user's decision.
 7. **Failover:** if Claude quota is exhausted mid-run, route the *simple coding*
    to **Codex** (V1). (waypoint/xReview themselves remain Claude-bound in V1.)
 

@@ -75,9 +75,9 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    a. Detect the default branch using this sequence: `git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||'`; if empty, check if local `main` exists (`git show-ref --quiet refs/heads/main`), then `master`; last resort: `git config init.defaultBranch`.
    b. Check main-tree readiness from the repo root: `git status --porcelain` (dirty?) and `git rev-parse --abbrev-ref HEAD` (current branch?).
       - **Proceed** only if the main tree is **clean** (no uncommitted changes) **and already on the default branch**.
-      - **Surface** the item (do not call `deputy done`) if the main tree is dirty or on a different branch — message: *"branch `deputy/<slug>` is ready; merge blocked — main tree is [dirty / on `<branch>`]; merge manually: `git checkout <default-branch> && git merge --no-ff deputy/<slug>`"*.
+      - **Surface** the item (do not call `deputy done`) if the main tree is dirty or on a different branch: write *"branch `deputy/<slug>` is ready; merge blocked — main tree is [dirty / on `<branch>`]; merge manually: `git checkout <default-branch> && git merge --no-ff deputy/<slug>`"* to `.deputy/<slug>.questions.md`, then `deputy set "<item-line>" surfaced` and **`deputy wt-remove`** — this frees `.deputy/wt` for the next item; the `deputy/<slug>` branch is preserved for the manual merge.
    c. Merge: `git merge --no-ff deputy/<slug>` (from repo root, already confirmed on default branch + clean).
-   d. On merge failure: run `git merge --abort`, then **surface** the item with conflict details; do **not** call `deputy done`.
+   d. On merge failure: run `git merge --abort`, write the conflict details to `.deputy/<slug>.questions.md`, `deputy set "<item-line>" surfaced`, then **`deputy wt-remove`** (do **not** call `deputy done`; the `deputy/<slug>` branch keeps its commits for manual resolution).
    Then: `deputy done <slug>` → `deputy set "<item-line>" done` → `deputy wt-remove`.
    **Never auto-push** to the remote — pushing is the user's decision.
 
