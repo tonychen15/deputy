@@ -732,14 +732,16 @@ _availability() {
 
 # Write a per-spawn Claude settings file registering the guardrail PreToolUse hook
 # (absolute hook path), and echo its path. SRC_DIR is the deputy install dir.
-# Uses jq for JSON encoding and printf %q for shell-quoting, so paths with
-# spaces or shell metacharacters are handled correctly.
+# The raw absolute path is passed to jq for JSON encoding only — no shell-quoting
+# via printf %q (which would double-encode when Claude Code invokes the hook via
+# execFile without a shell).
 _guardrail_settings_path() {
-  local hook; hook="$(printf '%q' "$SRC_DIR/hooks/guardrail.sh")"
+  local hook="$SRC_DIR/hooks/guardrail.sh"
   local f="$STATE_DIR/guardrail-settings.json"
+  local matcher="Bash|Edit|Write|MultiEdit|NotebookEdit"
   mkdir -p "$STATE_DIR"
-  jq -n --arg hook "$hook" \
-    '{"hooks":{"PreToolUse":[{"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit",
+  jq -n --arg hook "$hook" --arg matcher "$matcher" \
+    '{"hooks":{"PreToolUse":[{"matcher":$matcher,
       "hooks":[{"type":"command","command":$hook}]}]}}' > "$f"
   printf '%s' "$f"
 }
