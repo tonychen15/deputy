@@ -3,6 +3,9 @@
 # Injects fake notify-send / curl / mail binaries via a temp PATH prefix so
 # deputy's _notify_* helpers are exercised without touching any real service.
 source "$(dirname "$0")/lib.sh"
+# The PATH self-fix would prepend ~/.local/bin ahead of our fake notifier dir on
+# some machines, giving false-greens. Disable it so the injected fakes always win.
+export DEPUTY_NO_PATH_FIX=1
 
 # Run notifications synchronously so assertions don't race the background process.
 export DEPUTY_NOTIFY_SYNC=1
