@@ -100,3 +100,19 @@ printf '# My Project\nCustom instructions here.\n' > "$dc2/CLAUDE.md"
 bash "$INSTALL" init "$dc2" >/dev/null
 assert_contains "$(cat "$dc2/CLAUDE.md")" "Custom instructions here." "init preserves existing CLAUDE.md"
 assert_contains "$(cat "$dc2/CLAUDE.md")" "Deputy: task intake" "init appends to existing CLAUDE.md"
+
+# --- install.sh link from inside a worktree must target the MAIN repo, not the worktree (regression) ---
+mr="$(mktemp -d)"
+git -C "$mr" init -q; git -C "$mr" config user.email t@t; git -C "$mr" config user.name t
+mkdir -p "$mr/bin" "$mr/skills/deputy"
+cp "$REPO/install.sh" "$mr/install.sh"; cp "$REPO/bin/deputy.sh" "$mr/bin/deputy.sh"; cp "$REPO/skills/deputy/SKILL.md" "$mr/skills/deputy/SKILL.md"
+chmod +x "$mr/install.sh" "$mr/bin/deputy.sh"
+git -C "$mr" add -A; git -C "$mr" commit -qm init
+wt="$(mktemp -d)/wt"; git -C "$mr" worktree add -q "$wt" -b wtbranch
+pfx="$(mktemp -d)"; sk="$(mktemp -d)"
+DEPUTY_PREFIX="$pfx" DEPUTY_SKILLS_DIR="$sk" bash "$wt/install.sh" link >/dev/null 2>&1
+tgt="$(readlink -f "$sk/deputy" 2>/dev/null)"
+assert_eq "$(case "$tgt" in "$mr"/*) echo main;; "$wt"/*) echo worktree;; *) echo other;; esac)" "main" "skill symlink targets MAIN repo, not the worktree"
+ctgt="$(readlink -f "$pfx/deputy" 2>/dev/null)"
+assert_eq "$(case "$ctgt" in "$mr"/*) echo main;; "$wt"/*) echo worktree;; *) echo other;; esac)" "main" "command symlink targets MAIN repo, not the worktree"
+git -C "$mr" worktree remove --force "$wt" 2>/dev/null; rm -rf "$mr" "$pfx" "$sk" 2>/dev/null || true
