@@ -98,4 +98,10 @@ assert_eq "$(nb "$WT/n.ipynb")" "0" "notebook inside wt allowed"
 ln -s /etc "$WT/lnk"
 assert_eq "$(wr Write "$WT/lnk/evil")" "2" "symlinked-out path denied"
 
+# --- Task 4: _guardrail_settings_path writes a settings file referencing the hook ---
+gp="$(DEPUTY_ROOT="$ROOT" ROOT="$ROOT" SRC_DIR="$REPO" bash -c 'source "'"$REPO"'/bin/deputy.sh"; _guardrail_settings_path' 2>/dev/null)"
+assert_eq "$([[ -f "$gp" ]] && echo yes || echo no)" "yes" "settings file generated"
+assert_contains "$(cat "$gp")" "PreToolUse" "settings has PreToolUse hook"
+assert_contains "$(cat "$gp")" "$REPO/hooks/guardrail.sh" "settings references the hook by abs path"
+
 rm -rf "$ROOT"
