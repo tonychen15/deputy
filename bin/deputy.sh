@@ -73,7 +73,7 @@ _parse_item() {
   local consumed=1
   while [[ "$consumed" -eq 1 ]]; do
     consumed=0
-    if [[ -z "$prio" && "$line" =~ ^\[(P[0-2])\][[:space:]]*(.*) ]]; then
+    if [[ -z "$prio" && "$line" =~ ^\[(P[0-4])\][[:space:]]*(.*) ]]; then
       prio="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[2]}"; consumed=1
     fi
     if [[ -z "$id" && "$line" =~ ^\[#([0-9]+)\][[:space:]]*(.*) ]]; then
@@ -232,20 +232,33 @@ _allocate_ids() {
     if [[ -z "${_ai_line//[[:space:]]/}" ]]; then
       printf '%s\n' "$_ai_line" >> "$tmp"; continue
     fi
-    # Check if this item line needs an ID
+    # Check if this item line needs an ID or a default priority
     parsed="$(_parse_item "$_ai_line")"
     _ai_id="${parsed#*|}"; _ai_id="${_ai_id#*|}"; _ai_id="${_ai_id%%|*}"
     if [[ -z "$_ai_id" ]]; then
       local _ai_state="${parsed%%|*}"
       local _ai_prio="${parsed#*|}"; _ai_prio="${_ai_prio%%|*}"
       local _ai_desc_rest="${parsed#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"
+      # Items with no explicit priority get the default [P4] tag.
+      [[ -z "$_ai_prio" ]] && _ai_prio="P4"
       local _ai_new_line
       _ai_new_line="$(_serialize_item "$_ai_state" "$_ai_prio" "$next_id" "$_ai_desc_rest")"
       printf '%s\n' "$_ai_new_line" >> "$tmp"
       next_id=$(( next_id + 1 ))
       changed=1
     else
-      printf '%s\n' "$_ai_line" >> "$tmp"
+      # Item already has an ID — backfill missing priority for legacy/manually-added lines.
+      local _ai_state="${parsed%%|*}"
+      local _ai_prio="${parsed#*|}"; _ai_prio="${_ai_prio%%|*}"
+      local _ai_desc_rest="${parsed#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"
+      if [[ -z "$_ai_prio" ]]; then
+        local _ai_new_line
+        _ai_new_line="$(_serialize_item "$_ai_state" "P4" "$_ai_id" "$_ai_desc_rest")"
+        printf '%s\n' "$_ai_new_line" >> "$tmp"
+        changed=1
+      else
+        printf '%s\n' "$_ai_line" >> "$tmp"
+      fi
     fi
   done < "$BACKLOG"
 
@@ -281,6 +294,8 @@ cmd_add() {
         --p0|-ui)   prio=P0; shift; continue ;;
         --p1|-u)    prio=P1; shift; continue ;;
         --p2|-i)    prio=P2; shift; continue ;;
+        --p3)       prio=P3; shift; continue ;;
+        --p4)       prio=P4; shift; continue ;;
         -*) printf 'deputy: unknown flag: %s (use -- before a description starting with "-")\n' "$1" >&2; return 2 ;;
       esac
     fi
@@ -292,7 +307,7 @@ cmd_add() {
   local _pfx="${text:0:1}"
   if [[ "$_pfx" == '~' || "$_pfx" == '@' || "$_pfx" == '?' || "$_pfx" == '#' || \
         "$_pfx" == '!' || "$_pfx" == '%' || "$_pfx" == '=' || "$_pfx" == '^' || \
-        "$_pfx" == '>' ]] || [[ "$text" =~ ^\[P[0-2]\] ]]; then
+        "$_pfx" == '>' ]] || [[ "$text" =~ ^\[P[0-4]\] ]]; then
     printf 'deputy: description may not begin with a status prefix (~@?#!%%=^>) or a [Px] tag: %s\n' "$text" >&2
     return 2
   fi
@@ -342,9 +357,9 @@ cmd_status() {
     "$w" "$t" "$r" "$s" "$d" "$f" "$c" "$u" "$p" "$df"
 }
 
-# Numeric rank for a priority tag: P0=0 P1=1 P2=2 (none)=3.
+# Numeric rank for a priority tag: P0=0 P1=1 P2=2 P3=3 P4=4 (none)=5.
 _prio_rank() {
-  case "$1" in P0) echo 0 ;; P1) echo 1 ;; P2) echo 2 ;; *) echo 3 ;; esac
+  case "$1" in P0) echo 0 ;; P1) echo 1 ;; P2) echo 2 ;; P3) echo 3 ;; P4) echo 4 ;; *) echo 5 ;; esac
 }
 
 cmd_pick() {
@@ -604,7 +619,8 @@ usage: deputy <command> [args]
 
 commands:
   add "<text>" [-ui|-u|-i]        add a waiting item and run it immediately if idle
-                                  (-ui=P0 -u=P1 -i=P2; --p0/--p1/--p2 also accepted;
+                                  (-ui=P0 -u=P1 -i=P2; --p0/--p1/--p2/--p3/--p4 also accepted;
+                                  no flag → default priority P4 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
   list                            print parsed items (state|priority|id|description)

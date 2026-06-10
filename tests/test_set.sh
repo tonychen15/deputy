@@ -6,7 +6,7 @@ printf '%s\n' '[P0] do the thing' 'plain one' >> "$DEPUTY_ROOT/BACKLOG.md"
 # Trigger allocation so items get [#N] tags before we use them with set
 bash "$DEPUTY" list >/dev/null
 thing_line="$(grep 'do the thing' "$DEPUTY_ROOT/BACKLOG.md")"
-plain_line="$(grep '^plain one$\|^\[#.*\] plain one$' "$DEPUTY_ROOT/BACKLOG.md")"
+plain_line="$(grep 'plain one' "$DEPUTY_ROOT/BACKLOG.md")"
 
 # waiting -> running keeps the priority tag.
 bash "$DEPUTY" set "$thing_line" running
@@ -19,10 +19,10 @@ bash "$DEPUTY" set "$running_thing" done
 assert_contains "$(bash "$DEPUTY" list)" "done|P0|" "set running->done"
 assert_contains "$(bash "$DEPUTY" list)" "do the thing" "set running->done: description preserved"
 
-# untagged transition.
+# P4-defaulted item transition (items without explicit priority get P4 assigned).
 bash "$DEPUTY" set "$plain_line" surfaced
-assert_contains "$(bash "$DEPUTY" list)" "surfaced||" "set untagged->surfaced"
-assert_contains "$(bash "$DEPUTY" list)" "plain one"  "set untagged->surfaced: description preserved"
+assert_contains "$(bash "$DEPUTY" list)" "surfaced|P4|" "set P4-default->surfaced"
+assert_contains "$(bash "$DEPUTY" list)" "plain one"    "set P4-default->surfaced: description preserved"
 
 # No match -> non-zero, file unchanged.
 before="$(cat "$DEPUTY_ROOT/BACKLOG.md")"

@@ -20,6 +20,8 @@ assert_eq "$(parse '= Dup of #3')"        "duplicate|||Dup of #3"   "duplicate u
 assert_eq "$(parse '=[P0] Same as X')"    "duplicate|P0||Same as X" "duplicate P0"
 assert_eq "$(parse '^ Interrupted')"      "paused|||Interrupted"    "paused untagged"
 assert_eq "$(parse '^[P1] Paused job')"   "paused|P1||Paused job"   "paused P1"
+assert_eq "$(parse '[P3] Low prio')"      "waiting|P3||Low prio"    "waiting P3"
+assert_eq "$(parse '[P4] Lowest prio')"   "waiting|P4||Lowest prio" "waiting P4"
 
 # list + legend-skip
 printf '%s\n' '[P0] one' '~ [P1] two' '# three' >> "$DEPUTY_ROOT/BACKLOG.md"
@@ -28,7 +30,7 @@ assert_contains "$out" "waiting|P0|" "list: item one state+prio"
 assert_contains "$out" "|one"        "list: item one description"
 assert_contains "$out" "triaging|P1|" "list: item two state+prio"
 assert_contains "$out" "|two"         "list: item two description"
-assert_contains "$out" "done||"      "list: item three state"
+assert_contains "$out" "done|P4|"    "list: item three gets P4 default"
 assert_contains "$out" "|three"      "list: item three description"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'LEGEND')" "0" "list: legend not parsed as item"
 
