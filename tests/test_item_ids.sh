@@ -67,12 +67,12 @@ bash "$DEPUTY" add "gamma"
 out="$(bash "$DEPUTY" list)"
 assert_contains "$out" "waiting|P1|"     "alloc: alpha has an id"
 assert_contains "$out" "waiting|P0|"     "alloc: beta has an id"
-assert_contains "$out" "waiting|P4|"     "alloc: gamma gets default P4"
+assert_contains "$out" "waiting|P3|"     "alloc: gamma gets default P3"
 assert_contains "$out" "alpha"           "alloc: alpha desc present"
 assert_contains "$out" "beta"            "alloc: beta desc present"
 assert_contains "$out" "waiting|P1|1|alpha" "alloc: alpha gets id 1 (first added)"
 assert_contains "$out" "waiting|P0|2|beta"  "alloc: beta gets id 2 (second added)"
-assert_contains "$out" "waiting|P4|3|gamma" "alloc: gamma gets id 3 with P4 default"
+assert_contains "$out" "waiting|P3|3|gamma" "alloc: gamma gets id 3 with P3 default"
 
 # Second pass is a no-op (ids don't change, new list call same result)
 out2="$(bash "$DEPUTY" list)"
@@ -98,11 +98,11 @@ raw_one="$(bash "$DEPUTY" pick)"
 bash "$DEPUTY" set "$raw_one" done
 bash "$DEPUTY" add "task three"
 out4="$(bash "$DEPUTY" list)"
-assert_contains "$out4" "done|P4|1|task one"     "done item keeps its id 1"
-assert_contains "$out4" "waiting|P4|2|task two"  "task two keeps id 2"
+assert_contains "$out4" "done|P3|1|task one"     "done item keeps its id 1"
+assert_contains "$out4" "waiting|P3|2|task two"  "task two keeps id 2"
 assert_contains "$out4" "task three"             "task three present"
 # task three must have id > 2 (max was 2, so 3)
-assert_contains "$out4" "waiting|P4|3|task three" "new item gets id 3 (not reusing 1)"
+assert_contains "$out4" "waiting|P3|3|task three" "new item gets id 3 (not reusing 1)"
 
 # Status preserves id across state transitions
 setup_repo

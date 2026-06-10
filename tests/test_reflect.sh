@@ -26,16 +26,16 @@ out="$(reflect)"
 assert_contains "$out" "fix the login bug" "learnings: done item appears"
 assert_contains "$out" "Learnings (1 done)" "learnings: count shown"
 
-# ── re-triage — items added via 'add' get P4 and appear in waiting list, not re-triage ──
+# ── re-triage — items added via 'add' get P3 and appear in waiting list, not re-triage ──
 
 setup_repo
 bash "$DEPUTY" add "an untagged task"
 bash "$DEPUTY" add "a tagged task" --p2
 
 out="$(reflect)"
-# Items added without a flag get P4, so they are NOT shown in the re-triage section.
-assert_contains "$out" "none: all waiting items have a priority" "retriage: no untagged items (all got P4)"
-assert_contains "$out" "an untagged task" "reprioritize: P4 item appears in waiting list"
+# Items added without a flag get P3, so they are NOT shown in the re-triage section.
+assert_contains "$out" "none: all waiting items have a priority" "retriage: no untagged items (all got P3)"
+assert_contains "$out" "an untagged task" "reprioritize: P3 item appears in waiting list"
 assert_contains "$out" "a tagged task"    "reprioritize: tagged item in waiting list"
 
 # ── surfaced items listed ─────────────────────────────────────────────────────

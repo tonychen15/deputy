@@ -7,7 +7,7 @@ bash "$DEPUTY" add "Urgent one" --p0
 bash "$DEPUTY" add "Important one" --p2
 
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting|P4|"     "add untagged gets default P4 priority"
+assert_contains "$out" "waiting|P3|"     "add untagged gets default P3 priority"
 assert_contains "$out" "First task"      "add untagged: description"
 assert_contains "$out" "waiting|P0|"     "add --p0 (has id)"
 assert_contains "$out" "Urgent one"      "add --p0: description"

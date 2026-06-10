@@ -19,10 +19,10 @@ bash "$DEPUTY" set "$running_thing" done
 assert_contains "$(bash "$DEPUTY" list)" "done|P0|" "set running->done"
 assert_contains "$(bash "$DEPUTY" list)" "do the thing" "set running->done: description preserved"
 
-# P4-defaulted item transition (items without explicit priority get P4 assigned).
+# P3-defaulted item transition (items without explicit priority get P3 assigned).
 bash "$DEPUTY" set "$plain_line" surfaced
-assert_contains "$(bash "$DEPUTY" list)" "surfaced|P4|" "set P4-default->surfaced"
-assert_contains "$(bash "$DEPUTY" list)" "plain one"    "set P4-default->surfaced: description preserved"
+assert_contains "$(bash "$DEPUTY" list)" "surfaced|P3|" "set P3-default->surfaced"
+assert_contains "$(bash "$DEPUTY" list)" "plain one"    "set P3-default->surfaced: description preserved"
 
 # No match -> non-zero, file unchanged.
 before="$(cat "$DEPUTY_ROOT/BACKLOG.md")"

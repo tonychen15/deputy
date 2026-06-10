@@ -239,8 +239,8 @@ _allocate_ids() {
       local _ai_state="${parsed%%|*}"
       local _ai_prio="${parsed#*|}"; _ai_prio="${_ai_prio%%|*}"
       local _ai_desc_rest="${parsed#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"
-      # Items with no explicit priority get the default [P4] tag.
-      [[ -z "$_ai_prio" ]] && _ai_prio="P4"
+      # Items with no explicit priority get the default [P3] tag.
+      [[ -z "$_ai_prio" ]] && _ai_prio="P3"
       local _ai_new_line
       _ai_new_line="$(_serialize_item "$_ai_state" "$_ai_prio" "$next_id" "$_ai_desc_rest")"
       printf '%s\n' "$_ai_new_line" >> "$tmp"
@@ -253,7 +253,7 @@ _allocate_ids() {
       local _ai_desc_rest="${parsed#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"
       if [[ -z "$_ai_prio" ]]; then
         local _ai_new_line
-        _ai_new_line="$(_serialize_item "$_ai_state" "P4" "$_ai_id" "$_ai_desc_rest")"
+        _ai_new_line="$(_serialize_item "$_ai_state" "P3" "$_ai_id" "$_ai_desc_rest")"
         printf '%s\n' "$_ai_new_line" >> "$tmp"
         changed=1
       else
@@ -620,7 +620,7 @@ usage: deputy <command> [args]
 commands:
   add "<text>" [-ui|-u|-i]        add a waiting item and run it immediately if idle
                                   (-ui=P0 -u=P1 -i=P2; --p0/--p1/--p2/--p3/--p4 also accepted;
-                                  no flag → default priority P4 assigned at numbering;
+                                  no flag → default priority P3 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
   list                            print parsed items (state|priority|id|description)

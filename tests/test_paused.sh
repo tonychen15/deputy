@@ -8,7 +8,7 @@ printf '%s\n' '^[P0] paused urgent' '^plain paused' >> "$DEPUTY_ROOT/BACKLOG.md"
 out="$(bash "$DEPUTY" list)"
 assert_contains "$out" "paused|P0|"    "paused P0 has state+prio"
 assert_contains "$out" "paused urgent" "paused P0 description"
-assert_contains "$out" "paused|P4|"    "paused untagged gets P4 default"
+assert_contains "$out" "paused|P3|"    "paused untagged gets P3 default"
 assert_contains "$out" "plain paused"  "paused untagged description"
 
 ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3" "$4"; }
