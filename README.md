@@ -13,11 +13,10 @@ queue pattern. Its distinguishing trait versus blind backlog-drainers is
 **discernment**: it decides *whether* and *how hard* to do each item, escalates the
 genuinely hard calls, and never blocks the queue while it waits on you.
 
-> **v1.0.0** — queue engine, scheduling/routing, orchestrator, checkpoint spine,
-> always-on heartbeat, risky-op guardrail, item IDs, Gemini xReview,
-> `paused`/`deferred` states, `clean --state`, and `reflect` are all shipped and
-> live-validated end-to-end. The repo's own `BACKLOG.md` is the project's task queue
-> — Deputy dogfoods itself.
+> **v1.0.1** — human-session back-off, default-branch run guard, P3/P4 priority lanes,
+> `deputy clean <id>`, `reflect`/`review` merge, and queue autocommit shipped on top of
+> the v1.0.0 core. The repo's own `BACKLOG.md` is the project's task queue — Deputy
+> dogfoods itself.
 
 ---
 
@@ -82,7 +81,7 @@ your existing `BACKLOG.md` or config:
 ./install.sh cron           # or: deputy cron --ensure
 ```
 
-**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.0.0`).
+**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.0.1`).
 
 ---
 
@@ -125,7 +124,9 @@ surfaced · `#` done · `!` failed · `%` cancelled · `=` duplicate · `^` paus
 **`^` paused** — mid-execution checkpoint; auto-resumes on next heartbeat.
 **`>` deferred** — parked for future consideration; inert, never auto-scheduled; revive with
 `deputy set "<line>" waiting`.
-**Priority tag:** `[P0] > [P1] > [P2] > untagged`; FIFO within a lane.
+**Priority tag:** `[P0] > [P1] > [P2] > [P3] > [P4]`; untagged items default to `[P3]`
+at numbering time; FIFO within a lane. Use `--p0`/`--p1`/`--p2`/`--p3`/`--p4` flags
+with `deputy add` to assign a lane explicitly.
 **Item IDs** `[#N]` are assigned automatically on first reference (e.g., `list`, `run`, `reflect`); use
 `deputy run <id>` to target a specific item directly.
 Items are blank-line separated; the parser reads everything after `## Items`.
@@ -150,13 +151,18 @@ Items are blank-line separated; the parser reads everything after `## Items`.
   commit**; author ≠ reviewer; nothing advances without a PASS.
 - **Routing** — `claude` orchestrates and executes steps; `gemini` reviews (xReview).
   The routing infrastructure supports a `codex` simple-coding failover path, but in
-  v1.0.0 all step execution runs inline with `claude`. On quota exhaustion, Deputy skips
+  v1.0.1 all step execution runs inline with `claude`. On quota exhaustion, Deputy skips
   the blocked item and retries on the next heartbeat tick — it does **not** reschedule
   the shared cron line.
 - **Heartbeat** — a fixed recurring `*/N` cron entry (default 10 min, configurable via
   `heartbeat_mins` in `.deputy/config`) drives the always-on safety-net; install with
   `./install.sh cron`. Each tick: live task → skip; dead/orphaned → recover + resume;
   idle + work → pick highest-priority item.
+- **Human-session back-off** — `deputy run` detects live interactive Claude sessions in
+  the repo (`~/.claude/sessions/`) and skips the tick rather than racing with your work.
+  Configurable via `human_backoff=1` in `.deputy/config` (default ON).
+- **Default-branch guard** — `deputy run` refuses to start when the repo is not on its
+  default branch, preventing accidental execution on feature branches.
 - **Risky-op guardrail** (`hooks/guardrail.sh`) — a PreToolUse hook scoped to the
   spawned orchestrator that blocks out-of-worktree writes and a Bash denylist (push,
   crontab, destructive git, global installs, …).
@@ -177,7 +183,7 @@ templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)
 BACKLOG.md               # Deputy's own task queue
-VERSION                  # 1.0.0
+VERSION                  # 1.0.1
 ```
 
 Run the test suite with `bash tests/run.sh`.
