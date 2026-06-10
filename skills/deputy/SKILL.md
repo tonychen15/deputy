@@ -174,9 +174,11 @@ until clean).
 - Do not manage cron yourself except via `deputy cron --reschedule` on quota exhaustion.
 - **Human-session back-off**: `cmd_run` checks for live interactive Claude sessions
   (`entrypoint=="cli"` in `~/.claude/sessions/`) in the repo before claiming an item.
-  If a human session is detected, the tick is skipped silently (logged to stderr).
+  If a human session is detected, the tick is skipped silently (logged to stderr with PID).
+  This applies to both priority-driven and targeted (`deputy run #N`) invocations.
   Config key: `human_backoff=1` (default ON); set `0` to disable (e.g. in CI).
   `DEPUTY_ALLOW_ANY_BRANCH=1` does NOT bypass this check — they are independent guards.
+  Stale (dead-PID) session files in this repo are warned about but do NOT block execution.
 
 ## Guardrail (enforced + judgment)
 A PreToolUse hook **blocks** these in headless runs — never attempt them (and never hand
