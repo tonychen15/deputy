@@ -10,7 +10,7 @@
 
 ## Items
 
-[P3][#33] clean any left-over jobflow references/files from this deputy project
+@[P3][#33] clean any left-over jobflow references/files from this deputy project
 
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
