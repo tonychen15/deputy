@@ -1,5 +1,42 @@
 # Changelog
 
+## v1.0.1 — 2026-06-10
+
+Patch release. Safety and usability improvements across the queue engine, scheduler,
+and orchestrator skill; no breaking changes.
+
+### Safety
+- **Human-session back-off**: `deputy run` now detects live interactive Claude sessions
+  in the repo and skips the tick silently (logs PID to stderr). Stale (dead-process)
+  session files emit a warning but do not block execution. Configurable via
+  `human_backoff=1` (default ON) in `.deputy/config`.
+- **Run default-branch guard**: `deputy run` refuses to start when the repo is not on
+  its configured default branch, preventing accidental item execution on feature branches.
+- **Back-off recheck in drain loop**: the human-session back-off gate is re-evaluated
+  on every iteration of the drain loop, not just at entry.
+- **Stale-session surface**: when a stale CLI session file is detected, `deputy run`
+  surfaces the top waiting item rather than proceeding silently.
+
+### Queue engine
+- **Extended priority system** (P0–P4): priority lanes expanded to five tiers. Untagged
+  items now default to `[P3]` at numbering time; existing untagged items backfilled.
+  `--p3`/`--p4` flags added to `deputy add`.
+- **`deputy clean <id>`**: remove a single item by numeric ID without touching the rest
+  of the queue; respects the cleanable-state guard.
+- **Queue autocommit**: BACKLOG.md is auto-committed after every mutation; surface
+  cleanup now consistent across all paths.
+- **`deputy claim` hidden from public help**: orchestrator-internal plumbing, now
+  documented only in `SKILL.md`.
+
+### Orchestrator skill
+- **`reflect` / `review` merge**: `reflect` now includes surfaced question files and a
+  full status digest. `review` retained as a backward-compatible alias.
+
+### Housekeeping
+- Removed legacy project-name references from suspension-resume spec.
+
+---
+
 ## v1.0.0 — 2026-06-09
 
 First release. Deputy is an autonomous, cron-driven backlog runner for a code repo: add
