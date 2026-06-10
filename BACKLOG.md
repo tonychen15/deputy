@@ -11,7 +11,7 @@
 ## Items
 
 [P0][#32] add a 'deputy clean <id>' option to clean a single item by id, and update the usage in README.md
-clean any left-over jobflow references/files from this deputy project
+[P3][#33] clean any left-over jobflow references/files from this deputy project
 
 @[P1][#31] update README.md: 1. remove deputy pick from usage; 2. remove deputy review from usage; 3. update item format in BACKLOG.md to match current line format
 
