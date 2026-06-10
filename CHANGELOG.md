@@ -7,8 +7,7 @@ and orchestrator skill; no breaking changes.
 
 ### Safety
 - **Human-session back-off**: `deputy run` now detects live interactive Claude sessions
-  in the repo and skips the tick silently (logs PID to stderr). Stale (dead-process)
-  session files emit a warning but do not block execution. Configurable via
+  in the repo and skips the tick silently (logs PID to stderr). Configurable via
   `human_backoff=1` (default ON) in `.deputy/config`.
 - **Run default-branch guard**: `deputy run` refuses to start when the repo is not on
   its configured default branch, preventing accidental item execution on feature branches.
