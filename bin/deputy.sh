@@ -500,6 +500,78 @@ _live_claim_exists() {
   return 1
 }
 
+# True (0) if a live interactive Claude Code session is active in this repo.
+# Reads ~/.claude/sessions/*.json; each file represents one Claude process.
+# We back off only for entrypoint=="cli" sessions (human-driven), not "sdk-cli"
+# (headless deputy invocations). Path comparison is done after realpath normalization.
+#
+# Dead-PID session files that match this repo are a sign of an abnormal Claude crash;
+# we log a warning to stderr and proceed rather than surfacing the item.
+#
+# Returns 0 (true/match) and sets _isa_pid to the matched PID when a live session
+# is found; returns 1 otherwise.
+_interactive_session_active() {
+  local repo_root="${1:-$ROOT}"
+  # Normalize repo root once (handles symlinks, trailing slashes).
+  local norm_root; norm_root="$(realpath "$repo_root" 2>/dev/null || readlink -f "$repo_root" 2>/dev/null || printf '%s' "$repo_root")"
+  local sessions_dir="$HOME/.claude/sessions"
+
+  if [[ ! -d "$sessions_dir" ]] || ! command -v jq >/dev/null 2>&1; then
+    # Fallback: scan live claude processes via /proc when sessions dir or jq absent.
+    local pid pcwd norm_pcwd
+    while IFS= read -r pid; do
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      [[ "$pid" == "$$" ]] && continue
+      pcwd="$(readlink /proc/"$pid"/cwd 2>/dev/null || true)"
+      [[ -n "$pcwd" ]] || continue
+      norm_pcwd="$(realpath "$pcwd" 2>/dev/null || readlink -f "$pcwd" 2>/dev/null || printf '%s' "$pcwd")"
+      if [[ "$norm_pcwd" == "$norm_root" || "$norm_pcwd" == "$norm_root/"* ]]; then
+        _isa_pid="$pid"
+        return 0
+      fi
+    done < <(pgrep -x claude 2>/dev/null || true)
+    return 1
+  fi
+
+  local f fields pid cwd entrypoint procstart norm_cwd stat_start
+  for f in "$sessions_dir"/*.json; do
+    [[ -f "$f" ]] || continue
+    # Extract all needed fields in one jq call (avoids per-field subshell cost).
+    fields="$(jq -r '[.pid // "", .cwd // "", .entrypoint // "", .procStart // ""] | @tsv' "$f" 2>/dev/null)" || continue
+    IFS=$'\t' read -r pid cwd entrypoint procstart <<< "$fields"
+
+    # Only interactive CLI sessions — not sdk-cli (deputy/headless invocations).
+    [[ "$entrypoint" == "cli" ]] || continue
+
+    # Normalize cwd and check repo membership.
+    norm_cwd="$(realpath "$cwd" 2>/dev/null || readlink -f "$cwd" 2>/dev/null || printf '%s' "$cwd")"
+    [[ "$norm_cwd" == "$norm_root" || "$norm_cwd" == "$norm_root/"* ]] || continue
+
+    # PID must be a valid integer.
+    [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || continue
+
+    # Liveness check.
+    if ! kill -0 "$pid" 2>/dev/null; then
+      # Dead PID in this repo — warn and skip. Do NOT delete Claude's session file.
+      printf 'deputy: stale Claude session file found for PID %s (process dead) — ignoring and proceeding.\n' "$pid" >&2
+      continue
+    fi
+
+    # procStart validation: prevents false positives from PID recycling.
+    # Claude stores /proc/<pid>/stat field 22 (start time in clock ticks since boot).
+    if [[ -n "$procstart" ]]; then
+      stat_start="$(awk '{print $22}' /proc/"$pid"/stat 2>/dev/null || true)"
+      if [[ -n "$stat_start" && "$stat_start" != "$procstart" ]]; then
+        continue  # PID was recycled — this session file is stale.
+      fi
+    fi
+
+    _isa_pid="$pid"
+    return 0
+  done
+  return 1
+}
+
 cmd_claim() {
   local from="" pid="$PPID"
   while [[ $# -gt 0 ]]; do
@@ -626,6 +698,7 @@ commands:
 
 config keys (.deputy/config):
   max_items=N                     items started per run cycle (default 0 = unlimited)
+  human_backoff=1                 back off when an interactive Claude session is active in this repo (default 1; set 0 to disable)
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
@@ -992,6 +1065,20 @@ cmd_run() {
 
   cmd_recover >/dev/null 2>&1 || true
   if _live_claim_exists; then return 0; fi
+
+  # ── Human-session back-off ────────────────────────────────────────────────────
+  # If an interactive Claude Code session is active in this repo, skip this heartbeat
+  # tick to avoid mixing deputy commits with the human's uncommitted work.
+  # Disable with: deputy config set human_backoff 0
+  # Note: DEPUTY_ALLOW_ANY_BRANCH=1 does NOT bypass this check (independent guards).
+  local _hb; _hb="$(_config_get human_backoff)"; _hb="${_hb:-1}"
+  local _isa_pid=""
+  if [[ "$_hb" != "0" ]] && _interactive_session_active "$ROOT"; then
+    printf 'deputy: interactive Claude session active in %s (PID: %s) — backing off (next heartbeat will retry).\n' \
+      "$ROOT" "$_isa_pid" >&2
+    return 0
+  fi
+
   # Always-on model: do NOT remove the cron line while running. The line persists;
   # each tick is state-aware (skip when live, recover orphans, etc.).
   local cap; cap="$(_config_get max_items)"; cap="${cap:-0}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
