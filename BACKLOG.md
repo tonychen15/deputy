@@ -10,10 +10,10 @@
 
 ## Items
 
-?[#29] when a deputy is fired and picks an item to execute, and at the same time claude is working on the same repo/branch, then deputy should back off to avoid mixing different changes on the same branch. Do a thorough research on this
+?[#31] [P4][#29] when a deputy is fired and picks an item to execute, and at the same time claude is working on the same repo/branch, then deputy should back off to avoid mixing different changes on the same branch. Do a thorough research on this
 
->[#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
->[#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
+>[#32] [P4][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
+>[#33] [P4][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 >[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 >[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
@@ -34,7 +34,7 @@
 #[P1][#13] Add a token/cost budget cap to the run loop (stop a cycle past N output tokens)
 #[P2][#14] Add precise per-provider rate-limit reset parsing for gemini and codex
 #[P2][#15] Implement full Reflect: re-triage stale items, reprioritize, prune duplicates, capture learnings
-#[#16] Add external notifications (push/desktop/email) when an item is surfaced or finishes
+#[#34] [P4][#16] Add external notifications (push/desktop/email) when an item is surfaced or finishes
 #[P0][#17] rename jobflow folder name to deputy and update its reference
 #[P0][#18] add a 'clean' option for deputy to clean those untouched items
 =[P1][#19] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
