@@ -5,12 +5,12 @@
 **Priority (tag):** `[P0]` urgent+important | `[P1]` urgent | `[P2]` important | (none) lowest lane
 **Order:** P0 > P1 > P2 > untagged ; FIFO within a lane
 **Line format:** `<status?> <priority?> <description>`
-**Add an item:** `deputy "your task" [-ui | -u | -i]` — or just add a line below
+**Add an item:** `deputy add [-ui|-u|-i|--p0|--p1|--p2] "your task"` — or just add a line below
 ---
 
 ## Items
 
-[P0] check whether deputy project is ready for release and install to other project, verify it with stock_pick project
+?[P0][#25] check whether deputy project is ready for release and install to other project, verify it with stock_pick project
 
 >[#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
