@@ -118,6 +118,25 @@ cmd_list() {
 # Run a function while holding an exclusive lock on LOCK_FILE (short-held).
 _with_lock() { ( flock -x 200; "$@" ) 200>"$LOCK_FILE"; }
 
+# Commit BACKLOG.md to git with a short reason message.
+# Fails soft: a non-zero git exit never aborts the caller (deputy mutations must
+# always succeed even when git is absent or the file is untracked).
+# Must be called OUTSIDE the flock critical section (the file write is done first,
+# the lock released, then we commit — matching the pattern in cmd_wp_commit).
+_commit_queue() {
+  local reason="${1:-queue update}"
+  # Only act when inside a git work-tree.
+  git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  # Only act when BACKLOG.md is tracked by git.
+  git -C "$ROOT" ls-files --error-unmatch -- BACKLOG.md >/dev/null 2>&1 || return 0
+  # Only act when BACKLOG.md actually changed.
+  git -C "$ROOT" diff --quiet -- BACKLOG.md && return 0
+  # Commit ONLY BACKLOG.md — must not sweep other dirty files.
+  git -C "$ROOT" add -- BACKLOG.md \
+    && git -C "$ROOT" commit -q -m "chore(queue): $reason" -- BACKLOG.md \
+    || true   # fail soft: never propagate a git error to the caller
+}
+
 # Exact whole-line replacement (research.sh flip_line). Atomic via tmpfile+mv.
 # Caller holds the lock. Used by upcoming set/claim commands.
 _flip_line() {
@@ -290,6 +309,7 @@ cmd_add() {
     printf 'deputy: added: %s\n' "$text"
   }
   _with_lock _do_add
+  _commit_queue "add"
   # Trigger execution immediately if nothing is running and work is available.
   # Set DEPUTY_NO_AUTORUN=1 to suppress (used in tests that exercise add in isolation).
   if [[ "${DEPUTY_NO_AUTORUN:-0}" != "1" ]] && ! _live_claim_exists && [[ -n "$(cmd_pick)" ]]; then
@@ -435,6 +455,7 @@ cmd_set() {
   local _set_rc=0
   _with_lock _do_set || _set_rc=$?
   if [[ "$_set_rc" -eq 0 ]]; then
+    _commit_queue "set $newstate"
     local _parsed _desc _id_rest2
     _parsed="$(_parse_item "$from")"
     _id_rest2="${_parsed#*|}"; _id_rest2="${_id_rest2#*|}"; _desc="${_id_rest2#*|}"
@@ -506,6 +527,7 @@ cmd_claim() {
     printf '%s\n%s\n' "$to" "$_claim_start" > "$STATE_DIR/$pid.claim"
   }
   _with_lock _do_claim
+  _commit_queue "claim running"
 }
 
 # Revert a running/triaging line back to waiting (strip the prefix). Caller holds lock.
@@ -571,6 +593,7 @@ cmd_recover() {
     done < <(_each_item)
   }
   _with_lock _do_recover
+  _commit_queue "recover"
 }
 
 cmd_review() {
@@ -608,11 +631,7 @@ commands:
                                   if <id> given (integer; '#7' also accepted), run that
                                   specific item bypassing priority order (targeted, one item only)
   set "<exact line>" <state>      transition an item's state by exact-line match
-  recover                         revert stale/orphaned claims to waiting
-  probe <cli>                     check a provider's availability
-  route <kind> <avail-csv>        choose a provider (orchestrate|code-complex|code-simple|review)
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
-  detect <cli> <rc> <log>         (internal) classify a CLI outcome
   review                          show surfaced items, their questions, and the digest
   clean [--dry-run] [--state <state>]
                                   remove items of <state> (default: waiting = untouched items)
@@ -1155,6 +1174,7 @@ cmd_clean() {
     _regroup_backlog
   }
   _with_lock _do_clean
+  _commit_queue "clean"
   printf 'deputy: cleaned %d %s item(s)\n' "${#doomed[@]}" "$filter_state"
 }
 
