@@ -118,3 +118,20 @@ assert_eq "$(grep -c 'backing off' /tmp/t5_stderr.txt 2>/dev/null || true)" "0" 
 assert_contains "$(cat /tmp/t5_stderr.txt)" "stale" "dead-PID session logs stale warning"
 
 rm -rf "$FAKE_HOME5"
+
+# ── Test 6: no ~/.claude/sessions/ dir (jq fallback via /proc) → no back-off when
+#    the only claude process is deputy itself (sdk-cli) ─────────────────────────
+setup_repo
+printf '[P1] fallback item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+
+# HOME with no .claude/sessions dir → triggers /proc fallback path.
+FAKE_HOME6="$(mktemp -d)"
+# No session files written — fallback scans /proc for 'claude' processes.
+# The only match would be if 'claude' is running, but in test context it shouldn't
+# have a cwd matching DEPUTY_ROOT, so no back-off expected.
+HOME="$FAKE_HOME6" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t6_stderr.txt
+assert_eq "$(grep -c 'backing off' /tmp/t6_stderr.txt 2>/dev/null || true)" "0" \
+  "no sessions dir (proc fallback) → no back-off when no matching claude process"
+
+rm -rf "$FAKE_HOME6"
