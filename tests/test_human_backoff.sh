@@ -212,3 +212,64 @@ rm -rf "$FAKE_HOME6"
 # ── Test 7: human_backoff key appears in deputy help config section ────────────
 help_output="$(bash "$DEPUTY" help 2>&1)"
 assert_contains "$help_output" "human_backoff" "human_backoff config key documented in deputy help"
+
+# ── Test 11: mid-drain back-off — session appears WHILE processing first item ──
+# Prove the per-iteration gate: the drain loop must re-check before claiming item 2.
+# The mock orchestrator processes item 1 (marks done) and then creates a fake live
+# session file. The drain loop should back off before claiming item 2.
+setup_repo
+printf '[P0] first item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+printf '[P1] second item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null  # allocate IDs
+
+FAKE_HOME11="$(mktemp -d)"
+# Shared state: orchestrator writes the live session PID here after processing item 1.
+SESSION_PID_FILE11="$(mktemp)"
+# Start a background process that will serve as the fake "live session" PID.
+# We start it now, capture its PID, and write the session file from the orchestrator.
+sleep 300 & LIVE_PID11=$!
+PROC_START11="$(sed 's/.*) //' /proc/"$LIVE_PID11"/stat 2>/dev/null | awk '{print $20}' || true)"
+
+# Write the live session PID and procStart into a file the orchestrator can read.
+printf '%s\n%s\n' "$LIVE_PID11" "$PROC_START11" > "$SESSION_PID_FILE11"
+
+# Mock orchestrator: on first invocation, mark item done AND create the live session.
+# On subsequent invocations (should not happen), just mark done.
+ORCH11="$(mktemp)"
+cat > "$ORCH11" <<EOF
+#!/usr/bin/env bash
+# Mark the item done.
+bash "$DEPUTY" set "\$1" done >/dev/null 2>&1 || true
+# Create the fake live session file so the mid-drain gate fires for the next item.
+_lpid="\$(sed -n '1p' "$SESSION_PID_FILE11")"
+_lps="\$(sed -n '2p' "$SESSION_PID_FILE11")"
+_sdir="$FAKE_HOME11/.claude/sessions"
+mkdir -p "\$_sdir"
+printf '{"pid": %s, "cwd": "%s", "entrypoint": "cli", "status": "busy", "procStart": %s}\n' \\
+  "\$_lpid" "$DEPUTY_ROOT" "\${_lps:-0}" > "\$_sdir/live_session.json"
+EOF
+chmod +x "$ORCH11"
+
+HOME="$FAKE_HOME11" DEPUTY_ALLOW_ANY_BRANCH=1 \
+  DEPUTY_ORCHESTRATOR_CMD="$ORCH11" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true \
+  bash "$DEPUTY" run 2>/tmp/t11_stderr.txt
+
+# Item 1 must be done (processed before session appeared).
+item1_state11="$(bash "$DEPUTY" list | grep 'first item' | cut -d'|' -f1)"
+assert_eq "$item1_state11" "done" "mid-drain: first item was processed before session appeared"
+
+# Item 2 must still be waiting (gate fired before claiming it).
+item2_state11="$(bash "$DEPUTY" list | grep 'second item' | cut -d'|' -f1)"
+assert_eq "$item2_state11" "waiting" "mid-drain: second item stays waiting after session appeared mid-drain"
+
+# The back-off message must have been emitted.
+assert_contains "$(cat /tmp/t11_stderr.txt)" "backing off" \
+  "mid-drain: back-off message emitted when session appeared mid-drain"
+
+# No stale claim file should remain.
+assert_eq "$(ls "$DEPUTY_ROOT"/.deputy/*.claim 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "mid-drain: no stale claim file after back-off"
+
+kill "$LIVE_PID11" 2>/dev/null || true
+rm -f "$ORCH11" "$SESSION_PID_FILE11"
+rm -rf "$FAKE_HOME11"

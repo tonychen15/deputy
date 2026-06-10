@@ -992,6 +992,69 @@ _guardrail_settings_path() {
   printf '%s' "$f"
 }
 
+# Evaluate the human-session back-off gate. Reads config, calls
+# _interactive_session_active, performs the side-effect (stderr message or stale
+# surface), and returns:
+#   0 → deputy should STOP this tick (live session detected, or stale handled)
+#   1 → deputy should PROCEED (no session, or human_backoff=0)
+#
+# Callers must declare `local _isa_pid="" _isa_stale_pid=""` in their own scope
+# before calling (the function uses those upvar names).
+# This function is self-contained: it does its own cmd_pick for the stale path.
+_human_backoff_gate() {
+  local _hb; _hb="$(_config_get human_backoff)"; _hb="${_hb:-1}"
+  # human_backoff=0 → feature disabled; always proceed.
+  [[ "$_hb" == "0" ]] && return 1
+  # Reset upvars so each call starts fresh.
+  _isa_pid=""; _isa_stale_pid=""
+  if _interactive_session_active "$ROOT"; then
+    # Live interactive session in this repo — back off.
+    printf 'deputy: interactive Claude session active in %s (PID: %s) — backing off (next heartbeat will retry).\n' \
+      "$ROOT" "$_isa_pid" >&2
+    return 0
+  elif [[ -n "$_isa_stale_pid" ]]; then
+    # Stale session file (dead PID) in this repo, no live session.
+    local _stale_item; _stale_item="$(cmd_pick)"
+    if [[ -z "$_stale_item" ]]; then
+      # Nothing to surface — idle queue; log and proceed.
+      printf 'deputy: stale Claude session file found (PID %s, process dead) — no runnable items to surface; proceeding.\n' \
+        "$_isa_stale_pid" >&2
+    else
+      # Cascade guard: do not surface a second item if one is already surfaced.
+      local _surfaced_count
+      _surfaced_count="$(cmd_status | grep '^surfaced:' | awk '{print $2}')"
+      if [[ "${_surfaced_count:-0}" -gt 0 ]]; then
+        printf 'deputy: stale Claude session file found (PID %s) — an item is already surfaced; skipping cascade surface.\n' \
+          "$_isa_stale_pid" >&2
+        return 0
+      fi
+      # Surface the item. Only write the note if the state transition succeeds.
+      local _surf_parsed _surf_prio_rest _surf_prio _surf_id_rest _surf_id _surf_desc _surf_slug _surf_qf _surf_set_rc
+      _surf_parsed="$(_parse_item "$_stale_item")"
+      _surf_prio_rest="${_surf_parsed#*|}"; _surf_prio="${_surf_prio_rest%%|*}"
+      _surf_id_rest="${_surf_prio_rest#*|}"; _surf_id="${_surf_id_rest%%|*}"; _surf_desc="${_surf_id_rest#*|}"
+      _surf_slug="$(_wp_slug "$_surf_id" "$_surf_desc")"
+      _surf_qf="$STATE_DIR/${_surf_slug}.questions.md"
+      _surf_set_rc=0
+      cmd_set "$_stale_item" surfaced || _surf_set_rc=$?
+      if [[ "$_surf_set_rc" -eq 0 ]]; then
+        local _surf_line_surfaced
+        _surf_line_surfaced="$(_serialize_item surfaced "$_surf_prio" "$_surf_id" "$_surf_desc")"
+        printf 'Stale Claude session file found (PID %s, process dead) with cwd in this repo — a sign of an abnormal Claude Code crash. Deputy surfaced this item instead of running, so you can check. Resolve by removing the stale ~/.claude/sessions/%s.json (or confirming nothing'"'"'s wrong), then revive with: deputy set "%s" waiting.\n' \
+          "$_isa_stale_pid" "$_isa_stale_pid" "$_surf_line_surfaced" >> "$_surf_qf"
+        printf 'deputy: stale Claude session file (PID %s) — surfaced "%s" for human review.\n' \
+          "$_isa_stale_pid" "$_stale_item" >&2
+      else
+        printf 'deputy: stale Claude session file (PID %s) — could not surface item (set failed); stopping.\n' \
+          "$_isa_stale_pid" >&2
+      fi
+      return 0
+    fi
+  fi
+  # No session detected — proceed.
+  return 1
+}
+
 # Spawn the orchestrator for a claimed item. If DEPUTY_ORCHESTRATOR_CMD is set
 # (tests / custom drivers), call it as `<cmd> <item-line> <provider>`. Otherwise
 # build a headless prompt that runs the deputy orchestrator skill on this one item.
@@ -1091,59 +1154,13 @@ cmd_run() {
   cmd_recover >/dev/null 2>&1 || true
   if _live_claim_exists; then return 0; fi
 
-  # ── Human-session back-off ────────────────────────────────────────────────────
+  # ── Human-session back-off (startup check) ───────────────────────────────────
   # If an interactive Claude Code session is active in this repo, skip this heartbeat
   # tick to avoid mixing deputy commits with the human's uncommitted work.
   # Disable with: deputy config set human_backoff 0
   # Note: DEPUTY_ALLOW_ANY_BRANCH=1 does NOT bypass this check (independent guards).
-  local _hb; _hb="$(_config_get human_backoff)"; _hb="${_hb:-1}"
   local _isa_pid="" _isa_stale_pid=""
-  if [[ "$_hb" != "0" ]] && _interactive_session_active "$ROOT"; then
-    # Live interactive session in this repo — back off silently.
-    printf 'deputy: interactive Claude session active in %s (PID: %s) — backing off (next heartbeat will retry).\n' \
-      "$ROOT" "$_isa_pid" >&2
-    return 0
-  elif [[ "$_hb" != "0" && -n "$_isa_stale_pid" ]]; then
-    # Stale session file (dead PID) in this repo, no live session.
-    # Surface the top-priority item so a human can check for abnormal crash.
-    local _stale_item; _stale_item="$(cmd_pick)"
-    if [[ -z "$_stale_item" ]]; then
-      # Nothing to surface — idle queue; log and proceed.
-      printf 'deputy: stale Claude session file found (PID %s, process dead) — no runnable items to surface; proceeding.\n' \
-        "$_isa_stale_pid" >&2
-    else
-      # Cascade guard: do not surface a second item if one is already surfaced.
-      local _surfaced_count
-      _surfaced_count="$(cmd_status | grep '^surfaced:' | awk '{print $2}')"
-      if [[ "${_surfaced_count:-0}" -gt 0 ]]; then
-        printf 'deputy: stale Claude session file found (PID %s) — an item is already surfaced; skipping cascade surface.\n' \
-          "$_isa_stale_pid" >&2
-        return 0
-      fi
-      # Surface the item. Only write the note if the state transition succeeds.
-      local _surf_parsed _surf_prio_rest _surf_prio _surf_id_rest _surf_id _surf_desc _surf_slug _surf_qf _surf_set_rc
-      _surf_parsed="$(_parse_item "$_stale_item")"
-      _surf_prio_rest="${_surf_parsed#*|}"; _surf_prio="${_surf_prio_rest%%|*}"
-      _surf_id_rest="${_surf_prio_rest#*|}"; _surf_id="${_surf_id_rest%%|*}"; _surf_desc="${_surf_id_rest#*|}"
-      _surf_slug="$(_wp_slug "$_surf_id" "$_surf_desc")"
-      _surf_qf="$STATE_DIR/${_surf_slug}.questions.md"
-      _surf_set_rc=0
-      cmd_set "$_stale_item" surfaced || _surf_set_rc=$?
-      if [[ "$_surf_set_rc" -eq 0 ]]; then
-        # Build the post-surface line (? prefix) for the revive hint so the exact-line match works.
-        local _surf_line_surfaced
-        _surf_line_surfaced="$(_serialize_item surfaced "$_surf_prio" "$_surf_id" "$_surf_desc")"
-        printf 'Stale Claude session file found (PID %s, process dead) with cwd in this repo — a sign of an abnormal Claude Code crash. Deputy surfaced this item instead of running, so you can check. Resolve by removing the stale ~/.claude/sessions/%s.json (or confirming nothing'"'"'s wrong), then revive with: deputy set "%s" waiting.\n' \
-          "$_isa_stale_pid" "$_isa_stale_pid" "$_surf_line_surfaced" >> "$_surf_qf"
-        printf 'deputy: stale Claude session file (PID %s) — surfaced "%s" for human review.\n' \
-          "$_isa_stale_pid" "$_stale_item" >&2
-      else
-        printf 'deputy: stale Claude session file (PID %s) — could not surface item (set failed); stopping.\n' \
-          "$_isa_stale_pid" >&2
-      fi
-      return 0
-    fi
-  fi
+  if _human_backoff_gate; then return 0; fi
 
   # Always-on model: do NOT remove the cron line while running. The line persists;
   # each tick is state-aware (skip when live, recover orphans, etc.).
@@ -1200,6 +1217,10 @@ cmd_run() {
 
   # ── Normal priority-driven run loop ──────────────────────────────────────────
   while :; do
+    # Re-evaluate the human-session back-off gate on each iteration so that a
+    # session started MID-DRAIN is honoured before we claim the next item.
+    _isa_pid=""; _isa_stale_pid=""
+    if _human_backoff_gate; then break; fi
     item="$(cmd_pick)"; [[ -n "$item" ]] || break
     avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
     if [[ "$decision" != "claude" ]]; then
