@@ -10,7 +10,7 @@
 
 ## Items
 
-[P2][#34] upgrade the version to v1.0.1 (bump VERSION + add a CHANGELOG entry for the changes since v1.0.0)
+@[P2][#34] upgrade the version to v1.0.1 (bump VERSION + add a CHANGELOG entry for the changes since v1.0.0)
 
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
