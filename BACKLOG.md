@@ -10,6 +10,8 @@
 
 ## Items
 
+[P0] add a 'deputy clean <id>' option to clean a single item by id, and update the usage in README.md
+
 @[P1][#31] update README.md: 1. remove deputy pick from usage; 2. remove deputy review from usage; 3. update item format in BACKLOG.md to match current line format
 
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
