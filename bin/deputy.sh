@@ -607,7 +607,6 @@ commands:
   run [<id>] [--once]             work the backlog: claim the top item, run the orchestrator
                                   if <id> given (integer; '#7' also accepted), run that
                                   specific item bypassing priority order (targeted, one item only)
-  pick                            print the highest-priority waiting item (raw line)
   set "<exact line>" <state>      transition an item's state by exact-line match
   claim "<exact line>" [--pid N]  mark an item running and write a claim (serial)
   recover                         revert stale/orphaned claims to waiting

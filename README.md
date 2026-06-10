@@ -5,18 +5,19 @@
 You add work to a plain-text backlog; Deputy **triages** each item, **does the easy
 ones headlessly**, **grills you on the hard ones**, executes in an isolated git
 worktree, gates quality through **cross-LLM review (xReview, Gemini)**, and **routes
-work across the `claude` / `gemini` / `codex` CLIs** with quota-aware failover. When
-Claude's session limit is hit, it reschedules itself (cron) and resumes after reset.
+work across the `claude` / `gemini` CLIs** with quota-aware failover. When
+Claude's session limit is hit, the next heartbeat tick picks it up and resumes.
 
 Deputy is a thin, dependency-light **bash** tool — a descendant of the `research.sh`
 queue pattern. Its distinguishing trait versus blind backlog-drainers is
 **discernment**: it decides *whether* and *how hard* to do each item, escalates the
 genuinely hard calls, and never blocks the queue while it waits on you.
 
-> Status: **V1 shipped** (queue engine, scheduling/routing, orchestrator) and
-> live-validated end-to-end. **V2 in progress** (a forward-recovery checkpoint
-> "spine"; see the roadmap). The repo's own `BACKLOG.md` *is* the V2 roadmap —
-> Deputy dogfoods itself.
+> **v1.0.0** — queue engine, scheduling/routing, orchestrator, checkpoint spine,
+> always-on heartbeat, risky-op guardrail, item IDs, Gemini xReview,
+> `paused`/`deferred` states, `clean --state`, and `reflect` are all shipped and
+> live-validated end-to-end. The repo's own `BACKLOG.md` is the project's task queue
+> — Deputy dogfoods itself.
 
 ---
 
@@ -41,9 +42,47 @@ config files.
 **Isolated installs:** set `DEPUTY_PREFIX` to override the bin directory (default `~/.local/bin`)
 and `DEPUTY_SKILLS_DIR` to override the skills directory (default `~/.claude/skills`).
 
-**Dependencies:** `bash` 5+, `git`, `flock`, coreutils; `jq` (for the V2 checkpoint
-spine); and the agent CLIs you want to route to (`claude` required; `gemini` for review;
-`codex` optional failover). `install.sh` preflights them and warns about what's missing.
+**Dependencies:** `bash` 5+, `git`, `flock`, coreutils; `jq` (for the checkpoint
+spine); and the agent CLIs (`claude` required; `gemini` for xReview).
+`install.sh` preflights them and warns about what's missing.
+
+---
+
+## Upgrading
+
+The `deputy` CLI and the `/deputy` orchestrator skill are **symlinks** into the deputy
+repo (`~/.local/bin/deputy → <repo>/bin/deputy.sh` and
+`~/.claude/skills/deputy → <repo>/skills/deputy`), so upgrading is just:
+
+```bash
+cd <deputy-repo>
+git pull          # command + skill auto-update — symlinks resolve to the live files
+```
+
+No per-repo skill re-install is needed in any project that uses Deputy.
+
+**Re-link only if** the symlinks are missing or broken, or if `install.sh`'s link layout
+changed:
+
+```bash
+./install.sh link   # idempotent — safe to re-run
+```
+
+**Per-repo seed files are copied, not symlinked.** After a deputy upgrade, optionally
+re-run `init` to pick up newly-seeded config keys or templates — it never overwrites
+your existing `BACKLOG.md` or config:
+
+```bash
+./install.sh init /path/to/your/repo
+```
+
+**Cron schedule:** if the heartbeat interval or cron format changed, refresh it:
+
+```bash
+./install.sh cron           # or: deputy cron --ensure
+```
+
+**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.0.0`).
 
 ---
 
@@ -88,6 +127,8 @@ surfaced · `#` done · `!` failed · `%` cancelled · `=` duplicate · `^` paus
 **`>` deferred** — parked for future consideration; inert, never auto-scheduled; revive with
 `deputy set "<line>" waiting`.
 **Priority tag:** `[P0] > [P1] > [P2] > untagged`; FIFO within a lane.
+**Item IDs** `[#N]` are assigned automatically when an item is picked; use
+`deputy run <id>` to target a specific item directly.
 Items are blank-line separated; the parser reads everything after `## Items`.
 
 ---
@@ -100,17 +141,26 @@ Items are blank-line separated; the parser reads everything after `## Items`.
 - **Orchestrator skill (`skills/deputy/SKILL.md`)** — the "one brain." Spawned headless
   (`claude -p`) per claimed item, or invoked interactively (`/deputy`). It triages,
   does simple items, surfaces complex ones for your input, and drives execution.
-- **Isolation** — every item runs on its own `deputy/<slug>` branch in a dedicated
+- **Checkpoint spine** — every item runs as resumable, forward-recovery steps. Per-step
+  git commits land in a dedicated `.deputy/wt` worktree; the ledger lives under
+  `.deputy/waypoints/`. On resume, the spine purges dirty state and continues from the
+  first uncommitted step.
+- **Isolation** — every item runs on its own `deputy/<slug>` branch in the dedicated
   `.deputy/wt` git worktree; your main working tree is never touched.
 - **xReview** — cross-LLM review (Gemini-primary) gates **design, plan, and each
   commit**; author ≠ reviewer; nothing advances without a PASS.
-- **Routing** — `claude` orchestrates/plans + primary coder; `gemini` reviews; `codex`
-  is the simple-coding failover when Claude's quota is limited. On quota exhaustion,
-  Deputy skips the blocked item and retries on the next heartbeat tick — it does **not**
-  reschedule the shared cron line.
+- **Routing** — `claude` orchestrates and executes steps; `gemini` reviews (xReview).
+  The routing infrastructure supports a `codex` simple-coding failover path, but in
+  v1.0.0 all step execution runs inline with `claude`. On quota exhaustion, Deputy skips
+  the blocked item and retries on the next heartbeat tick — it does **not** reschedule
+  the shared cron line.
 - **Heartbeat** — a fixed recurring `*/N` cron entry (default 10 min, configurable via
   `heartbeat_mins` in `.deputy/config`) drives the always-on safety-net; install with
-  `./install.sh cron`.
+  `./install.sh cron`. Each tick: live task → skip; dead/orphaned → recover + resume;
+  idle + work → pick highest-priority item.
+- **Risky-op guardrail** (`hooks/guardrail.sh`) — a PreToolUse hook scoped to the
+  spawned orchestrator that blocks out-of-worktree writes and a Bash denylist (push,
+  crontab, destructive git, global installs, …).
 - **State** lives under the gitignored `.deputy/` (locks, claims, config, protected
   globs, surfaced questions); the queue is `BACKLOG.md`.
 
@@ -121,27 +171,17 @@ Items are blank-line separated; the parser reads everything after `## Items`.
 ```
 bin/deputy.sh            # the runner (queue engine + scheduling + adapters)
 skills/deputy/SKILL.md   # the orchestrator skill
+hooks/guardrail.sh       # PreToolUse risky-op guardrail (headless runs)
 hooks/session-start.sh   # surfacing banner + morning digest
-install.sh               # link (command+skill) / init (per-repo seed)
+install.sh               # link (command+skill) / init (per-repo seed) / cron
 templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)
-BACKLOG.md               # Deputy's own queue = the V2 roadmap
+BACKLOG.md               # Deputy's own task queue
+VERSION                  # 1.0.0
 ```
 
 Run the test suite with `bash tests/run.sh`.
-
----
-
-## Roadmap (V2 — see `BACKLOG.md` + `docs/superpowers/specs/`)
-
-- **Checkpoint spine** — a forward-recovery, resumable-step mechanism absorbed into
-  Deputy (pure bash, ledger under `.deputy/waypoints/`, per-step git commits).
-  **Shipped** — every item runs as checkpointed, resumable steps via the spine.
-- **Suspension & resume** — `preempted` / `blocked` / `scheduled` / `awaiting` states,
-  `surfaced` reasons (answer vs approve), dependency-aware scheduling.
-- Cross-provider step execution; parallel worktrees; external notifications;
-  full Reflect (re-triage/prune/learn); richer item attributes; intake from issues/CI.
 
 ---
 
@@ -149,5 +189,5 @@ Run the test suite with `bash tests/run.sh`.
 
 The full design lives in `docs/superpowers/specs/` (the V1 design, the suspension &
 resume subsystem, and the waypoint checkpoint spine) and `docs/superpowers/plans/` (the
-bite-sized implementation plans). Deputy was itself built — and is being extended —
-through a brainstorm → spec → plan → subagent-driven-implementation → xReview loop.
+bite-sized implementation plans). Future work is tracked as **deferred** items in
+`BACKLOG.md`.
