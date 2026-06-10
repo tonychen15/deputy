@@ -24,7 +24,7 @@ ONLY through the `deputy` CLI — never hand-edit `BACKLOG.md` or `.deputy/waypo
   `@[P0] Fix the login bug`). You MUST pass this exact string back to
   `deputy set "<item-line>" <state>` — it is matched whole-line.
 - **Interactive:** the human typed `/deputy` or "work the backlog". Run `deputy status`
-  and `deputy review`, then drive the loop below, engaging the human at the gates.
+  and `deputy reflect`, then drive the loop below, engaging the human at the gates.
 
 ## Per-item loop
 
@@ -96,7 +96,7 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
 - Otherwise (no human reachable / headless): draft the clarifying questions + a proposed
   plan + affected files + risk into `.deputy/<slug>.questions.md`, then
   `deputy set "<item-line>" surfaced` and **stop**. Do not block.
-- When the human engages (via `deputy review`): **grill** them to nail every fuzzy part,
+- When the human engages (via `deputy reflect`): **grill** them to nail every fuzzy part,
   then **plan review** (Gemini xReview of the full N-step plan), then a **design review**
   if the item produces a design artifact, then get **plan approval**. Then:
   - `mode = auto` (default): drive the spine loop below in `.deputy/wt`; xReview at each
@@ -214,7 +214,7 @@ states: waiting triaging running surfaced done failed cancelled duplicate paused
 ## CLI quick reference
 
 **Public** (in `deputy help`):
-`deputy add|list|status|run|cron|review|set|clean|reflect`
+`deputy add|list|status|run|cron|set|clean|reflect`
 
 **Orchestrator/runner-internal — callable but NOT in `deputy help`:**
 `recover|probe|route|detect` (and the already-noted `claim|pick`, the spine verbs, `wt-create|wt-remove`, `protected`, `config`) are orchestrator/runner-internal commands. They work fine from the shell but are not advertised in `deputy help` because they are plumbing details.

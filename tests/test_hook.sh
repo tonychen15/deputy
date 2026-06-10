@@ -7,7 +7,7 @@ line="$(bash "$DEPUTY" pick)"
 bash "$DEPUTY" set "$line" surfaced
 out="$(DEPUTY_ROOT="$DEPUTY_ROOT" bash "$HOOK")"
 assert_contains "$out" "needs your call" "hook lists surfaced item"
-assert_contains "$out" "deputy review" "hook points to review"
+assert_contains "$out" "deputy reflect" "hook points to reflect"
 
 # No surfaced items -> quiet (no banner noise)
 setup_repo

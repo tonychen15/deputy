@@ -13,4 +13,4 @@ surfaced="$(DEPUTY_ROOT="$ROOT" "$DEP" list | awk -F'|' '$1=="surfaced"{out=$3; 
 [[ -n "$surfaced" ]] || exit 0
 
 counts="$(DEPUTY_ROOT="$ROOT" "$DEP" status | tr '\n' ' ')"
-printf '⚠️  Deputy: items need your input\n%s\n[%s]\nRun: deputy review\n' "$surfaced" "$counts"
+printf '⚠️  Deputy: items need your input\n%s\n[%s]\nRun: deputy reflect\n' "$surfaced" "$counts"

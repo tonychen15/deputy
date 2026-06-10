@@ -596,25 +596,7 @@ cmd_recover() {
   _commit_queue "recover"
 }
 
-cmd_review() {
-  _with_lock _allocate_ids
-  local any=0 raw parsed state desc f _rv_rest
-  while IFS= read -r raw; do
-    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
-    [[ "$state" == "surfaced" ]] || continue
-    _rv_rest="${parsed#*|}"; _rv_rest="${_rv_rest#*|}"; desc="${_rv_rest#*|}"
-    printf '? %s\n' "$desc"; any=1
-  done < <(_each_item)
-  shopt -s nullglob
-  for f in "$STATE_DIR"/*.questions.md; do
-    printf '\n--- %s ---\n' "$(basename "$f")"
-    cat "$f"
-  done
-  shopt -u nullglob
-  if [[ "$any" -eq 0 ]]; then printf 'deputy: nothing surfaced.\n'; fi
-  printf '\n'
-  cmd_status
-}
+cmd_review() { cmd_reflect "$@"; }
 
 usage() {
   cat <<'EOF'
@@ -632,13 +614,14 @@ commands:
                                   specific item bypassing priority order (targeted, one item only)
   set "<exact line>" <state>      transition an item's state by exact-line match
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
-  review                          show surfaced items, their questions, and the digest
   clean [--dry-run] [--state <state>]
                                   remove items of <state> (default: waiting = untouched items)
                                   cleanable states: waiting, done, failed, cancelled, duplicate, deferred
                                   refuses running, triaging, surfaced, paused (active/checkpointed/awaiting)
-  reflect [--apply]               re-triage report: learnings, untagged items, reprioritization list,
-                                  surfaced items, duplicate candidates; --apply writes .deputy/learnings.md
+  reflect [--apply]               full queue health report: learnings, untagged items, reprioritization
+                                  list, surfaced items + question files, duplicate candidates, status
+                                  digest; --apply writes .deputy/learnings.md
+                                  (alias: review)
   help                            show this message
 
 config keys (.deputy/config):
@@ -1318,7 +1301,7 @@ cmd_reflect() {
   fi
   printf '\n'
 
-  # 4. Surfaced — pending human response
+  # 4. Surfaced — pending human response + question files
   printf '%s\n' "-- Surfaced items (awaiting human response) --"
   if [[ "${#surfaced_items[@]}" -eq 0 ]]; then
     printf '  (none)\n'
@@ -1327,6 +1310,13 @@ cmd_reflect() {
       printf '  ? %s\n' "${item#*|}"
     done
   fi
+  shopt -s nullglob
+  local qf
+  for qf in "$STATE_DIR"/*.questions.md; do
+    printf '\n  --- %s ---\n' "$(basename "$qf")"
+    sed 's/^/  /' "$qf"
+  done
+  shopt -u nullglob
   printf '\n'
 
   # 5. Potential duplicates — pairs sharing ≥3 significant words (operator reviews).
@@ -1344,6 +1334,9 @@ cmd_reflect() {
   fi
   [[ "$found_dups" -eq 0 ]] && printf '  (no candidates detected)\n'
   printf '\n'
+
+  printf '%s\n' "-- Status Digest --"
+  cmd_status
 
   # 6. Write learnings snapshot if --apply
   if [[ "$apply" -eq 1 ]]; then

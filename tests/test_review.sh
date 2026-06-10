@@ -2,9 +2,10 @@
 source "$(dirname "$0")/lib.sh"
 setup_repo
 
-# nothing surfaced
+# nothing surfaced — review forwards to reflect; expect the reflect header and (none) for surfaced
 out="$(bash "$DEPUTY" review)"
-assert_contains "$out" "nothing surfaced" "review: empty case"
+assert_contains "$out" "=== Deputy Reflect ===" "review: reflect header present"
+assert_contains "$out" "(none)" "review: empty case shows (none)"
 
 # surface an item + add a questions file
 bash "$DEPUTY" add "redesign onboarding" --p0
