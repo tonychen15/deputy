@@ -31,7 +31,7 @@ the durable resume substrate, and the resume/unblock triggers.
   `answer` (needs a clarifying answer) or `approve` (needs authorization for a
   risky/irreversible action — rename, delete, force-push, merge-to-main, anything
   outside the repo). Risky ops MUST take the `approve` path, never headless. (The
-  `jobflow→deputy` rename is the cautionary precedent.)
+  Major project renames are the cautionary precedent.)
 - **R4 — Don't churn gated items.** For gated states the scheduler checks the gate
   **cheaply** and skips if still closed; it never re-claims/re-spawns a worker on an
   item whose precondition is unmet.
