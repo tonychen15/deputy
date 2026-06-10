@@ -933,6 +933,33 @@ Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove /
       --settings "$gset"
 }
 
+# Determine the default branch for the repo rooted at $ROOT.
+# Echoes the branch name, or empty string if undeterminable.
+# Detection order:
+#   1. origin/HEAD symbolic-ref (most authoritative)
+#   2. local 'main' branch exists
+#   3. local 'master' branch exists
+#   4. git config init.defaultBranch
+_default_branch() {
+  local b
+  # 1. Try origin/HEAD symbolic-ref (works when a remote is configured)
+  b="$(git -C "$ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||')"
+  [[ -n "$b" ]] && { printf '%s' "$b"; return 0; }
+  # 2. Local 'main' branch
+  if git -C "$ROOT" show-ref --quiet refs/heads/main 2>/dev/null; then
+    printf 'main'; return 0
+  fi
+  # 3. Local 'master' branch
+  if git -C "$ROOT" show-ref --quiet refs/heads/master 2>/dev/null; then
+    printf 'master'; return 0
+  fi
+  # 4. git config init.defaultBranch
+  b="$(git -C "$ROOT" config init.defaultBranch 2>/dev/null || true)"
+  [[ -n "$b" ]] && { printf '%s' "$b"; return 0; }
+  # Undeterminable
+  printf ''
+}
+
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
 # If an integer <id> is given (deputy run <id> or deputy run '#<id>'), run that
 # specific item bypassing priority, then return (targeted = one item only).
@@ -959,6 +986,24 @@ cmd_run() {
     target_id="${target_id#'#'}"
     if [[ ! "$target_id" =~ ^[0-9]+$ ]]; then
       printf 'deputy: run: id must be an integer (got: %s)\n' "$target_id" >&2; return 2
+    fi
+  fi
+
+  # ── Default-branch guard ────────────────────────────────────────────────────
+  # Refuse to run if the repo is on a feature branch. This prevents the cron
+  # (cd <repo> && deputy run) from running against un-merged code.
+  # Bypass: set DEPUTY_ALLOW_ANY_BRANCH=1 (tests / deliberate use).
+  if [[ "${DEPUTY_ALLOW_ANY_BRANCH:-0}" != "1" ]]; then
+    if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      local _db; _db="$(_default_branch)"
+      if [[ -n "$_db" ]]; then
+        local _cur; _cur="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        if [[ "$_cur" != "$_db" ]]; then
+          printf 'deputy run: repo is on %s%s%s, not the default branch %s%s%s — refusing to run (the runner must operate on the default branch; switch to it, or set DEPUTY_ALLOW_ANY_BRANCH=1 to override).\n' \
+            "'" "$_cur" "'" "'" "$_db" "'" >&2
+          return 1
+        fi
+      fi
     fi
   fi
 
