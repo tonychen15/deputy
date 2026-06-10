@@ -214,10 +214,12 @@ states: waiting triaging running surfaced done failed cancelled duplicate paused
 ## CLI quick reference
 
 **Public** (in `deputy help`):
-`deputy add|list|status|set|claim|recover|run|review|probe|route|cron|config|protected|wt-create|wt-remove|detect`
+`deputy add|list|status|set|recover|run|review|probe|route|cron|config|protected|wt-create|wt-remove|detect`
 
 **Orchestrator-internal, callable but not in `deputy help`:**
 `deputy pick` — the preemption probe; returns the highest-priority waiting/paused item (raw line). Used by the orchestrator's preemption check and the run loop. It works fine from the shell but is not advertised in `deputy help` because it is a plumbing detail.
+
+`deputy claim "<exact line>" [--pid N]` — mark an item running and write a PID claim file (serialization lock). Used by `cmd_run` and the orchestrator to atomically transition an item to the running state. Not advertised in `deputy help` because it is a plumbing detail; callers should go through `deputy run`.
 
 **Spine verbs — orchestrator-internal** (NOT in `deputy help`; never call these from the
 shell directly outside an orchestrator session):
