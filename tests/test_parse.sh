@@ -30,7 +30,7 @@ assert_contains "$out" "waiting|P0|" "list: item one state+prio"
 assert_contains "$out" "|one"        "list: item one description"
 assert_contains "$out" "triaging|P1|" "list: item two state+prio"
 assert_contains "$out" "|two"         "list: item two description"
-assert_contains "$out" "done|P4|"    "list: item three gets P4 default"
+assert_contains "$out" "done|P3|"    "list: item three gets P3 default"
 assert_contains "$out" "|three"      "list: item three description"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'LEGEND')" "0" "list: legend not parsed as item"
 
