@@ -116,6 +116,7 @@ HOME="$FAKE_HOME5" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t5_stderr
 assert_eq "$(grep -c 'backing off' /tmp/t5_stderr.txt 2>/dev/null || true)" "0" \
   "dead-PID cli session → no back-off (proceed)"
 assert_contains "$(cat /tmp/t5_stderr.txt)" "stale" "dead-PID session logs stale warning"
+assert_contains "$(cat /tmp/t5_stderr.txt)" "$DEAD_PID" "stale warning includes the dead PID"
 
 rm -rf "$FAKE_HOME5"
 
