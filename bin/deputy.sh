@@ -608,7 +608,6 @@ commands:
                                   if <id> given (integer; '#7' also accepted), run that
                                   specific item bypassing priority order (targeted, one item only)
   set "<exact line>" <state>      transition an item's state by exact-line match
-  claim "<exact line>" [--pid N]  mark an item running and write a claim (serial)
   recover                         revert stale/orphaned claims to waiting
   probe <cli>                     check a provider's availability
   route <kind> <avail-csv>        choose a provider (orchestrate|code-complex|code-simple|review)
