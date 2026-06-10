@@ -98,8 +98,9 @@ deputy run [--once]    # work the backlog (triage → do / surface), until empty
 deputy run <id>        # targeted run: bypass priority order and run a specific item by id
 deputy review          # show surfaced items, their questions, and the digest
 deputy reflect         # re-triage report: learnings, untagged items, reprioritization, duplicates
-deputy clean [--dry-run] [--state <state>]
-                       # remove items of <state> (default: waiting = untouched);
+deputy clean [<id>] [--dry-run] [--state <state>]
+                       # <id>: remove one item by its numeric id (e.g. '7' or '#7')
+                       # --state: remove all items of <state> (default: waiting = untouched)
                        # cleanable: waiting, done, failed, cancelled, duplicate, deferred
 ```
 
