@@ -520,11 +520,13 @@ _live_claim_exists() {
 # We back off only for entrypoint=="cli" sessions (human-driven), not "sdk-cli"
 # (headless deputy invocations). Path comparison is done after realpath normalization.
 #
-# Dead-PID session files that match this repo are a sign of an abnormal Claude crash;
-# we log a warning to stderr and proceed rather than surfacing the item.
+# Dead-PID session files that match this repo are a sign of an abnormal Claude crash.
+# When found, the stale PID is recorded in the caller-supplied _isa_stale_pid variable
+# (first one wins) and scanning continues — a live session still takes precedence.
+# The surface-vs-proceed decision is made by cmd_run, not here.
 #
 # Returns 0 (true/match) and sets _isa_pid to the matched PID when a live session
-# is found; returns 1 otherwise.
+# is found; returns 1 (and possibly sets _isa_stale_pid) when no live session exists.
 _interactive_session_active() {
   local repo_root="${1:-$ROOT}"
   # Normalize repo root once (handles symlinks, trailing slashes).
@@ -567,8 +569,9 @@ _interactive_session_active() {
 
     # Liveness check.
     if ! kill -0 "$pid" 2>/dev/null; then
-      # Dead PID in this repo — warn and skip. Do NOT delete Claude's session file.
-      printf 'deputy: stale Claude session file found for PID %s (process dead) — ignoring and proceeding.\n' "$pid" >&2
+      # Dead PID in this repo — record the stale pid for potential surfacing.
+      # Do NOT delete Claude's session file. A live session still takes precedence.
+      [[ -z "$_isa_stale_pid" ]] && _isa_stale_pid="$pid"
       continue
     fi
 
@@ -580,7 +583,9 @@ _interactive_session_active() {
     if [[ -n "$procstart" ]]; then
       stat_start="$(sed 's/.*) //' /proc/"$pid"/stat 2>/dev/null | awk '{print $20}' || true)"
       if [[ -n "$stat_start" && "$stat_start" != "$procstart" ]]; then
-        continue  # PID was recycled — this session file is stale.
+        # PID was recycled — this session file is stale.
+        [[ -z "$_isa_stale_pid" ]] && _isa_stale_pid="$pid"
+        continue
       fi
     fi
 
@@ -1092,11 +1097,52 @@ cmd_run() {
   # Disable with: deputy config set human_backoff 0
   # Note: DEPUTY_ALLOW_ANY_BRANCH=1 does NOT bypass this check (independent guards).
   local _hb; _hb="$(_config_get human_backoff)"; _hb="${_hb:-1}"
-  local _isa_pid=""
+  local _isa_pid="" _isa_stale_pid=""
   if [[ "$_hb" != "0" ]] && _interactive_session_active "$ROOT"; then
+    # Live interactive session in this repo — back off silently.
     printf 'deputy: interactive Claude session active in %s (PID: %s) — backing off (next heartbeat will retry).\n' \
       "$ROOT" "$_isa_pid" >&2
     return 0
+  elif [[ "$_hb" != "0" && -n "$_isa_stale_pid" ]]; then
+    # Stale session file (dead PID) in this repo, no live session.
+    # Surface the top-priority item so a human can check for abnormal crash.
+    local _stale_item; _stale_item="$(cmd_pick)"
+    if [[ -z "$_stale_item" ]]; then
+      # Nothing to surface — idle queue; log and proceed.
+      printf 'deputy: stale Claude session file found (PID %s, process dead) — no runnable items to surface; proceeding.\n' \
+        "$_isa_stale_pid" >&2
+    else
+      # Cascade guard: do not surface a second item if one is already surfaced.
+      local _surfaced_count
+      _surfaced_count="$(cmd_status | grep '^surfaced:' | awk '{print $2}')"
+      if [[ "${_surfaced_count:-0}" -gt 0 ]]; then
+        printf 'deputy: stale Claude session file found (PID %s) — an item is already surfaced; skipping cascade surface.\n' \
+          "$_isa_stale_pid" >&2
+        return 0
+      fi
+      # Surface the item. Only write the note if the state transition succeeds.
+      local _surf_parsed _surf_prio_rest _surf_prio _surf_id_rest _surf_id _surf_desc _surf_slug _surf_qf _surf_set_rc
+      _surf_parsed="$(_parse_item "$_stale_item")"
+      _surf_prio_rest="${_surf_parsed#*|}"; _surf_prio="${_surf_prio_rest%%|*}"
+      _surf_id_rest="${_surf_prio_rest#*|}"; _surf_id="${_surf_id_rest%%|*}"; _surf_desc="${_surf_id_rest#*|}"
+      _surf_slug="$(_wp_slug "$_surf_id" "$_surf_desc")"
+      _surf_qf="$STATE_DIR/${_surf_slug}.questions.md"
+      _surf_set_rc=0
+      cmd_set "$_stale_item" surfaced || _surf_set_rc=$?
+      if [[ "$_surf_set_rc" -eq 0 ]]; then
+        # Build the post-surface line (? prefix) for the revive hint so the exact-line match works.
+        local _surf_line_surfaced
+        _surf_line_surfaced="$(_serialize_item surfaced "$_surf_prio" "$_surf_id" "$_surf_desc")"
+        printf 'Stale Claude session file found (PID %s, process dead) with cwd in this repo — a sign of an abnormal Claude Code crash. Deputy surfaced this item instead of running, so you can check. Resolve by removing the stale ~/.claude/sessions/%s.json (or confirming nothing'"'"'s wrong), then revive with: deputy set "%s" waiting.\n' \
+          "$_isa_stale_pid" "$_isa_stale_pid" "$_surf_line_surfaced" >> "$_surf_qf"
+        printf 'deputy: stale Claude session file (PID %s) — surfaced "%s" for human review.\n' \
+          "$_isa_stale_pid" "$_stale_item" >&2
+      else
+        printf 'deputy: stale Claude session file (PID %s) — could not surface item (set failed); stopping.\n' \
+          "$_isa_stale_pid" >&2
+      fi
+      return 0
+    fi
   fi
 
   # Always-on model: do NOT remove the cron line while running. The line persists;

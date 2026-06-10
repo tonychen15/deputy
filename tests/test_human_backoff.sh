@@ -100,7 +100,7 @@ assert_eq "$(grep -c 'backing off' /tmp/t4_stderr.txt 2>/dev/null || true)" "0" 
 kill "$SESSION_PID4" 2>/dev/null || true
 rm -rf "$FAKE_HOME4"
 
-# ── Test 5: dead-PID session in this repo → warning logged, deputy proceeds ───
+# ── Test 5: dead-PID session in this repo + waiting item → item surfaced ──────
 setup_repo
 printf '[P1] proceed item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
@@ -113,12 +113,84 @@ write_session "$FAKE_HOME5/.claude/sessions" "sess5.json" \
   "$DEAD_PID" "$DEPUTY_ROOT" "cli"
 
 HOME="$FAKE_HOME5" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t5_stderr.txt
+# Item must now be surfaced (not waiting, and NOT running — no claim file created)
+item_state5="$(bash "$DEPUTY" list | grep -v '^$' | head -1 | cut -d'|' -f1)"
+assert_eq "$item_state5" "surfaced" "dead-PID cli session in repo → item surfaced"
 assert_eq "$(grep -c 'backing off' /tmp/t5_stderr.txt 2>/dev/null || true)" "0" \
-  "dead-PID cli session → no back-off (proceed)"
-assert_contains "$(cat /tmp/t5_stderr.txt)" "stale" "dead-PID session logs stale warning"
-assert_contains "$(cat /tmp/t5_stderr.txt)" "$DEAD_PID" "stale warning includes the dead PID"
+  "dead-PID cli session → no backing-off message"
+assert_contains "$(cat /tmp/t5_stderr.txt)" "stale" "stale session: stderr mentions stale"
+assert_contains "$(cat /tmp/t5_stderr.txt)" "$DEAD_PID" "stale session: stderr includes the dead PID"
+# No claim file should have been created.
+assert_eq "$(ls "$DEPUTY_ROOT"/.deputy/*.claim 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "stale session surface → no claim file created"
+# Questions file should contain the note (reflect picks this up).
+reflect_out5="$(HOME="$FAKE_HOME5" bash "$DEPUTY" reflect 2>/dev/null)"
+assert_contains "$reflect_out5" "$DEAD_PID" "stale session: reflect displays questions file note with dead PID"
+assert_contains "$reflect_out5" "abnormal" "stale session: reflect note mentions abnormal crash"
 
 rm -rf "$FAKE_HOME5"
+
+# ── Test 8: stale + already-surfaced item → cascade guard, no second surface ──
+setup_repo
+printf '[P1] first item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+printf '[P2] second item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+# Manually surface the first item.
+first_line8="$(bash "$DEPUTY" pick)"
+bash "$DEPUTY" set "$first_line8" surfaced
+
+FAKE_HOME8="$(mktemp -d)"
+sleep 1 & DEAD_PID8=$!
+kill "$DEAD_PID8" 2>/dev/null; wait "$DEAD_PID8" 2>/dev/null || true
+write_session "$FAKE_HOME8/.claude/sessions" "sess8.json" \
+  "$DEAD_PID8" "$DEPUTY_ROOT" "cli"
+
+HOME="$FAKE_HOME8" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t8_stderr.txt
+# Only 1 surfaced item (cascade guard respected).
+surfaced_count8="$(bash "$DEPUTY" status | grep '^surfaced:' | awk '{print $2}')"
+assert_eq "$surfaced_count8" "1" "stale + already-surfaced → cascade guard, only 1 surfaced item"
+assert_contains "$(cat /tmp/t8_stderr.txt)" "already surfaced" "cascade guard: stderr mentions already surfaced"
+
+rm -rf "$FAKE_HOME8"
+
+# ── Test 9: stale + empty queue → proceeds/idles, no error ────────────────────
+setup_repo
+# No items added — empty queue.
+
+FAKE_HOME9="$(mktemp -d)"
+sleep 1 & DEAD_PID9=$!
+kill "$DEAD_PID9" 2>/dev/null; wait "$DEAD_PID9" 2>/dev/null || true
+write_session "$FAKE_HOME9/.claude/sessions" "sess9.json" \
+  "$DEAD_PID9" "$DEPUTY_ROOT" "cli"
+
+run_rc9=0
+HOME="$FAKE_HOME9" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t9_stderr.txt || run_rc9=$?
+assert_eq "$run_rc9" "0" "stale + empty queue → returns 0"
+assert_contains "$(cat /tmp/t9_stderr.txt)" "no runnable" "stale + empty queue → logs no runnable items"
+
+rm -rf "$FAKE_HOME9"
+
+# ── Test 10: human_backoff=0 + stale session → surface NOT triggered (proceeds) ──
+setup_repo
+printf '[P1] backoff-disabled item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+mkdir -p "$DEPUTY_ROOT/.deputy"
+printf 'human_backoff=0\n' > "$DEPUTY_ROOT/.deputy/config"
+
+FAKE_HOME10="$(mktemp -d)"
+sleep 1 & DEAD_PID10=$!
+kill "$DEAD_PID10" 2>/dev/null; wait "$DEAD_PID10" 2>/dev/null || true
+write_session "$FAKE_HOME10/.claude/sessions" "sess10.json" \
+  "$DEAD_PID10" "$DEPUTY_ROOT" "cli"
+
+HOME="$FAKE_HOME10" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t10_stderr.txt
+item_state10="$(bash "$DEPUTY" list | grep -v '^$' | head -1 | cut -d'|' -f1)"
+# human_backoff=0 disables the stale-surface path — item should NOT be surfaced.
+assert_eq "$item_state10" "waiting" "human_backoff=0 + stale → surface NOT triggered, item stays waiting"
+assert_eq "$(grep -c 'stale\|surfaced' /tmp/t10_stderr.txt 2>/dev/null || true)" "0" \
+  "human_backoff=0 + stale → no stale/surfaced messages"
+
+rm -rf "$FAKE_HOME10"
 
 # ── Test 6: no ~/.claude/sessions/ dir (jq fallback via /proc) → no back-off when
 #    the only claude process is deputy itself (sdk-cli) ─────────────────────────
