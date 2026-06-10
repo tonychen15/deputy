@@ -178,7 +178,10 @@ until clean).
   This applies to both priority-driven and targeted (`deputy run #N`) invocations.
   Config key: `human_backoff=1` (default ON); set `0` to disable (e.g. in CI).
   `DEPUTY_ALLOW_ANY_BRANCH=1` does NOT bypass this check — they are independent guards.
-  Stale (dead-PID) session files in this repo are warned about but do NOT block execution.
+  A stale (dead-PID) session file in this repo causes `cmd_run` to **surface** the top
+  runnable item for a human to check (a sign of an abnormal Claude crash), rather than
+  proceed silently; a cascade guard avoids surfacing more than one at a time, and deputy
+  never deletes Claude's session files. `human_backoff=0` disables this too.
 
 ## Guardrail (enforced + judgment)
 A PreToolUse hook **blocks** these in headless runs — never attempt them (and never hand
