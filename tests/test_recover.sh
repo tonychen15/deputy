@@ -39,5 +39,5 @@ bash "$DEPUTY" recover
 out="$(bash "$DEPUTY" list)"
 assert_contains "$out" "paused|P0|"    "recover leaves paused P0 intact"
 assert_contains "$out" "paused midway" "recover leaves paused P0 description intact"
-assert_contains "$out" "paused||"      "recover leaves paused untagged intact"
+assert_contains "$out" "paused|P4|"    "recover leaves paused untagged (P4 default) intact"
 assert_contains "$out" "plain paused"  "recover leaves paused untagged description intact"

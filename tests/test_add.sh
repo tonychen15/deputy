@@ -7,7 +7,7 @@ bash "$DEPUTY" add "Urgent one" --p0
 bash "$DEPUTY" add "Important one" --p2
 
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting||"       "add untagged (has id)"
+assert_contains "$out" "waiting|P4|"     "add untagged gets default P4 priority"
 assert_contains "$out" "First task"      "add untagged: description"
 assert_contains "$out" "waiting|P0|"     "add --p0 (has id)"
 assert_contains "$out" "Urgent one"      "add --p0: description"
@@ -22,10 +22,16 @@ assert_eq "$n" "1" "add dedups by description"
 # The legend survives an add.
 assert_eq "$(grep -c 'LEGEND' "$DEPUTY_ROOT/BACKLOG.md")" "1" "legend intact after add"
 
+# --p3 and --p4 are valid priority flags.
+bash "$DEPUTY" add "low priority task" --p3
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P3|" "add --p3 accepted"
+bash "$DEPUTY" add "lowest priority task" --p4
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P4|" "add --p4 accepted"
+
 # Unknown flags are rejected, not absorbed into the description.
-bash "$DEPUTY" add "real task" --p3 2>/dev/null; rc=$?
+bash "$DEPUTY" add "real task" --p5 2>/dev/null; rc=$?
 assert_eq "$rc" "2" "add rejects unknown flag"
-assert_eq "$(bash "$DEPUTY" list | grep -c -- '--p3')" "0" "unknown flag not absorbed"
+assert_eq "$(bash "$DEPUTY" list | grep -c -- '--p5')" "0" "unknown flag not absorbed"
 
 # Bare multi-word descriptions still join.
 bash "$DEPUTY" add Buy the milk
