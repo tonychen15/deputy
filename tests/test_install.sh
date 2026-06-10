@@ -3,6 +3,13 @@ source "$(dirname "$0")/lib.sh"
 # REPO (from lib.sh) is the deputy repo root; install.sh lives at its top.
 INSTALL="$REPO/install.sh"
 
+# Use a global fake crontab throughout this file so no init/cron call
+# accidentally modifies the real user crontab.
+_GTAB="$(mktemp)"; _GSTORE="$(mktemp)"; : > "$_GSTORE"
+printf '#!/usr/bin/env bash\n[[ "${1:-}" == "-l" ]] && { cat "$_DEPUTY_TEST_CRON_STORE"; exit 0; }\n[[ "${1:-}" == "-" ]] && { cat > "$_DEPUTY_TEST_CRON_STORE"; exit 0; }\nexit 0\n' > "$_GTAB"
+chmod +x "$_GTAB"
+export DEPUTY_CRONTAB="$_GTAB" _DEPUTY_TEST_CRON_STORE="$_GSTORE"
+
 # --- init seeds BACKLOG + gitignore into a fresh dir ---
 d="$(mktemp -d)"
 bash "$INSTALL" init "$d" >/dev/null
@@ -63,6 +70,23 @@ assert_eq "$([[ -e "$sk/deputy/SKILL.md" ]] && echo yes || echo no)" "yes" "link
 # --- link is idempotent for the skill too ---
 DEPUTY_SKILLS_DIR="$sk" DEPUTY_PREFIX="$pf" bash "$INSTALL" link >/dev/null; rc=$?
 assert_eq "$rc" "0" "re-link with skill exits 0"
+
+# --- init also enables the cron heartbeat (combined in one step) ---
+di_cron="$(mktemp -d)"
+cron_store2="$(mktemp)"; : > "$cron_store2"
+fake_tab2="$(mktemp)"
+cat > "$fake_tab2" <<EOF
+#!/usr/bin/env bash
+[[ "\${1:-}" == "-l" ]] && { cat "$cron_store2"; exit 0; }
+[[ "\${1:-}" == "-" ]] && { cat > "$cron_store2"; exit 0; }
+exit 0
+EOF
+chmod +x "$fake_tab2"
+out_cron_init="$(DEPUTY_CRONTAB="$fake_tab2" bash "$INSTALL" init "$di_cron" 2>&1)"
+assert_contains "$out_cron_init" "cron heartbeat enabled" "init prints cron heartbeat confirmation"
+assert_eq "$(grep -c 'deputy' "$cron_store2")" "1" "init enables one cron entry"
+assert_eq "$(test -f "$di_cron/.deputy/cron.enabled" && echo yes || echo no)" "yes" "init creates cron.enabled marker"
+rm -rf "$di_cron" "$cron_store2" "$fake_tab2" 2>/dev/null || true
 
 # --- install.sh cron delegates to deputy cron --ensure (fake crontab) ---
 # Isolate DEPUTY_ROOT to a temp repo: `cron --ensure` now also writes a

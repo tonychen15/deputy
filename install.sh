@@ -2,12 +2,12 @@
 # install.sh — install the Deputy runner (Plan 1 MVP).
 #
 #   install.sh [link] [--prefix DIR] [--force]   symlink `deputy` into DIR (default: $HOME/.local/bin)
-#   install.sh init [DIR]                         seed BACKLOG.md, .deputy/, and CLAUDE.md guidance in DIR (default: cwd)
+#   install.sh init [DIR]                         seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable the cron heartbeat in DIR (default: cwd)
 #   install.sh help
 #
 # `link` puts the `deputy` command on your PATH; the runner resolves its target
 # repo at call time ($DEPUTY_ROOT, else the git toplevel of your cwd). `init`
-# prepares a specific repo's queue file.
+# prepares a specific repo's queue file and enables the cron heartbeat in one step.
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,8 +31,8 @@ usage() {
   cat <<EOF
 usage:
   install.sh [link] [--prefix DIR] [--force]   symlink 'deputy' into DIR (default: \$HOME/.local/bin)
-  install.sh init [DIR]                         seed BACKLOG.md, .deputy/, and CLAUDE.md guidance in DIR (default: cwd)
-  install.sh cron                               run 'deputy cron --ensure' (opt-in safety-net)
+  install.sh init [DIR]                         seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable cron heartbeat in DIR (default: cwd)
+  install.sh cron                               re-run 'deputy cron --ensure' (re-enable heartbeat; init already does this)
   install.sh help
 EOF
 }
@@ -91,8 +91,8 @@ cmd_link() {
 }
 
 cmd_init() {
-  local dir="${1:-$PWD}"
-  [[ -d "$dir" ]] || { printf 'install: not a directory: %s\n' "$dir" >&2; return 1; }
+  local dir; dir="$(cd "${1:-$PWD}" 2>/dev/null && pwd)"
+  [[ -d "$dir" ]] || { printf 'install: not a directory: %s\n' "${1:-$PWD}" >&2; return 1; }
   [[ -f "$TEMPLATE" ]] || { printf 'install: template not found: %s\n' "$TEMPLATE" >&2; return 1; }
 
   local backlog="$dir/BACKLOG.md"
@@ -147,6 +147,13 @@ Add an item:
 Deputy processes `BACKLOG.md` on its next run; items are picked by priority (P0 > P1 > P2 > untagged).
 DEPUTY_GUIDANCE
     printf 'install: appended Deputy guidance to %s\n' "$claude_md"
+  fi
+
+  # Enable the cron heartbeat for this project (same as 'install.sh cron' run from $dir).
+  if DEPUTY_ROOT="$dir" bash "$RUNNER" cron --ensure 2>/dev/null; then
+    printf 'install: cron heartbeat enabled for %s\n' "$dir"
+  else
+    printf 'install: NOTE: could not enable cron heartbeat; run install.sh cron from %s to enable it manually\n' "$dir" >&2
   fi
 }
 
