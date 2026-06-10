@@ -20,6 +20,27 @@ genuinely hard calls, and never blocks the queue while it waits on you.
 
 ---
 
+## Highlights
+
+- **Discernment, not blind draining.** Deputy *triages* every item — it does the
+  well-specified ones headlessly and **surfaces the genuinely hard calls** for your
+  input, instead of charging at under-specified work.
+- **⏸️ Priority preemption.** Add an urgent item while a lower-priority one is running and
+  Deputy **checkpoint-pauses** the running item — its work preserved on its own branch —
+  runs the urgent one, then **resumes** the paused item from exactly where it left off.
+- **🤝 It coexists with you.** A **human-session back-off** detects your live interactive
+  Claude session in the repo and steps aside rather than racing your edits — re-checked on
+  *every* drain-loop iteration, so an item you add mid-run is never grabbed out from under
+  you. A **default-branch guard** keeps the runner off your feature branches.
+- **🔒 Safe by construction.** Every item runs on its own `deputy/<slug>` branch in an
+  isolated git worktree; **Deputy never auto-pushes** (publishing is always your call);
+  cross-LLM review (xReview) gates design, plan, and *every commit*; and a risky-op
+  guardrail constrains the headless agent.
+- **🔁 Resumable.** A checkpoint spine commits each step and **forward-recovers** after any
+  interruption — it continues from the first uncommitted step, never re-doing finished work.
+
+---
+
 ## Install
 
 ```bash
@@ -158,9 +179,15 @@ Items are blank-line separated; the parser reads everything after `## Items`.
   `heartbeat_mins` in `.deputy/config`) drives the always-on safety-net; install with
   `./install.sh cron`. Each tick: live task → skip; dead/orphaned → recover + resume;
   idle + work → pick highest-priority item.
+- **Priority preemption** — when a higher-priority item arrives while a lower-priority one
+  is running, the orchestrator **checkpoint-pauses** the running item (`^ paused`, its work
+  committed on its `deputy/<slug>` branch), runs the higher-priority one, then **resumes**
+  the paused item from its first uncommitted step — no work lost, no queue blocked.
 - **Human-session back-off** — `deputy run` detects live interactive Claude sessions in
-  the repo (`~/.claude/sessions/`) and skips the tick rather than racing with your work.
-  Configurable via `human_backoff=1` in `.deputy/config` (default ON).
+  the repo (`~/.claude/sessions/`) and steps aside rather than racing your work — and it
+  **re-checks on every drain-loop iteration**, so an item you add mid-run is never claimed
+  out from under you. A stale (crashed-session) file instead **surfaces** the top item for
+  you to check. Configurable via `human_backoff=1` in `.deputy/config` (default ON).
 - **Default-branch guard** — `deputy run` refuses to start when the repo is not on its
   default branch, preventing accidental execution on feature branches.
 - **Risky-op guardrail** (`hooks/guardrail.sh`) — a PreToolUse hook scoped to the
