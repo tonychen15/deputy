@@ -23,15 +23,23 @@ genuinely hard calls, and never blocks the queue while it waits on you.
 ## Install
 
 ```bash
-# 1) Put the `deputy` command on your PATH + install the orchestrator skill (global, symlink)
+# 1) Clone the deputy repo, then put the `deputy` command on your PATH + install the orchestrator skill
+git clone https://github.com/tonychen15/deputy
+cd deputy
 ./install.sh link            # → ~/.local/bin/deputy  and  ~/.claude/skills/deputy
 
-# 2) Initialize a repo you want Deputy to work (idempotent; never clobbers your backlog)
-cd /path/to/your/repo
-deputy init .                # seeds BACKLOG.md, .deputy/config, .deputy/protected, .gitignore
+# 2) Initialize each repo you want Deputy to manage (idempotent; never clobbers your backlog)
+./install.sh init /path/to/your/repo   # seeds BACKLOG.md, .deputy/config, .deputy/protected, .gitignore
+
+# 3) (Optional) Enable the always-on cron heartbeat in that repo
+./install.sh cron            # writes a */10 cron entry (interval configurable via heartbeat_mins)
 ```
 `install.sh` uses **symlinks**, so the command + skill always run the latest code — no
-per-repo copying. Re-run `deputy init` in a repo only to pick up newly-seeded config files.
+per-repo copying. Re-run `install.sh init <dir>` in a repo only to pick up newly-seeded
+config files.
+
+**Isolated installs:** set `DEPUTY_PREFIX` to override the bin directory (default `~/.local/bin`)
+and `DEPUTY_SKILLS_DIR` to override the skills directory (default `~/.claude/skills`).
 
 **Dependencies:** `bash` 5+, `git`, `flock`, coreutils; `jq` (for the V2 checkpoint
 spine); and the agent CLIs you want to route to (`claude` required; `gemini` for review;
@@ -42,14 +50,18 @@ spine); and the agent CLIs you want to route to (`claude` required; `gemini` for
 ## Usage
 
 ```bash
-deputy add "fix the login redirect loop" -ui   # add an urgent+important item
-deputy add "tidy the README"                    # untagged = lowest lane
-deputy list            # parsed items: state|priority|description
+deputy add "fix the login redirect loop" -ui   # add an urgent+important item (-ui=P0, -u=P1, -i=P2)
+deputy add "tidy the README"                    # untagged = lowest lane; --p0/--p1/--p2 also accepted
+deputy list            # parsed items: state|priority|id|description
 deputy status          # counts by state
-deputy pick            # the highest-priority waiting item
+deputy pick            # the highest-priority waiting item (raw line)
 deputy run [--once]    # work the backlog (triage → do / surface), until empty or session limit
+deputy run <id>        # targeted run: bypass priority order and run a specific item by id
 deputy review          # show surfaced items, their questions, and the digest
-deputy clean [--dry-run]   # remove untouched (waiting) items; keeps everything Deputy has touched
+deputy reflect         # re-triage report: learnings, untagged items, reprioritization, duplicates
+deputy clean [--dry-run] [--state <state>]
+                       # remove items of <state> (default: waiting = untouched);
+                       # cleanable: waiting, done, failed, cancelled, duplicate, deferred
 ```
 
 **Priority flags** (Eisenhower): `-ui` urgent+important (`P0`), `-u` urgent (`P1`),
@@ -71,7 +83,10 @@ Refactor the data layer            # waiting, no priority
 ```
 
 **Status prefix** (first char): *(none)* waiting · `~` triaging · `@` running · `?`
-surfaced · `#` done · `!` failed · `%` cancelled · `=` duplicate.
+surfaced · `#` done · `!` failed · `%` cancelled · `=` duplicate · `^` paused · `>` deferred.
+**`^` paused** — mid-execution checkpoint; auto-resumes on next heartbeat.
+**`>` deferred** — parked for future consideration; inert, never auto-scheduled; revive with
+`deputy set "<line>" waiting`.
 **Priority tag:** `[P0] > [P1] > [P2] > untagged`; FIFO within a lane.
 Items are blank-line separated; the parser reads everything after `## Items`.
 
@@ -90,8 +105,12 @@ Items are blank-line separated; the parser reads everything after `## Items`.
 - **xReview** — cross-LLM review (Gemini-primary) gates **design, plan, and each
   commit**; author ≠ reviewer; nothing advances without a PASS.
 - **Routing** — `claude` orchestrates/plans + primary coder; `gemini` reviews; `codex`
-  is the simple-coding failover when Claude's quota is limited. On full exhaustion,
-  Deputy reschedules cron for the reset time.
+  is the simple-coding failover when Claude's quota is limited. On quota exhaustion,
+  Deputy skips the blocked item and retries on the next heartbeat tick — it does **not**
+  reschedule the shared cron line.
+- **Heartbeat** — a fixed recurring `*/N` cron entry (default 10 min, configurable via
+  `heartbeat_mins` in `.deputy/config`) drives the always-on safety-net; install with
+  `./install.sh cron`.
 - **State** lives under the gitignored `.deputy/` (locks, claims, config, protected
   globs, surfaced questions); the queue is `BACKLOG.md`.
 
