@@ -93,10 +93,8 @@ deputy add "fix the login redirect loop" -ui   # add an urgent+important item (-
 deputy add "tidy the README"                    # untagged = lowest lane; --p0/--p1/--p2 also accepted
 deputy list            # parsed items: state|priority|id|description
 deputy status          # counts by state
-deputy pick            # the highest-priority waiting item (raw line)
 deputy run [--once]    # work the backlog (triage → do / surface), until empty or session limit
 deputy run <id>        # targeted run: bypass priority order and run a specific item by id
-deputy review          # show surfaced items, their questions, and the digest
 deputy reflect         # re-triage report: learnings, untagged items, reprioritization, duplicates
 deputy clean [<id>] [--dry-run] [--state <state>]
                        # <id>: remove one item by its numeric id (e.g. '7' or '#7')
@@ -117,9 +115,9 @@ Human-editable. A markdown legend header, then a `## Items` section — one item
 ```markdown
 ## Items
 
-[P0] Fix the login redirect loop
-#[P1] Add caching                  # done
-Refactor the data layer            # waiting, no priority
+[P1][#7] Fix the login redirect loop
+#[P2][#8] Add caching
+Refactor the data layer            # waiting, no ID yet (assigned when first picked)
 ```
 
 **Status prefix** (first char): *(none)* waiting · `~` triaging · `@` running · `?`
@@ -128,7 +126,7 @@ surfaced · `#` done · `!` failed · `%` cancelled · `=` duplicate · `^` paus
 **`>` deferred** — parked for future consideration; inert, never auto-scheduled; revive with
 `deputy set "<line>" waiting`.
 **Priority tag:** `[P0] > [P1] > [P2] > untagged`; FIFO within a lane.
-**Item IDs** `[#N]` are assigned automatically when an item is picked; use
+**Item IDs** `[#N]` are assigned automatically on first reference (e.g., `list`, `run`, `reflect`); use
 `deputy run <id>` to target a specific item directly.
 Items are blank-line separated; the parser reads everything after `## Items`.
 
