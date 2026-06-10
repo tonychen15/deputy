@@ -559,8 +559,11 @@ _interactive_session_active() {
 
     # procStart validation: prevents false positives from PID recycling.
     # Claude stores /proc/<pid>/stat field 22 (start time in clock ticks since boot).
+    # /proc/stat field 2 is the process name wrapped in parentheses and may contain
+    # spaces; strip everything through the last ')' before counting fields so the
+    # start-time is always at position 22 regardless of the process name.
     if [[ -n "$procstart" ]]; then
-      stat_start="$(awk '{print $22}' /proc/"$pid"/stat 2>/dev/null || true)"
+      stat_start="$(sed 's/.*) //' /proc/"$pid"/stat 2>/dev/null | awk '{print $20}' || true)"
       if [[ -n "$stat_start" && "$stat_start" != "$procstart" ]]; then
         continue  # PID was recycled — this session file is stale.
       fi
@@ -698,6 +701,7 @@ commands:
 
 config keys (.deputy/config):
   max_items=N                     items started per run cycle (default 0 = unlimited)
+  heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59)
   human_backoff=1                 back off when an interactive Claude session is active in this repo (default 1; set 0 to disable)
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)

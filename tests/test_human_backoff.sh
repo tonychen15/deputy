@@ -24,7 +24,7 @@ bash "$DEPUTY" list >/dev/null  # allocate IDs
 # Set up a fake HOME with a matching session file.
 FAKE_HOME1="$(mktemp -d)"
 sleep 300 & SESSION_PID1=$!
-PROC_START1="$(awk '{print $22}' /proc/"$SESSION_PID1"/stat 2>/dev/null || true)"
+PROC_START1="$(sed 's/.*) //' /proc/"$SESSION_PID1"/stat 2>/dev/null | awk '{print $20}' || true)"
 write_session "$FAKE_HOME1/.claude/sessions" "sess1.json" \
   "$SESSION_PID1" "$DEPUTY_ROOT" "cli" "$PROC_START1"
 
@@ -89,7 +89,7 @@ printf 'human_backoff=0\n' > "$DEPUTY_ROOT/.deputy/config"
 
 FAKE_HOME4="$(mktemp -d)"
 sleep 300 & SESSION_PID4=$!
-PROC_START4="$(awk '{print $22}' /proc/"$SESSION_PID4"/stat 2>/dev/null || true)"
+PROC_START4="$(sed 's/.*) //' /proc/"$SESSION_PID4"/stat 2>/dev/null | awk '{print $20}' || true)"
 write_session "$FAKE_HOME4/.claude/sessions" "sess4.json" \
   "$SESSION_PID4" "$DEPUTY_ROOT" "cli" "$PROC_START4"
 
