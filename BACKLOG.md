@@ -10,6 +10,8 @@
 
 ## Items
 
+combine 'install.sh cron' with 'install.sh init <folder>', so user only need to run one install.sh one time
+
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 >[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
