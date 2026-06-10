@@ -135,3 +135,7 @@ assert_eq "$(grep -c 'backing off' /tmp/t6_stderr.txt 2>/dev/null || true)" "0" 
   "no sessions dir (proc fallback) → no back-off when no matching claude process"
 
 rm -rf "$FAKE_HOME6"
+
+# ── Test 7: human_backoff key appears in deputy help config section ────────────
+help_output="$(bash "$DEPUTY" help 2>&1)"
+assert_contains "$help_output" "human_backoff" "human_backoff config key documented in deputy help"
