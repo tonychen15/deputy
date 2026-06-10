@@ -75,8 +75,8 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
 9. When `deputy resume <slug>` returns empty (all steps succeeded):
    **Merge into the local default branch** (safe-only):
    a. Detect the default branch using this sequence: `git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||'`; if empty, check if local `main` exists (`git show-ref --quiet refs/heads/main`), then `master`; last resort: `git config init.defaultBranch`.
-   b. Check main-tree readiness from the repo root: `git status --porcelain` (dirty?) and `git rev-parse --abbrev-ref HEAD` (current branch?).
-      - **Proceed** only if the main tree is **clean** (no uncommitted changes) **and already on the default branch**.
+   b. Check main-tree readiness from the repo root: `git status --porcelain -- . ':!BACKLOG.md' ':!.deputy'` (dirty, excluding deputy-owned files?) and `git rev-parse --abbrev-ref HEAD` (current branch?).
+      - **Proceed** only if the main tree is **clean** (no uncommitted changes outside `BACKLOG.md` and `.deputy/`) **and already on the default branch**. `BACKLOG.md` and `.deputy/` are deputy-owned and self-committed by the runner — their transient state must not block the merge.
       - **Surface** the item (do not call `deputy done`) if the main tree is dirty or on a different branch: write *"branch `deputy/<slug>` is ready; merge blocked — main tree is [dirty / on `<branch>`]; merge manually: `git checkout <default-branch> && git merge --no-ff deputy/<slug>`"* to `.deputy/<slug>.questions.md`, then `deputy set "<item-line>" surfaced` and **`deputy wt-remove`** — this frees `.deputy/wt` for the next item; the `deputy/<slug>` branch is preserved for the manual merge.
    c. Merge: `git merge --no-ff deputy/<slug>` (from repo root, already confirmed on default branch + clean).
    d. On merge failure: run `git merge --abort`, write the conflict details to `.deputy/<slug>.questions.md`, `deputy set "<item-line>" surfaced`, then **`deputy wt-remove`** (do **not** call `deputy done`; the `deputy/<slug>` branch keeps its commits for manual resolution).
@@ -214,9 +214,11 @@ states: waiting triaging running surfaced done failed cancelled duplicate paused
 ## CLI quick reference
 
 **Public** (in `deputy help`):
-`deputy add|list|status|set|recover|run|review|probe|route|cron|config|protected|wt-create|wt-remove|detect`
+`deputy add|list|status|run|cron|review|set|clean|reflect`
 
-**Orchestrator-internal, callable but not in `deputy help`:**
+**Orchestrator/runner-internal — callable but NOT in `deputy help`:**
+`recover|probe|route|detect` (and the already-noted `claim|pick`, the spine verbs, `wt-create|wt-remove`, `protected`, `config`) are orchestrator/runner-internal commands. They work fine from the shell but are not advertised in `deputy help` because they are plumbing details.
+
 `deputy pick` — the preemption probe; returns the highest-priority waiting/paused item (raw line). Used by the orchestrator's preemption check and the run loop. It works fine from the shell but is not advertised in `deputy help` because it is a plumbing detail.
 
 `deputy claim "<exact line>" [--pid N]` — mark an item running and write a PID claim file (serialization lock). Used by `cmd_run` and the orchestrator to atomically transition an item to the running state. Not advertised in `deputy help` because it is a plumbing detail; callers should go through `deputy run`.
