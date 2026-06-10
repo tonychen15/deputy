@@ -12,7 +12,6 @@
 
 [P3][#33] clean any left-over jobflow references/files from this deputy project
 
-@[P0][#32] add a 'deputy clean <id>' option to clean a single item by id, and update the usage in README.md
 ^[P1][#31] update README.md: 1. remove deputy pick from usage; 2. remove deputy review from usage; 3. update item format in BACKLOG.md to match current line format
 
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
@@ -20,6 +19,7 @@
 >[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 >[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
+#[P0][#32] add a 'deputy clean <id>' option to clean a single item by id, and update the usage in README.md
 #[P3][#29] when a deputy is fired and picks an item to execute, and at the same time claude is working on the same repo/branch, then deputy should back off to avoid mixing different changes on the same branch. Do a thorough research on this
 #[P2][#30] when an item is added without a priority tag (no Px, no -i/-u), assign it [P4] when it gets its item number, so every line has a consistent [Px] tag
 #[P2][#28] try to merge set and reflect subcommands or merge reflect and review subcommands
