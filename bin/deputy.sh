@@ -710,8 +710,10 @@ commands:
                                   specific item bypassing priority order (targeted, one item only)
   set "<exact line>" <state>      transition an item's state by exact-line match
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
-  clean [--dry-run] [--state <state>]
-                                  remove items of <state> (default: waiting = untouched items)
+  clean [<id>] [--dry-run] [--state <state>]
+                                  remove items matching the filter:
+                                    <id>           clean one item by its numeric ID (e.g. '7' or '#7')
+                                    --state <s>    remove all items of <state> (default: waiting)
                                   cleanable states: waiting, done, failed, cancelled, duplicate, deferred
                                   refuses running, triaging, surfaced, paused (active/checkpointed/awaiting)
   reflect [--apply]               full queue health report: learnings, untagged items, reprioritization
@@ -1312,12 +1314,13 @@ cmd_run() {
 # Remove items of a given state from BACKLOG.md. Default state is "waiting"
 # (backward-compatible: bare `deputy clean` removes untouched/waiting items only).
 # --dry-run previews only. --state <state> selects a different state to clean.
+# <id> (integer, or '#N') cleans a single item by its ID regardless of state.
 # Only terminal/inert states are cleanable: waiting, done, failed, cancelled, duplicate.
 # Active/checkpointed/awaiting states (running, triaging, surfaced, paused) are refused.
 cmd_clean() {
-  local dry=0 filter_state="waiting"
+  local dry=0 filter_state="waiting" filter_id=""
 
-  # Arg parsing: tolerant of order; support --state X and --state=X.
+  # Arg parsing: tolerant of order; support --state X and --state=X and positional <id>.
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run)   dry=1; shift ;;
@@ -1325,9 +1328,69 @@ cmd_clean() {
       --state)
         [[ $# -ge 2 ]] || { printf 'deputy: --state requires an argument\n' >&2; return 2; }
         filter_state="$2"; shift 2 ;;
-      *) printf 'deputy: clean: unexpected argument: %s\n' "$1" >&2; return 2 ;;
+      '#'*) filter_id="${1#'#'}"; shift ;;
+      *)
+        if [[ "$1" =~ ^[0-9]+$ ]]; then
+          filter_id="$1"; shift
+        else
+          printf 'deputy: clean: unexpected argument: %s\n' "$1" >&2; return 2
+        fi ;;
     esac
   done
+
+  if [[ -n "$filter_id" ]]; then
+    # ID-targeted clean: find and remove exactly one item by its numeric ID.
+    _with_lock _allocate_ids
+    local raw parsed state item_id
+    local -a doomed=()
+    while IFS= read -r raw; do
+      parsed="$(_parse_item "$raw")"
+      state="${parsed%%|*}"
+      item_id="${parsed#*|}"; item_id="${item_id#*|}"; item_id="${item_id%%|*}"
+      if [[ "$item_id" == "$filter_id" ]]; then
+        case "$state" in
+          running|triaging|surfaced|paused)
+            printf 'deputy: refusing to clean item #%s (%s) — active/checkpointed/awaiting; recover or resolve it first\n' \
+              "$filter_id" "$state" >&2
+            return 1 ;;
+        esac
+        doomed+=("$raw")
+        break
+      fi
+    done < <(_each_item)
+
+    if [[ "${#doomed[@]}" -eq 0 ]]; then
+      printf 'deputy: item #%s not found\n' "$filter_id" >&2
+      return 1
+    fi
+    if [[ "$dry" -eq 1 ]]; then
+      printf 'deputy: would remove item #%s: %s\n' "$filter_id" "${doomed[0]}"
+      return 0
+    fi
+    _do_clean_id() {
+      local tmp line d r prev_blank=0
+      tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+      chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        d=0
+        for r in "${doomed[@]}"; do [[ "$line" == "$r" ]] && { d=1; break; }; done
+        [[ "$d" -eq 1 ]] && continue
+        if [[ -z "${line//[[:space:]]/}" ]]; then
+          [[ "$prev_blank" -eq 1 ]] && continue
+          prev_blank=1
+        else
+          prev_blank=0
+        fi
+        printf '%s\n' "$line"
+      done < "$BACKLOG" > "$tmp"
+      mv "$tmp" "$BACKLOG"
+      _regroup_backlog
+    }
+    _with_lock _do_clean_id
+    _commit_queue "clean"
+    printf 'deputy: cleaned item #%s\n' "$filter_id"
+    return 0
+  fi
 
   # Safety: refuse to clean active/checkpointed/awaiting states.
   case "$filter_state" in
