@@ -12,13 +12,12 @@
 
 [#29] when a deputy is fired and picks an item to execute, and at the same time claude is working on the same repo/branch, then deputy should back off to avoid mixing different changes on the same branch. Do a thorough research on this
 
-@[P2][#28] try to merge set and reflect subcommands or merge reflect and review subcommands
-
 >[#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 >[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 >[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
+#[P2][#28] try to merge set and reflect subcommands or merge reflect and review subcommands
 #[P2][#27] remove or hide the 'deputy claim' command from public help (orchestrator-internal, like 'pick') without any regression — keep it fully working
 #[P1][#26] update README.md based on the latest code status, remove those roadmap related wording if it doesn't align with the latest code
 #[P0][#25] check whether deputy project is ready for release and install to other project, verify it with stock_pick project
