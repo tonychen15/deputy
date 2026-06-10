@@ -10,7 +10,7 @@
 
 ## Items
 
-?[P3][#29] when a deputy is fired and picks an item to execute, and at the same time claude is working on the same repo/branch, then deputy should back off to avoid mixing different changes on the same branch. Do a thorough research on this
+[P3][#29] when a deputy is fired and picks an item to execute, and at the same time claude is working on the same repo/branch, then deputy should back off to avoid mixing different changes on the same branch. Do a thorough research on this
 
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
