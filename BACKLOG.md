@@ -4,7 +4,7 @@
 **Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `#` done | `!` failed | `%` cancelled | `=` duplicate | `^` paused | `>` deferred
 **Priority (tag):** `[P0]` urgent+important | `[P1]` urgent | `[P2]` important | (none) lowest lane
 **Order:** P0 > P1 > P2 > untagged ; FIFO within a lane
-**Line format:** `<status?> <priority?> <description>`
+**Line format:** `<status?>[Px][#N] <description>`  (`[#N]` assigned automatically on first reference)
 **Add an item:** `deputy add [-ui|-u|-i|--p0|--p1|--p2] "your task"` — or just add a line below
 ---
 
