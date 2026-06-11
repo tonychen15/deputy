@@ -10,13 +10,12 @@
 
 ## Items
 
-@[P3][#35] combine 'install.sh cron' with 'install.sh init <folder>', so user only need to run one install.sh one time
-
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 >[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 >[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
+#[P3][#35] combine 'install.sh cron' with 'install.sh init <folder>', so user only need to run one install.sh one time
 #[P2][#34] upgrade the version to v1.0.1 (bump VERSION + add a CHANGELOG entry for the changes since v1.0.0)
 #[P3][#33] clean any left-over jobflow references/files from this deputy project
 #[P1][#31] update README.md: 1. remove deputy pick from usage; 2. remove deputy review from usage; 3. update item format in BACKLOG.md to match current line format
