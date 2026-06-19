@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.1 — 2026-06-19
+
+Patch release. Usability.
+
+- **`deputy version` subcommand** (aliases `--version`, `-V`) — prints the installed
+  version from the `VERSION` file, resolved via the real script directory so it works
+  when `deputy` is invoked through its PATH symlink from any repo. Exits non-zero with a
+  clear message if `VERSION` is missing. Listed in `deputy help`.
+
 ## v1.1.0 — 2026-06-19
 
 Minor release. Migrates deputy's cross-LLM review gate to xReview's **Codex-default,
