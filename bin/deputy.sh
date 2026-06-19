@@ -693,6 +693,19 @@ cmd_recover() {
 
 cmd_review() { cmd_reflect "$@"; }
 
+# Print the installed deputy version (the VERSION file shipped alongside the script).
+# Resolves relative to the real script location (SRC_DIR), so it is correct even when
+# `deputy` is invoked via the PATH symlink from another repo.
+cmd_version() {
+  local vf="$SRC_DIR/VERSION" v
+  if [[ -r "$vf" ]] && v="$(tr -d '[:space:]' < "$vf")" && [[ -n "$v" ]]; then
+    printf 'deputy %s\n' "$v"
+  else
+    printf 'deputy: version unknown (VERSION file not found at %s)\n' "$vf" >&2
+    return 1
+  fi
+}
+
 # Append-only xReview audit trail. Reads the review-iteration record from stdin and
 # appends it to .deputy/<slug>.review.md (deputy's equivalent of xReview's
 # .review/REVIEW.md). NEVER overwrites — always appends, with a blank-line separator.
@@ -742,6 +755,7 @@ commands:
                                   list, surfaced items + question files, duplicate candidates, status
                                   digest; --apply writes .deputy/learnings.md
                                   (alias: review)
+  version                         print the installed deputy version (also --version, -V)
   help                            show this message
 
 config keys (.deputy/config):
@@ -1932,6 +1946,7 @@ main() {
   local cmd="${1:-help}"
   case "$cmd" in
     help|-h|--help) usage; return 0 ;;
+    version|--version|-V) cmd_version; return $? ;;
     _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
     list) cmd_list; return 0 ;;
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
