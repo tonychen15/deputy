@@ -5,8 +5,8 @@ description: >
   Use when the human says "deputy run", "/deputy", "work the backlog", or when the
   runner spawns you headless (`claude -p`) for a claimed item. You triage each item,
   drive every item (simple or complex) through the internal checkpoint spine, gate
-  quality through cross-LLM xReview (Gemini), and route work across the
-  claude/gemini/codex CLIs. You NEVER edit BACKLOG.md or .deputy/waypoints/ directly
+  quality through cross-LLM xReview (Codex-default, author-aware), and route work across
+  the claude/gemini/codex CLIs. You NEVER edit BACKLOG.md or .deputy/waypoints/ directly
   — you call the `deputy` CLI.
 ---
 
@@ -49,7 +49,8 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
 
 1. **Start or resume** (see §2c below).
 2. `deputy plan <slug> --step 1 --purpose "<what this step does>"` → **plan xReview**
-   (Gemini reviews the single-step plan). No advance without a Gemini PASS.
+   (the reviewer reviews the single-step plan — see §3 for reviewer selection and the
+   `.review.md` trail; author here is `claude`). No advance without an APPROVED verdict.
 3. `deputy set-step <slug> --step 1 [--expected "<done-condition>"]` → do the work
    inside `.deputy/wt`, following the repo's conventions.
 4. **Quality gate:** run `deputy config test_cmd` (and `lint_cmd`/`build_cmd` if set).
@@ -61,9 +62,10 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    `git -C .deputy/wt diff --cached --name-only | deputy protected --stdin` — if it
    exits 0 (a protected path is staged), **abort**: unstage it, do not commit, and mark
    the item failed (§4). Protected files must never enter history.
-7. **Implementation xReview:** Gemini reviews the staged diff
-   (`gemini -p "Review as a staff engineer: $(git -C .deputy/wt diff --cached)"`). Fix
-   CRITICAL/WARNING and re-review until clean.
+7. **Implementation xReview:** review the staged diff per §3 — pick the reviewer with
+   `deputy route review "$(deputy avail)" "<coder>"` (Codex by default; `<coder>` is the
+   provider that wrote the diff), invoke it, and log the iteration to
+   `.deputy/<slug>.review.md`. Fix CRITICAL/WARNING and re-review until APPROVED.
 8. `deputy commit <slug> --summary "<what was done>"` — commits the already-staged
    changes (internally runs `git add -A` again as a safety net, then commits); do not
    cherry-pick files.
@@ -84,9 +86,10 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    **Never auto-push** to the remote — pushing is the user's decision.
 
 **Failover (quota/rate-limit):** not a failure — route the *coding* to **Codex**
-(`deputy route code-simple "<avail>"` → `codex`). Keep **Gemini** as the reviewer
-(never let the author review their own work). If no coder is available,
-`deputy cron --reschedule "<reset text>"` — never burn a retry.
+(`deputy route code-simple "<avail>"` → `codex`). The reviewer then auto-shifts off the
+coder: `deputy route review` excludes whoever authored the diff (if Codex coded, the
+reviewer falls back to Gemini, then Claude), so the author never reviews its own work.
+If no coder is available, `deputy cron --reschedule "<reset text>"` — never burn a retry.
 
 ### 2b. Complex → grill, then spine loop (N steps)
 
@@ -97,7 +100,7 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
   plan + affected files + risk into `.deputy/<slug>.questions.md`, then
   `deputy set "<item-line>" surfaced` and **stop**. Do not block.
 - When the human engages (via `deputy reflect`): **grill** them to nail every fuzzy part,
-  then **plan review** (Gemini xReview of the full N-step plan), then a **design review**
+  then **plan review** (xReview of the full N-step plan, §3), then a **design review**
   if the item produces a design artifact, then get **plan approval**. Then:
   - `mode = auto` (default): drive the spine loop below in `.deputy/wt`; xReview at each
     step; re-engage the human only if BLOCKED.
@@ -108,12 +111,12 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
 
 1. **Start or resume** (see §2c below).
 2. `deputy plan <slug> --step <n> --purpose "..."` for each step → **plan xReview**
-   (Gemini reviews the full step list). No advance without a Gemini PASS.
+   (reviewer reviews the full step list, §3; author `claude`). No advance without APPROVED.
 3. **For each uncommitted step (pending, or in_progress from a prior interrupted run)** (drive off `deputy steps <slug>` / `deputy resume <slug>`):
    - `deputy set-step <slug> --step <n> [--expected "<done-condition>"]`
    - Do the work in `.deputy/wt`.
    - `git -C .deputy/wt add -A` (stage all changes before the gates).
-   - Quality gate → protected-path gate (mandatory) → implementation xReview (Gemini).
+   - Quality gate → protected-path gate (mandatory) → implementation xReview (§3).
    - `deputy commit <slug> --summary "..."` (commits the already-staged changes).
    - **Preemption check:** same as §2a step 8 — after the commit, check `deputy pick`;
      if higher priority exists, `deputy set "<item-line>" paused` and stop.
@@ -136,17 +139,72 @@ After `deputy wt-create <slug>` (and before planning):
   there. Skip re-planning steps that already succeeded.
 - **Otherwise:** `deputy start <slug> "<item-goal>"` to create the ledger.
 
-### 3. Review touchpoints (xReview, Gemini-primary)
-Gemini reviews at **plan**, **design** (if applicable), and **implementation** (each
-commit). Author ≠ reviewer: Gemini reviews; it never writes the code it reviews. No plan,
-step, or design artifact advances without a Gemini PASS (fix CRITICAL/WARNING, re-review
-until clean).
+### 3. Review touchpoints (xReview — Codex-default, author-aware)
+Run an xReview at **plan**, **design** (if applicable), and **implementation** (each
+commit). The reviewer is chosen by deputy, never hardcoded to one provider.
+
+**Pick the reviewer (author ≠ reviewer):**
+```bash
+avail="$(deputy avail)"                       # providers currently up (csv)
+# <author> = who PRODUCED the artifact under review:
+#   plan / design  → claude (you wrote it)
+#   implementation → the coder you used (claude normally; codex if you routed
+#                    code-simple to codex on quota/rate-limit failover)
+reviewer="$(deputy route review "$avail" "<author>")"
+```
+`deputy route review` returns the highest-preference **non-author** peer — **Codex by
+default**, then Gemini, then Claude — so the author never reviews its own work. This
+replaces the old Gemini-only gate that bare-`wait`ed (and deadlocked) when Gemini was
+down. Two special returns:
+- `self` — only the author is up (both peers down). Degrade per the project's
+  `auto_mode` config (`deputy config auto_mode`):
+  - `auto_mode=1` → **self-review with a loud WARNING** recorded in the trail
+    (`author == reviewer`, degraded); proceed only if it finds nothing blocking.
+  - otherwise (**default**, `auto_mode` unset/`0`) → **surface** the item
+    (`.deputy/<slug>.questions.md`: "no peer reviewer available — your call"),
+    `deputy set "<item-line>" surfaced`, and stop.
+- `wait` — no provider up at all → treat as quota: `deputy cron --reschedule "<text>"`;
+  never burn a retry.
+
+**Invoke the chosen reviewer** (staged diff for implementation; the plan/design text
+otherwise):
+```bash
+case "$reviewer" in
+  codex)  codex exec "Review as a staff engineer. List only CRITICAL or WARNING items, each with a one-line fix, or reply LGTM: $(git -C .deputy/wt diff --cached)" -C "$(pwd)" -s read-only ;;
+  gemini) gemini -p "Review as a staff engineer: $(git -C .deputy/wt diff --cached)" ;;
+  claude) ;; # in-session critical re-read of the diff (only when claude is NOT the author)
+  self)   ;; # DEGRADED: critically re-read your own diff; record the WARNING
+esac
+```
+**If the chosen reviewer errors or hits a rate-limit at invocation** (availability is
+probed by auth/login, which can be stale vs. actual `exec`): drop that provider from
+`$avail` and re-run `deputy route review "$avail" "<author>"` for the next peer; then
+handle `self`/`wait` exactly as above. Never treat a reviewer-side quota as the item
+failing.
+
+**Record every iteration** via `deputy review-log <slug>` (append-only; never hand-write
+or overwrite the file). It appends stdin to `.deputy/<slug>.review.md` — deputy's
+equivalent of xReview's `.review/REVIEW.md`. Per touchpoint + iteration:
+```bash
+deputy review-log <slug> <<'EOF'
+## <touchpoint: plan|design|impl step N> — iteration <n>
+- Implementing — <author> — <UTC timestamp>
+- Reviewing — <reviewer> — <UTC timestamp>   (if author == reviewer, add: DEGRADED self-review)
+- Verdict: APPROVED | NEEDS_CHANGES
+- Findings: <CRITICAL/WARNING items, or "none">
+- Action Items: <what to fix, or "none">
+EOF
+```
+**Author ≠ reviewer** is the invariant; the only exception is a recorded degraded
+self-review. **No plan, step, or design artifact advances without an APPROVED verdict**
+(fix CRITICAL/WARNING and re-review until clean; repeated NEEDS_CHANGES on the same step
+counts against the retry budget in §4).
 
 ### 4. Failure / retry / escalation
 - **Quota / rate limit:** not a failure — reroute (§2a failover) or
   `deputy cron --reschedule`; never burn a retry or mark failed.
 - **Recoverable** (tests fail, xReview NEEDS_CHANGES): retry with the failure as context,
-  up to **2** times. Repeated Gemini `NEEDS_CHANGES` on the **same step** count against
+  up to **2** times. Repeated reviewer `NEEDS_CHANGES` on the **same step** count against
   this budget — a reviewer↔author standoff can't loop forever. On the 3rd rejection,
   treat as BLOCKED/exhausted.
 - **Exhausted / BLOCKED / protected-path violation:** for a **complex** item, re-triage
@@ -166,8 +224,11 @@ until clean).
 - **`deputy commit` stages ALL changes** (`git add -A` internally). Do not rely on
   per-file declarations; undeclared edits would otherwise bleed into the next step or be
   lost on resume.
-- **Author ≠ reviewer.** Gemini reviews; it never writes the code it reviews.
-- **No plan/step/design advances without a Gemini PASS.**
+- **Author ≠ reviewer.** The reviewer (Codex by default; Gemini/Claude fallback) never
+  wrote the artifact it reviews. `deputy route review` enforces this; the only exception
+  is a recorded degraded self-review (only the author up + `auto_mode=1`).
+- **No plan/step/design advances without an APPROVED verdict**, logged to
+  `.deputy/<slug>.review.md`.
 - Respect `deputy config max_items` (stop after that many per cycle) and `time_cap_mins`.
 - The `<item-line>` you were given is the exact match key for `deputy set`; if you ever
   lose it, re-fetch with `deputy list` and reconstruct the running-form line.
@@ -188,8 +249,10 @@ A PreToolUse hook **blocks** these in headless runs — never attempt them (and 
 them to a failover `codex`/`gemini`, which run unhooked):
 - **Edit/Write/MultiEdit/NotebookEdit** to a path outside `.deputy/wt` (the worktree) —
   only the state files `.deputy/<slug>.questions.md` and `.deputy/<slug>.fail.md` are
-  exceptions. *(Bash file-writes aren't path-checked — a best-effort limitation; still
-  never write outside the worktree.)*
+  exceptions. The xReview trail `.deputy/<slug>.review.md` is **append-only**: write it
+  ONLY via `deputy review-log <slug>` (a Bash command) — direct Edit/Write to it is
+  blocked so it can't be overwritten. *(Bash file-writes aren't path-checked — a
+  best-effort limitation; still never write outside the worktree.)*
 - **Bash:** `git push`, `git --git-dir`/`--work-tree` (and `GIT_DIR=`/`GIT_WORK_TREE=`
   env), `crontab`, `inst_deputy.sh`, `rm -r`/`-rf`/`-f`, `git branch -d`/`-D`/`-f`,
   `git config --global`/`--system`, `git update-ref`, `git remote …`, `git worktree remove

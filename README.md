@@ -4,8 +4,8 @@
 
 You add work to a plain-text backlog; Deputy **triages** each item, **does the easy
 ones headlessly**, **grills you on the hard ones**, executes in an isolated git
-worktree, gates quality through **cross-LLM review (xReview, Gemini)**, and **routes
-work across the `claude` / `gemini` CLIs** with quota-aware failover. When
+worktree, gates quality through **cross-LLM review (xReview, Codex-default)**, and
+**routes work across the `claude` / `codex` / `gemini` CLIs** with quota-aware failover. When
 Claude's session limit is hit, the next heartbeat tick picks it up and resumes.
 
 Deputy is a thin, dependency-light **bash** tool — a descendant of the `research.sh`
@@ -70,7 +70,7 @@ pick up newly-seeded config files.
 and `DEPUTY_SKILLS_DIR` to override the skills directory (default `~/.claude/skills`).
 
 **Dependencies:** `bash` 5+, `git`, `flock`, coreutils; `jq` (for the checkpoint
-spine); and the agent CLIs (`claude` required; `gemini` for xReview).
+spine); and the agent CLIs (`claude` required; `codex` and/or `gemini` for xReview).
 `inst_deputy.sh` preflights them and warns about what's missing.
 
 ---
@@ -175,13 +175,18 @@ Items are blank-line separated; the parser reads everything after `## Items`.
   first uncommitted step.
 - **Isolation** — every item runs on its own `deputy/<slug>` branch in the dedicated
   `.deputy/wt` git worktree; your main working tree is never touched.
-- **xReview** — cross-LLM review (Gemini-primary) gates **design, plan, and each
-  commit**; author ≠ reviewer; nothing advances without a PASS.
-- **Routing** — `claude` orchestrates and executes steps; `gemini` reviews (xReview).
-  The routing infrastructure supports a `codex` simple-coding failover path, but in
-  v1.0.2 all step execution runs inline with `claude`. On quota exhaustion, Deputy skips
-  the blocked item and retries on the next heartbeat tick — it does **not** reschedule
-  the shared cron line.
+- **xReview** — cross-LLM review (**Codex-default, author-aware**) gates **design, plan,
+  and each commit**; author ≠ reviewer; nothing advances without an APPROVED verdict.
+  Every iteration is logged to a deputy-owned `.deputy/<slug>.review.md` trail (deputy's
+  equivalent of xReview's `.review/REVIEW.md`).
+- **Routing** — `claude` orchestrates and executes steps. The reviewer is chosen by
+  `deputy route review` (author-excluded): **Codex by default**, then Gemini, then Claude
+  — so a dead or rate-limited reviewer no longer deadlocks the gate. If only the author is
+  up, the gate degrades per the project's `auto_mode` config (`auto_mode=1` → self-review
+  with a warning; default → surface the item). The routing infrastructure also supports a
+  `codex` simple-coding failover path, but step execution still runs inline with `claude`.
+  On full quota exhaustion, Deputy skips the blocked item and retries on the next
+  heartbeat tick — it does **not** reschedule the shared cron line.
 - **Heartbeat** — a fixed recurring `*/N` cron entry (default 10 min, configurable via
   `heartbeat_mins` in `.deputy/config`) drives the always-on safety-net; install with
   `./inst_deputy.sh cron`. Each tick: live task → skip; dead/orphaned → recover + resume;

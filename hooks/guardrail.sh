@@ -167,7 +167,11 @@ _path_outside_wt() {
   [[ -n "$wt" ]] || return 0
   [[ -n "$root" ]] || return 0
   case "$rp/" in "$wt/"*) return 1 ;; esac  # inside the worktree -> allow
-  # the two permitted state files — slug must be a single component (no slash)
+  # the two permitted Write/Edit state files — slug must be a single component (no slash).
+  # NOTE: .deputy/<slug>.review.md is intentionally NOT here — the xReview trail is
+  # append-only and may be written only via `deputy review-log` (a Bash command, which
+  # this hook does not path-check). Direct Write/Edit to it stays denied so it can't be
+  # overwritten.
   local slug="${rp#"$root"/.deputy/}"
   case "$slug" in
     *.questions.md|*.fail.md)

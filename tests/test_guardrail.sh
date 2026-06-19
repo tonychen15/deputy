@@ -128,6 +128,9 @@ assert_eq "$(wr Write "$WT/src/new.py")" "0" "write inside wt allowed"
 assert_eq "$(wr Edit "$WT/src/app.py")" "0" "edit inside wt allowed"
 assert_eq "$(wr Write "$ROOT/.deputy/fix-x.questions.md")" "0" "questions file allowed"
 assert_eq "$(wr Write "$ROOT/.deputy/fix-x.fail.md")" "0" "fail file allowed"
+# review trail is append-only via `deputy review-log` (a Bash cmd); direct Write/Edit denied
+assert_eq "$(wr Write "$ROOT/.deputy/fix-x.review.md")" "2" "direct Write to review trail denied (append-only via CLI)"
+assert_eq "$(wr Edit "$ROOT/.deputy/fix-x.review.md")" "2" "direct Edit to review trail denied (append-only via CLI)"
 assert_eq "$(wr Write "$ROOT/.deputy/nested/evil.questions.md")" "2" "nested .deputy path denied"
 # fail-closed: DEPUTY_WT unset + risky write must be denied
 assert_eq "$(printf '{"tool_name":"Write","tool_input":{"file_path":"/etc/passwd"}}' | DEPUTY_GUARDED=1 DEPUTY_ROOT="$ROOT" bash "$HOOK" >/dev/null 2>&1; echo $?)" "2" "write /etc/passwd with DEPUTY_WT unset denied"
