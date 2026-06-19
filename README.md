@@ -13,10 +13,10 @@ queue pattern. Its distinguishing trait versus blind backlog-drainers is
 **discernment**: it decides *whether* and *how hard* to do each item, escalates the
 genuinely hard calls, and never blocks the queue while it waits on you.
 
-> **v1.0.1** — human-session back-off, default-branch run guard, P3/P4 priority lanes,
-> `deputy clean <id>`, `reflect`/`review` merge, and queue autocommit shipped on top of
-> the v1.0.0 core. The repo's own `BACKLOG.md` is the project's task queue — Deputy
-> dogfoods itself.
+> **v1.0.2** — one-command `inst_deputy.sh init` (links the CLI, enables the cron
+> heartbeat, and seeds the repo in one step) and `install.sh` renamed to `inst_deputy.sh`,
+> runnable from any directory — on top of the v1.0.x safety/usability core. The repo's own
+> `BACKLOG.md` is the project's task queue — Deputy dogfoods itself.
 
 ---
 
@@ -109,7 +109,7 @@ your existing `BACKLOG.md` or config:
 ./inst_deputy.sh cron           # or: deputy cron --ensure
 ```
 
-**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.0.1`).
+**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.0.2`).
 
 ---
 
@@ -179,7 +179,7 @@ Items are blank-line separated; the parser reads everything after `## Items`.
   commit**; author ≠ reviewer; nothing advances without a PASS.
 - **Routing** — `claude` orchestrates and executes steps; `gemini` reviews (xReview).
   The routing infrastructure supports a `codex` simple-coding failover path, but in
-  v1.0.1 all step execution runs inline with `claude`. On quota exhaustion, Deputy skips
+  v1.0.2 all step execution runs inline with `claude`. On quota exhaustion, Deputy skips
   the blocked item and retries on the next heartbeat tick — it does **not** reschedule
   the shared cron line.
 - **Heartbeat** — a fixed recurring `*/N` cron entry (default 10 min, configurable via
@@ -217,7 +217,7 @@ templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)
 BACKLOG.md               # Deputy's own task queue
-VERSION                  # 1.0.1
+VERSION                  # 1.0.2
 ```
 
 Run the test suite with `bash tests/run.sh`.

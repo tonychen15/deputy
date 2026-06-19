@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.0.2 — 2026-06-19
+
+Patch release. Installer usability: one-command setup and run-from-anywhere.
 
 ### Install
 - **`install.sh` renamed to `inst_deputy.sh`** and added to `PATH` by `link` (alongside
@@ -8,6 +10,13 @@
   real checkout, so once linked it runs from **any directory** — `inst_deputy.sh init/cron`
   no longer requires `cd`-ing into the deputy repo or a `./` prefix. The risky-op guardrail
   denylist was updated to match the new name.
+- **`inst_deputy.sh init` is now one-command setup**: it enables the cron heartbeat and
+  bootstraps the `PATH` link (the `deputy` command, this installer, and the skill) before
+  seeding the repo, so a fresh clone can run `./inst_deputy.sh init <dir>` directly — no
+  separate `link` step. A foreign/locked link target only warns and never aborts the seed.
+- **Hardened `cmd_link`**: every `mkdir`/`ln` is guarded with `|| return 1`, so a real
+  link failure is surfaced (and `init`'s warning fires) instead of being masked by the
+  suppressed `errexit` when `init` calls `cmd_link` in an `||` chain.
 
 ## v1.0.1 — 2026-06-10
 
