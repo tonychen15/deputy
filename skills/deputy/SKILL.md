@@ -191,7 +191,7 @@ them to a failover `codex`/`gemini`, which run unhooked):
   exceptions. *(Bash file-writes aren't path-checked — a best-effort limitation; still
   never write outside the worktree.)*
 - **Bash:** `git push`, `git --git-dir`/`--work-tree` (and `GIT_DIR=`/`GIT_WORK_TREE=`
-  env), `crontab`, `install.sh`, `rm -r`/`-rf`/`-f`, `git branch -d`/`-D`/`-f`,
+  env), `crontab`, `inst_deputy.sh`, `rm -r`/`-rf`/`-f`, `git branch -d`/`-D`/`-f`,
   `git config --global`/`--system`, `git update-ref`, `git remote …`, `git worktree remove
   --force`, `git reset --hard`/`clean -f` outside the worktree, `sudo`, `gh pr merge`,
   `gh … --delete-branch`, global installs (`npm/pnpm/yarn -g`, `pip install`, `apt`, `brew

@@ -44,27 +44,34 @@ genuinely hard calls, and never blocks the queue while it waits on you.
 ## Install
 
 ```bash
-# 1) Clone the deputy repo, then put the `deputy` command on your PATH + install the orchestrator skill
+# 1) Clone the deputy repo
 git clone https://github.com/tonychen15/deputy
 cd deputy
-./install.sh link            # → ~/.local/bin/deputy  and  ~/.claude/skills/deputy
 
-# 2) Initialize each repo you want Deputy to manage (idempotent; never clobbers your backlog)
-./install.sh init /path/to/your/repo   # seeds BACKLOG.md, .deputy/config, .deputy/protected, .gitignore
+# 2) Initialize each repo you want Deputy to manage (idempotent; never clobbers your backlog).
+#    `init` first ensures `deputy` + `inst_deputy.sh` + the skill are on your PATH, so the
+#    very first run can go straight here — no separate `link` step needed.
+./inst_deputy.sh init /path/to/your/repo   # seeds BACKLOG.md, .deputy/config, .deputy/protected, .gitignore
 
 # 3) (Optional) Enable the always-on cron heartbeat in that repo
-./install.sh cron            # writes a */10 cron entry (interval configurable via heartbeat_mins)
+inst_deputy.sh cron              # writes a */10 cron entry (interval configurable via heartbeat_mins)
 ```
-`install.sh` uses **symlinks**, so the command + skill always run the latest code — no
-per-repo copying. Re-run `install.sh init <dir>` in a repo only to pick up newly-seeded
-config files.
+The **only** invocation that needs a path prefix is the very first one on a fresh clone
+(`./inst_deputy.sh …`), because the command isn't on your PATH until it installs itself.
+After that, `inst_deputy.sh init/cron` work from **any directory** with no `./` and no `cd`.
+
+If you just want the command on PATH without seeding a repo, run `./inst_deputy.sh link`
+(or bare `./inst_deputy.sh`, which defaults to `link`). `inst_deputy.sh` uses **symlinks**,
+so the command + skill always run the latest code — no per-repo copying; it resolves its own
+PATH symlink back to the real checkout. Re-run `inst_deputy.sh init <dir>` in a repo only to
+pick up newly-seeded config files.
 
 **Isolated installs:** set `DEPUTY_PREFIX` to override the bin directory (default `~/.local/bin`)
 and `DEPUTY_SKILLS_DIR` to override the skills directory (default `~/.claude/skills`).
 
 **Dependencies:** `bash` 5+, `git`, `flock`, coreutils; `jq` (for the checkpoint
 spine); and the agent CLIs (`claude` required; `gemini` for xReview).
-`install.sh` preflights them and warns about what's missing.
+`inst_deputy.sh` preflights them and warns about what's missing.
 
 ---
 
@@ -81,11 +88,11 @@ git pull          # command + skill auto-update — symlinks resolve to the live
 
 No per-repo skill re-install is needed in any project that uses Deputy.
 
-**Re-link only if** the symlinks are missing or broken, or if `install.sh`'s link layout
+**Re-link only if** the symlinks are missing or broken, or if `inst_deputy.sh`'s link layout
 changed:
 
 ```bash
-./install.sh link   # idempotent — safe to re-run
+./inst_deputy.sh link   # idempotent — safe to re-run
 ```
 
 **Per-repo seed files are copied, not symlinked.** After a deputy upgrade, optionally
@@ -93,13 +100,13 @@ re-run `init` to pick up newly-seeded config keys or templates — it never over
 your existing `BACKLOG.md` or config:
 
 ```bash
-./install.sh init /path/to/your/repo
+./inst_deputy.sh init /path/to/your/repo
 ```
 
 **Cron schedule:** if the heartbeat interval or cron format changed, refresh it:
 
 ```bash
-./install.sh cron           # or: deputy cron --ensure
+./inst_deputy.sh cron           # or: deputy cron --ensure
 ```
 
 **Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.0.1`).
@@ -177,7 +184,7 @@ Items are blank-line separated; the parser reads everything after `## Items`.
   the shared cron line.
 - **Heartbeat** — a fixed recurring `*/N` cron entry (default 10 min, configurable via
   `heartbeat_mins` in `.deputy/config`) drives the always-on safety-net; install with
-  `./install.sh cron`. Each tick: live task → skip; dead/orphaned → recover + resume;
+  `./inst_deputy.sh cron`. Each tick: live task → skip; dead/orphaned → recover + resume;
   idle + work → pick highest-priority item.
 - **Priority preemption** — when a higher-priority item arrives while a lower-priority one
   is running, the orchestrator **checkpoint-pauses** the running item (`^ paused`, its work
@@ -205,7 +212,7 @@ bin/deputy.sh            # the runner (queue engine + scheduling + adapters)
 skills/deputy/SKILL.md   # the orchestrator skill
 hooks/guardrail.sh       # PreToolUse risky-op guardrail (headless runs)
 hooks/session-start.sh   # surfacing banner + morning digest
-install.sh               # link (command+skill) / init (per-repo seed) / cron
+inst_deputy.sh               # link (command+skill) / init (per-repo seed) / cron
 templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)

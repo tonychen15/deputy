@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Install
+- **`install.sh` renamed to `inst_deputy.sh`** and added to `PATH` by `link` (alongside
+  the `deputy` command). The installer now resolves its own `PATH` symlink back to the
+  real checkout, so once linked it runs from **any directory** — `inst_deputy.sh init/cron`
+  no longer requires `cd`-ing into the deputy repo or a `./` prefix. The risky-op guardrail
+  denylist was updated to match the new name.
+
 ## v1.0.1 — 2026-06-10
 
 Patch release. Safety and usability improvements across the queue engine, scheduler,

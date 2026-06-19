@@ -51,7 +51,7 @@ _bash_risky() {
       '^[[:space:]]*git +(-[^ ]+ +)*--(git-dir|work-tree)' \
       '^[[:space:]]*GIT_(DIR|WORK_TREE)=' \
       '^[[:space:]]*crontab( |$)' \
-      '[^ /]*install\.sh( |$)' \
+      '[^ /]*inst_deputy\.sh( |$)' \
       '^[[:space:]]*rm +(-[a-zA-Z]*[rRfF][a-zA-Z]*|--recursive|--force)' \
       '^[[:space:]]*rm +([^ ]+ +)*-[a-zA-Z]*[rRfF]' \
       '^[[:space:]]*rm +([^ ]+ +)*--(recursive|force)' \

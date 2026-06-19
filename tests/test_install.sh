@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/lib.sh"
-# REPO (from lib.sh) is the deputy repo root; install.sh lives at its top.
-INSTALL="$REPO/install.sh"
+# REPO (from lib.sh) is the deputy repo root; inst_deputy.sh lives at its top.
+INSTALL="$REPO/inst_deputy.sh"
 
 # Use a global fake crontab throughout this file so no init/cron call
 # accidentally modifies the real user crontab.
@@ -10,12 +10,26 @@ printf '#!/usr/bin/env bash\n[[ "${1:-}" == "-l" ]] && { cat "$_DEPUTY_TEST_CRON
 chmod +x "$_GTAB"
 export DEPUTY_CRONTAB="$_GTAB" _DEPUTY_TEST_CRON_STORE="$_GSTORE"
 
+# `init` now also ensures the PATH link, so default a global temp prefix + skills
+# dir for the whole file — otherwise init/link calls without explicit overrides
+# would mutate the real ~/.local/bin and ~/.claude/skills. Per-test exports below
+# still override these where a test needs its own isolated prefix.
+export DEPUTY_PREFIX="$(mktemp -d)" DEPUTY_SKILLS_DIR="$(mktemp -d)"
+
 # --- init seeds BACKLOG + gitignore into a fresh dir ---
 d="$(mktemp -d)"
 bash "$INSTALL" init "$d" >/dev/null
 assert_eq "$([[ -f "$d/BACKLOG.md" ]] && echo yes || echo no)" "yes" "init seeds BACKLOG.md"
 assert_eq "$(grep -c 'LEGEND' "$d/BACKLOG.md")" "1" "seeded BACKLOG has legend"
 assert_eq "$(grep -cxF '.deputy/' "$d/.gitignore")" "1" "init gitignores .deputy/"
+
+# --- init also bootstraps the PATH link (deputy command + installer on PATH) ---
+db="$(mktemp -d)"; pb="$(mktemp -d)"; skb="$(mktemp -d)"
+DEPUTY_PREFIX="$pb" DEPUTY_SKILLS_DIR="$skb" bash "$INSTALL" init "$db" >/dev/null
+assert_eq "$([[ -L "$pb/deputy" ]] && echo yes || echo no)" "yes" "init links the deputy command onto PATH"
+assert_eq "$([[ -L "$pb/inst_deputy.sh" ]] && echo yes || echo no)" "yes" "init links the installer onto PATH"
+assert_eq "$([[ -e "$skb/deputy/SKILL.md" ]] && echo yes || echo no)" "yes" "init installs the orchestrator skill"
+assert_eq "$([[ -f "$db/BACKLOG.md" ]] && echo yes || echo no)" "yes" "init still seeds the repo after linking"
 
 # --- init is idempotent: no dup gitignore line, no clobber of an edited backlog ---
 echo "custom item" >> "$d/BACKLOG.md"
@@ -71,6 +85,28 @@ assert_eq "$([[ -e "$sk/deputy/SKILL.md" ]] && echo yes || echo no)" "yes" "link
 DEPUTY_SKILLS_DIR="$sk" DEPUTY_PREFIX="$pf" bash "$INSTALL" link >/dev/null; rc=$?
 assert_eq "$rc" "0" "re-link with skill exits 0"
 
+# --- link also puts the installer itself on PATH, resolving to the real script ---
+pi="$(mktemp -d)"
+DEPUTY_PREFIX="$pi" bash "$INSTALL" link >/dev/null 2>&1
+assert_eq "$([[ -L "$pi/inst_deputy.sh" ]] && echo yes || echo no)" "yes" "link symlinks inst_deputy.sh onto PATH"
+assert_eq "$(readlink -f "$pi/inst_deputy.sh" 2>/dev/null)" "$(readlink -f "$REPO/inst_deputy.sh")" "linked installer resolves to the real script"
+
+# --- migration: a pre-existing runner-only install still gains the installer self-link on re-run ---
+pm="$(mktemp -d)"
+ln -sfn "$REPO/bin/deputy.sh" "$pm/deputy"          # simulate an old install (runner linked, no installer)
+DEPUTY_PREFIX="$pm" bash "$INSTALL" link >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "re-link over an old runner-only install exits 0"
+assert_eq "$([[ -L "$pm/inst_deputy.sh" ]] && echo yes || echo no)" "yes" "re-link backfills inst_deputy.sh for old installs"
+
+# --- self-link refuses to clobber a FOREIGN inst_deputy.sh symlink without --force ---
+pf2="$(mktemp -d)"; foreign="$(mktemp)"
+ln -sfn "$REPO/bin/deputy.sh" "$pf2/deputy"          # deputy is ours (so the runner block passes)
+ln -sfn "$foreign" "$pf2/inst_deputy.sh"             # but inst_deputy.sh points elsewhere
+DEPUTY_PREFIX="$pf2" bash "$INSTALL" link >/dev/null 2>&1
+assert_eq "$(readlink "$pf2/inst_deputy.sh")" "$foreign" "self-link leaves a foreign installer symlink untouched without --force"
+DEPUTY_PREFIX="$pf2" bash "$INSTALL" link --force >/dev/null 2>&1
+assert_eq "$(readlink -f "$pf2/inst_deputy.sh" 2>/dev/null)" "$(readlink -f "$REPO/inst_deputy.sh")" "self-link --force replaces a foreign installer symlink"
+
 # --- init also enables the cron heartbeat (combined in one step) ---
 di_cron="$(mktemp -d)"
 cron_store2="$(mktemp)"; : > "$cron_store2"
@@ -125,16 +161,16 @@ bash "$INSTALL" init "$dc2" >/dev/null
 assert_contains "$(cat "$dc2/CLAUDE.md")" "Custom instructions here." "init preserves existing CLAUDE.md"
 assert_contains "$(cat "$dc2/CLAUDE.md")" "Deputy: task intake" "init appends to existing CLAUDE.md"
 
-# --- install.sh link from inside a worktree must target the MAIN repo, not the worktree (regression) ---
+# --- inst_deputy.sh link from inside a worktree must target the MAIN repo, not the worktree (regression) ---
 mr="$(mktemp -d)"
 git -C "$mr" init -q; git -C "$mr" config user.email t@t; git -C "$mr" config user.name t
 mkdir -p "$mr/bin" "$mr/skills/deputy"
-cp "$REPO/install.sh" "$mr/install.sh"; cp "$REPO/bin/deputy.sh" "$mr/bin/deputy.sh"; cp "$REPO/skills/deputy/SKILL.md" "$mr/skills/deputy/SKILL.md"
-chmod +x "$mr/install.sh" "$mr/bin/deputy.sh"
+cp "$REPO/inst_deputy.sh" "$mr/inst_deputy.sh"; cp "$REPO/bin/deputy.sh" "$mr/bin/deputy.sh"; cp "$REPO/skills/deputy/SKILL.md" "$mr/skills/deputy/SKILL.md"
+chmod +x "$mr/inst_deputy.sh" "$mr/bin/deputy.sh"
 git -C "$mr" add -A; git -C "$mr" commit -qm init
 wt="$(mktemp -d)/wt"; git -C "$mr" worktree add -q "$wt" -b wtbranch
 pfx="$(mktemp -d)"; sk="$(mktemp -d)"
-DEPUTY_PREFIX="$pfx" DEPUTY_SKILLS_DIR="$sk" bash "$wt/install.sh" link >/dev/null 2>&1
+DEPUTY_PREFIX="$pfx" DEPUTY_SKILLS_DIR="$sk" bash "$wt/inst_deputy.sh" link >/dev/null 2>&1
 tgt="$(readlink -f "$sk/deputy" 2>/dev/null)"
 assert_eq "$(case "$tgt" in "$mr"/*) echo main;; "$wt"/*) echo worktree;; *) echo other;; esac)" "main" "skill symlink targets MAIN repo, not the worktree"
 ctgt="$(readlink -f "$pfx/deputy" 2>/dev/null)"
