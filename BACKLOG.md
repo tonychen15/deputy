@@ -10,7 +10,7 @@
 
 ## Items
 
-[P1][#36] Align xReview gate with Codex-default model: _route review (bin/deputy.sh ~L798) is Gemini-only with no Codex fallback, so review work stalls on 'wait' when Gemini is unavailable (IneligibleTierError / rate limits). Make reviewer routing author-aware: prefer Codex, fall back to Gemini when Codex authored the step (never bare 'wait' while a peer is available); update SKILL.md 'Gemini-primary' wording to be provider-agnostic. Mirrors xReview's codex>gemini>peer>self.
+@[P1][#36] Align xReview gate with Codex-default model: _route review (bin/deputy.sh ~L798) is Gemini-only with no Codex fallback, so review work stalls on 'wait' when Gemini is unavailable (IneligibleTierError / rate limits). Make reviewer routing author-aware: prefer Codex, fall back to Gemini when Codex authored the step (never bare 'wait' while a peer is available); update SKILL.md 'Gemini-primary' wording to be provider-agnostic. Mirrors xReview's codex>gemini>peer>self.
 
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
