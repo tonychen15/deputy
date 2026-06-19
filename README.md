@@ -13,10 +13,12 @@ queue pattern. Its distinguishing trait versus blind backlog-drainers is
 **discernment**: it decides *whether* and *how hard* to do each item, escalates the
 genuinely hard calls, and never blocks the queue while it waits on you.
 
-> **v1.0.2** — one-command `inst_deputy.sh init` (links the CLI, enables the cron
-> heartbeat, and seeds the repo in one step) and `install.sh` renamed to `inst_deputy.sh`,
-> runnable from any directory — on top of the v1.0.x safety/usability core. The repo's own
-> `BACKLOG.md` is the project's task queue — Deputy dogfoods itself.
+> **v1.1.0** — the xReview gate is now **Codex-default and author-aware**: the reviewer
+> is chosen by `deputy route review` (`codex → gemini → claude`, author excluded), so a
+> dead or rate-limited reviewer no longer deadlocks the spine. Adds a per-project
+> `auto_mode` no-peer degradation policy and an append-only `.deputy/<slug>.review.md`
+> audit trail (`deputy review-log`) — on top of the v1.0.x installer/safety core. The
+> repo's own `BACKLOG.md` is the project's task queue — Deputy dogfoods itself.
 
 ---
 
@@ -109,7 +111,7 @@ your existing `BACKLOG.md` or config:
 ./inst_deputy.sh cron           # or: deputy cron --ensure
 ```
 
-**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.0.2`).
+**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.1.0`).
 
 ---
 
@@ -222,7 +224,7 @@ templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)
 BACKLOG.md               # Deputy's own task queue
-VERSION                  # 1.0.2
+VERSION                  # 1.1.0
 ```
 
 Run the test suite with `bash tests/run.sh`.
