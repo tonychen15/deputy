@@ -10,12 +10,26 @@ printf '#!/usr/bin/env bash\n[[ "${1:-}" == "-l" ]] && { cat "$_DEPUTY_TEST_CRON
 chmod +x "$_GTAB"
 export DEPUTY_CRONTAB="$_GTAB" _DEPUTY_TEST_CRON_STORE="$_GSTORE"
 
+# `init` now also ensures the PATH link, so default a global temp prefix + skills
+# dir for the whole file — otherwise init/link calls without explicit overrides
+# would mutate the real ~/.local/bin and ~/.claude/skills. Per-test exports below
+# still override these where a test needs its own isolated prefix.
+export DEPUTY_PREFIX="$(mktemp -d)" DEPUTY_SKILLS_DIR="$(mktemp -d)"
+
 # --- init seeds BACKLOG + gitignore into a fresh dir ---
 d="$(mktemp -d)"
 bash "$INSTALL" init "$d" >/dev/null
 assert_eq "$([[ -f "$d/BACKLOG.md" ]] && echo yes || echo no)" "yes" "init seeds BACKLOG.md"
 assert_eq "$(grep -c 'LEGEND' "$d/BACKLOG.md")" "1" "seeded BACKLOG has legend"
 assert_eq "$(grep -cxF '.deputy/' "$d/.gitignore")" "1" "init gitignores .deputy/"
+
+# --- init also bootstraps the PATH link (deputy command + installer on PATH) ---
+db="$(mktemp -d)"; pb="$(mktemp -d)"; skb="$(mktemp -d)"
+DEPUTY_PREFIX="$pb" DEPUTY_SKILLS_DIR="$skb" bash "$INSTALL" init "$db" >/dev/null
+assert_eq "$([[ -L "$pb/deputy" ]] && echo yes || echo no)" "yes" "init links the deputy command onto PATH"
+assert_eq "$([[ -L "$pb/inst_deputy.sh" ]] && echo yes || echo no)" "yes" "init links the installer onto PATH"
+assert_eq "$([[ -e "$skb/deputy/SKILL.md" ]] && echo yes || echo no)" "yes" "init installs the orchestrator skill"
+assert_eq "$([[ -f "$db/BACKLOG.md" ]] && echo yes || echo no)" "yes" "init still seeds the repo after linking"
 
 # --- init is idempotent: no dup gitignore line, no clobber of an edited backlog ---
 echo "custom item" >> "$d/BACKLOG.md"

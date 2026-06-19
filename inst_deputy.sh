@@ -2,12 +2,13 @@
 # inst_deputy.sh — install the Deputy runner (Plan 1 MVP).
 #
 #   inst_deputy.sh [link] [--prefix DIR] [--force]   symlink `deputy` (+ `inst_deputy.sh`) into DIR (default: $HOME/.local/bin)
-#   inst_deputy.sh init [DIR]                        seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable the cron heartbeat in DIR (default: cwd)
+#   inst_deputy.sh init [DIR]                        ensure the PATH link, then seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable the cron heartbeat in DIR (default: cwd)
 #   inst_deputy.sh help
 #
 # `link` puts the `deputy` command (and this installer) on your PATH; the runner
 # resolves its target repo at call time ($DEPUTY_ROOT, else the git toplevel of
-# your cwd). `init` prepares a specific repo's queue file and enables the cron
+# your cwd). `init` first ensures that PATH link (so a first run can go straight
+# to `init`), then prepares a specific repo's queue file and enables the cron
 # heartbeat in one step.
 #
 # This script self-locates its own source tree (resolving a PATH symlink back to
@@ -60,7 +61,7 @@ usage() {
   cat <<EOF
 usage:
   inst_deputy.sh [link] [--prefix DIR] [--force]   symlink 'deputy' (+ this installer) into DIR (default: \$HOME/.local/bin)
-  inst_deputy.sh init [DIR]                         seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable cron heartbeat in DIR (default: cwd)
+  inst_deputy.sh init [DIR]                         ensure the PATH link, then seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable cron heartbeat in DIR (default: cwd)
   inst_deputy.sh cron                               re-run 'deputy cron --ensure' (re-enable heartbeat; init already does this)
   inst_deputy.sh help
 EOF
@@ -78,7 +79,7 @@ cmd_link() {
   [[ -f "$RUNNER" ]] || { printf 'install: runner not found: %s\n' "$RUNNER" >&2; return 1; }
   [[ -x "$RUNNER" ]] || { printf 'install: runner is not executable: %s\n' "$RUNNER" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || printf 'install: NOTE: jq not found — the checkpoint spine needs jq (apt install jq / brew install jq).\n' >&2
-  mkdir -p "$prefix"
+  mkdir -p "$prefix" || return 1
   # Link the runner. We must NOT early-return when it's already linked: an
   # existing install predates the installer-self-link below, so re-running must
   # still fall through and drop inst_deputy.sh onto PATH (idempotent migration).
@@ -97,7 +98,7 @@ cmd_link() {
       printf 'install: %s is a directory; refusing to replace it.\n' "$target" >&2
       return 3
     fi
-    ln -sfn "$RUNNER" "$target"
+    ln -sfn "$RUNNER" "$target" || return 1
     printf 'install: linked %s -> %s\n' "$target" "$RUNNER"
   fi
 
@@ -113,7 +114,7 @@ cmd_link() {
       # Refuse to clobber a foreign file OR symlink without --force (mirrors the runner).
       printf 'install: %s already exists and is not ours; use --force to replace.\n' "$self_target" >&2
     else
-      ln -sfn "$INSTALLER" "$self_target"
+      ln -sfn "$INSTALLER" "$self_target" || return 1
       printf 'install: linked installer %s -> %s\n' "$self_target" "$INSTALLER"
     fi
   fi
@@ -126,13 +127,13 @@ cmd_link() {
   local skills_dir="${DEPUTY_SKILLS_DIR:-$HOME/.claude/skills}"
   local skill_src="$SRC_DIR/skills/deputy" skill_dst="$skills_dir/deputy"
   if [[ -d "$skill_src" ]]; then
-    mkdir -p "$skills_dir"
+    mkdir -p "$skills_dir" || return 1
     if [[ -d "$skill_dst" && ! -L "$skill_dst" ]]; then
       printf 'install: %s is a directory; not replacing the skill.\n' "$skill_dst" >&2
     elif [[ -L "$skill_dst" && "$(_resolve "$skill_dst")" == "$(_resolve "$skill_src")" ]]; then
       printf 'install: skill already linked: %s -> %s\n' "$skill_dst" "$skill_src"
     else
-      ln -sfn "$skill_src" "$skill_dst"
+      ln -sfn "$skill_src" "$skill_dst" || return 1
       printf 'install: linked skill %s -> %s\n' "$skill_dst" "$skill_src"
     fi
   fi
@@ -144,6 +145,13 @@ cmd_init() {
   local dir; dir="$(cd "${1:-$PWD}" 2>/dev/null && pwd)"
   [[ -d "$dir" ]] || { printf 'install: not a directory: %s\n' "${1:-$PWD}" >&2; return 1; }
   [[ -f "$TEMPLATE" ]] || { printf 'install: template not found: %s\n' "$TEMPLATE" >&2; return 1; }
+
+  # Bootstrap: ensure the `deputy` command + this installer + the skill are on
+  # PATH (idempotent — prints "already linked" when present). This lets a first
+  # run go straight to `init` without a separate `link` step. A foreign/locked
+  # target only warns; it must not abort the per-repo seed below.
+  printf 'install: ensuring the deputy command is on PATH...\n'
+  cmd_link || printf 'install: NOTE: could not link the deputy command (see above); continuing with the repo seed.\n' >&2
 
   local backlog="$dir/BACKLOG.md"
   if [[ -e "$backlog" ]]; then

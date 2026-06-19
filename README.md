@@ -44,23 +44,27 @@ genuinely hard calls, and never blocks the queue while it waits on you.
 ## Install
 
 ```bash
-# 1) Clone the deputy repo, then put the `deputy` command on your PATH + install the orchestrator skill
+# 1) Clone the deputy repo
 git clone https://github.com/tonychen15/deputy
 cd deputy
-./inst_deputy.sh link            # → ~/.local/bin/{deputy, inst_deputy.sh}  and  ~/.claude/skills/deputy
 
-# 2) Initialize each repo you want Deputy to manage (idempotent; never clobbers your backlog)
-#    inst_deputy.sh is now on your PATH and self-locates its source, so run it from anywhere:
-inst_deputy.sh init /path/to/your/repo   # seeds BACKLOG.md, .deputy/config, .deputy/protected, .gitignore
+# 2) Initialize each repo you want Deputy to manage (idempotent; never clobbers your backlog).
+#    `init` first ensures `deputy` + `inst_deputy.sh` + the skill are on your PATH, so the
+#    very first run can go straight here — no separate `link` step needed.
+./inst_deputy.sh init /path/to/your/repo   # seeds BACKLOG.md, .deputy/config, .deputy/protected, .gitignore
 
 # 3) (Optional) Enable the always-on cron heartbeat in that repo
 inst_deputy.sh cron              # writes a */10 cron entry (interval configurable via heartbeat_mins)
 ```
-`inst_deputy.sh` uses **symlinks**, so the command + skill always run the latest code — no
-per-repo copying. `link` also drops `inst_deputy.sh` itself onto your PATH, and the script
-resolves that symlink back to its real checkout — so after the first `link` you can run
-`inst_deputy.sh init/cron` from **any directory**, with no `./` and no `cd` into the deputy
-repo. Re-run `inst_deputy.sh init <dir>` in a repo only to pick up newly-seeded config files.
+The **only** invocation that needs a path prefix is the very first one on a fresh clone
+(`./inst_deputy.sh …`), because the command isn't on your PATH until it installs itself.
+After that, `inst_deputy.sh init/cron` work from **any directory** with no `./` and no `cd`.
+
+If you just want the command on PATH without seeding a repo, run `./inst_deputy.sh link`
+(or bare `./inst_deputy.sh`, which defaults to `link`). `inst_deputy.sh` uses **symlinks**,
+so the command + skill always run the latest code — no per-repo copying; it resolves its own
+PATH symlink back to the real checkout. Re-run `inst_deputy.sh init <dir>` in a repo only to
+pick up newly-seeded config files.
 
 **Isolated installs:** set `DEPUTY_PREFIX` to override the bin directory (default `~/.local/bin`)
 and `DEPUTY_SKILLS_DIR` to override the skills directory (default `~/.claude/skills`).
