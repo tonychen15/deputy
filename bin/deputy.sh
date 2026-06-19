@@ -693,6 +693,28 @@ cmd_recover() {
 
 cmd_review() { cmd_reflect "$@"; }
 
+# Append-only xReview audit trail. Reads the review-iteration record from stdin and
+# appends it to .deputy/<slug>.review.md (deputy's equivalent of xReview's
+# .review/REVIEW.md). NEVER overwrites — always appends, with a blank-line separator.
+# The slug must be a single path component (no slashes / '..') so the write stays in
+# .deputy/, matching the guardrail allowlist.
+cmd_review_log() {
+  local slug="${1:-}"
+  if [[ -z "$slug" ]]; then
+    printf 'deputy: review-log requires <slug> (record read from stdin)\n' >&2; return 2
+  fi
+  case "$slug" in
+    */*|..|.) printf 'deputy: review-log: invalid slug %s%s%s (no slashes)\n' "'" "$slug" "'" >&2; return 2 ;;
+  esac
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  local f="$STATE_DIR/$slug.review.md"
+  # Seed a header the first time so the file is self-describing.
+  [[ -s "$f" ]] || printf '# xReview trail — %s\n' "$slug" >> "$f"
+  printf '\n' >> "$f"
+  cat >> "$f"
+  printf '\n' >> "$f"
+}
+
 usage() {
   cat <<'EOF'
 usage: deputy <command> [args]
@@ -726,6 +748,7 @@ config keys (.deputy/config):
   max_items=N                     items started per run cycle (default 0 = unlimited)
   heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59)
   human_backoff=1                 back off when an interactive Claude session is active in this repo (default 1; set 0 to disable)
+  auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
@@ -784,9 +807,18 @@ _probe() {
 _in_csv() { case ",$2," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 # Choose a provider for a work kind given available providers (csv).
-# Echoes: a provider name | "wait" (claude-bound work, claude down) | "none".
+# Echoes: a provider name | "self" (review: only the author is left) |
+#         "wait" (claude-bound work down / no reviewer at all) | "none".
+#
+# review routing is AUTHOR-AWARE and mirrors xReview's codex>gemini>peer>self chain:
+#   $3 = author (the provider that wrote the diff under review; may be empty).
+#   Codex is the DEFAULT reviewer; Gemini and Claude are fallbacks. The author is
+#   never offered as a reviewer (author != reviewer) until it is the only one left,
+#   in which case "self" is echoed so the caller can degrade per mode (auto =>
+#   self-review with a warning; interactive => surface). This removes the old
+#   Gemini-only deadlock: review no longer bare-"wait"s while a peer is available.
 _route() {
-  local kind="$1" avail="$2"
+  local kind="$1" avail="$2" author="${3:-}" cand
   case "$kind" in
     orchestrate|code-complex)
       _in_csv claude "$avail" && { printf 'claude\n'; return 0; }
@@ -796,7 +828,21 @@ _route() {
       _in_csv codex  "$avail" && { printf 'codex\n';  return 0; }
       printf 'wait\n' ;;
     review)
-      _in_csv gemini "$avail" && { printf 'gemini\n'; return 0; }
+      # Prefer a non-author peer: codex (default) -> gemini -> claude.
+      # claude is the orchestrator, so it is only an eligible reviewer when an
+      # explicit non-claude author is given (otherwise returning claude would risk
+      # letting the orchestrator review its own work). External peers (codex,
+      # gemini) are always eligible.
+      local candidates="codex gemini"
+      [[ -n "$author" ]] && candidates="codex gemini claude"
+      for cand in $candidates; do
+        [[ "$cand" == "$author" ]] && continue
+        _in_csv "$cand" "$avail" && { printf '%s\n' "$cand"; return 0; }
+      done
+      # No non-author peer available. If only the author is up, signal self-review.
+      if [[ -n "$author" ]] && _in_csv "$author" "$avail"; then
+        printf 'self\n'; return 0
+      fi
       printf 'wait\n' ;;
     *) printf 'none\n'; return 2 ;;
   esac
@@ -1899,7 +1945,8 @@ main() {
     clean) shift; cmd_clean "$@"; return $? ;;
     reflect) shift; cmd_reflect "$@"; return $? ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
-    route) shift; _route "${1:-}" "${2:-}"; return $? ;;
+    route) shift; _route "${1:-}" "${2:-}" "${3:-}"; return $? ;;
+    avail) _availability; return 0 ;;
     probe) shift; _probe "${1:-}"; return 0 ;;
     cron) shift; cmd_cron "$@"; return $? ;;
     _resethour) shift; _parse_reset_hour "${1:-}"; return 0 ;;
@@ -1918,6 +1965,7 @@ main() {
     set-step) shift; cmd_wp_setstep "$@"; return $? ;;
     resume) shift; cmd_wp_resume "$@"; return $? ;;
     commit) shift; cmd_wp_commit "$@"; return $? ;;
+    review-log) shift; cmd_review_log "$@"; return $? ;;
     _wp_show) shift; cmd_wp_show "$@"; return 0 ;;
     *) usage >&2; return 2 ;;
   esac

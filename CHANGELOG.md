@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.1.0 — 2026-06-19
+
+Minor release. Migrates deputy's cross-LLM review gate to xReview's **Codex-default,
+author-aware** model and removes the dead-reviewer deadlock.
+
+### xReview gate
+- **Codex is now the default reviewer**, with an author-aware fallback chain
+  (`codex → gemini → claude`, the author always excluded). `deputy route review
+  "<avail>" "<author>"` picks the reviewer; `claude` is eligible only when an explicit
+  non-claude author is given, since it is the orchestrator. This replaces the old
+  **Gemini-only** gate that bare-`wait`ed and **deadlocked** the spine when Gemini was
+  unavailable (OAuth `IneligibleTierError` / rate limits).
+- **No-peer degradation, per project.** When only the author is up, `route review`
+  returns `self`; the spine degrades per the new `auto_mode` config key
+  (`.deputy/config`): `auto_mode=1` → self-review with a loud WARNING and proceed;
+  default (`0`/unset) → surface the item for the user. Reviewer-side rate-limits are
+  re-routed to the next peer instead of failing the item.
+- **xReview audit trail.** Every review iteration (plan / design / each implementation
+  commit) is recorded via the new append-only `deputy review-log <slug>` command to
+  `.deputy/<slug>.review.md` — deputy's equivalent of xReview's `.review/REVIEW.md`
+  (numbered iterations with Implementing/Reviewing lines, Verdict, Findings, Action
+  Items). The guardrail allowlist now permits writes to `*.review.md`.
+- **New plumbing:** `deputy avail` (echoes available providers) and `deputy review-log`.
+  SKILL.md and README review/routing wording are now provider-agnostic; **author ≠
+  reviewer** is preserved throughout.
+
 ## v1.0.2 — 2026-06-19
 
 Patch release. Installer usability: one-command setup and run-from-anywhere.
