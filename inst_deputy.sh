@@ -1,17 +1,45 @@
 #!/usr/bin/env bash
-# install.sh — install the Deputy runner (Plan 1 MVP).
+# inst_deputy.sh — install the Deputy runner (Plan 1 MVP).
 #
-#   install.sh [link] [--prefix DIR] [--force]   symlink `deputy` into DIR (default: $HOME/.local/bin)
-#   install.sh init [DIR]                         seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable the cron heartbeat in DIR (default: cwd)
-#   install.sh help
+#   inst_deputy.sh [link] [--prefix DIR] [--force]   symlink `deputy` (+ `inst_deputy.sh`) into DIR (default: $HOME/.local/bin)
+#   inst_deputy.sh init [DIR]                        seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable the cron heartbeat in DIR (default: cwd)
+#   inst_deputy.sh help
 #
-# `link` puts the `deputy` command on your PATH; the runner resolves its target
-# repo at call time ($DEPUTY_ROOT, else the git toplevel of your cwd). `init`
-# prepares a specific repo's queue file and enables the cron heartbeat in one step.
+# `link` puts the `deputy` command (and this installer) on your PATH; the runner
+# resolves its target repo at call time ($DEPUTY_ROOT, else the git toplevel of
+# your cwd). `init` prepares a specific repo's queue file and enables the cron
+# heartbeat in one step.
+#
+# This script self-locates its own source tree (resolving a PATH symlink back to
+# the real file), so once linked it runs from ANY directory — you never need to
+# cd into the deputy checkout, and it works regardless of your current repo.
 set -euo pipefail
 
-SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Resolve to the canonical (main) worktree so running install.sh from inside a transient
+# Portable `readlink -f` (BSD/macOS `readlink` has no `-f`): fully resolve a
+# path's symlinks to an absolute location, following relative targets against
+# each link's directory. Stops after 40 hops so a symlink cycle can't spin
+# forever. Prints nothing (and succeeds) if the path doesn't exist, matching the
+# `readlink -f ... 2>/dev/null` behaviour the idempotency checks below rely on.
+_resolve() {
+  local p="$1" d hops=0
+  [[ -e "$p" || -L "$p" ]] || return 0
+  while [[ -L "$p" ]]; do
+    if (( ++hops > 40 )); then printf 'install: symlink loop resolving %s\n' "$1" >&2; return 1; fi
+    d="$(cd -P "$(dirname "$p")" >/dev/null 2>&1 && pwd)" || return 1
+    p="$(readlink "$p")"
+    [[ "$p" != /* ]] && p="$d/$p"
+  done
+  d="$(cd -P "$(dirname "$p")" >/dev/null 2>&1 && pwd)" || return 1
+  printf '%s/%s' "$d" "${p##*/}"
+}
+
+# Resolve a PATH symlink (e.g. ~/.local/bin/inst_deputy.sh) back to the real
+# script so SRC_DIR points at the actual deputy checkout no matter where we are
+# invoked from — works on BSD/macOS too (see _resolve).
+_self="$(_resolve "${BASH_SOURCE[0]}")"
+SRC_DIR="$(cd -P "$(dirname "$_self")" >/dev/null 2>&1 && pwd)"
+unset _self
+# Resolve to the canonical (main) worktree so running inst_deputy.sh from inside a transient
 # git worktree (e.g. .deputy/wt-<slug>) never points the GLOBAL symlinks at an ephemeral
 # path that vanishes on wt-remove. `git worktree list`'s FIRST entry is always the main
 # worktree (robust even with --separate-git-dir); clear GIT_DIR/GIT_COMMON_DIR so an
@@ -25,15 +53,16 @@ unset _wl _main
 # Defense-in-depth: refuse to link from a transient deputy worktree path even if resolution failed.
 case "$SRC_DIR" in *"/.deputy/wt"*) printf 'install: refusing to link from a transient worktree: %s\n' "$SRC_DIR" >&2; exit 1 ;; esac
 RUNNER="$SRC_DIR/bin/deputy.sh"
+INSTALLER="$SRC_DIR/inst_deputy.sh"
 TEMPLATE="$SRC_DIR/templates/BACKLOG.md"
 
 usage() {
   cat <<EOF
 usage:
-  install.sh [link] [--prefix DIR] [--force]   symlink 'deputy' into DIR (default: \$HOME/.local/bin)
-  install.sh init [DIR]                         seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable cron heartbeat in DIR (default: cwd)
-  install.sh cron                               re-run 'deputy cron --ensure' (re-enable heartbeat; init already does this)
-  install.sh help
+  inst_deputy.sh [link] [--prefix DIR] [--force]   symlink 'deputy' (+ this installer) into DIR (default: \$HOME/.local/bin)
+  inst_deputy.sh init [DIR]                         seed BACKLOG.md, .deputy/, CLAUDE.md guidance, and enable cron heartbeat in DIR (default: cwd)
+  inst_deputy.sh cron                               re-run 'deputy cron --ensure' (re-enable heartbeat; init already does this)
+  inst_deputy.sh help
 EOF
 }
 
@@ -50,23 +79,44 @@ cmd_link() {
   [[ -x "$RUNNER" ]] || { printf 'install: runner is not executable: %s\n' "$RUNNER" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || printf 'install: NOTE: jq not found — the checkpoint spine needs jq (apt install jq / brew install jq).\n' >&2
   mkdir -p "$prefix"
-  local target="$prefix/deputy"
+  # Link the runner. We must NOT early-return when it's already linked: an
+  # existing install predates the installer-self-link below, so re-running must
+  # still fall through and drop inst_deputy.sh onto PATH (idempotent migration).
+  local target="$prefix/deputy" runner_linked=0
   if [[ -L "$target" || -e "$target" ]]; then
-    if [[ "$(readlink -f "$target" 2>/dev/null)" == "$(readlink -f "$RUNNER")" ]]; then
+    if [[ "$(_resolve "$target")" == "$(_resolve "$RUNNER")" ]]; then
       printf 'install: already linked: %s -> %s\n' "$target" "$RUNNER"
-      return 0
-    fi
-    if [[ "$force" -ne 1 ]]; then
+      runner_linked=1
+    elif [[ "$force" -ne 1 ]]; then
       printf 'install: %s already exists and is not ours; use --force to replace.\n' "$target" >&2
       return 3
     fi
   fi
-  if [[ -d "$target" && ! -L "$target" ]]; then
-    printf 'install: %s is a directory; refusing to replace it.\n' "$target" >&2
-    return 3
+  if [[ "$runner_linked" -ne 1 ]]; then
+    if [[ -d "$target" && ! -L "$target" ]]; then
+      printf 'install: %s is a directory; refusing to replace it.\n' "$target" >&2
+      return 3
+    fi
+    ln -sfn "$RUNNER" "$target"
+    printf 'install: linked %s -> %s\n' "$target" "$RUNNER"
   fi
-  ln -sfn "$RUNNER" "$target"
-  printf 'install: linked %s -> %s\n' "$target" "$RUNNER"
+
+  # Put this installer itself on PATH so `inst_deputy.sh` runs from anywhere
+  # (the script self-locates its source via the symlink, so cwd never matters).
+  if [[ -f "$INSTALLER" ]]; then
+    local self_target="$prefix/inst_deputy.sh"
+    if [[ -d "$self_target" && ! -L "$self_target" ]]; then
+      printf 'install: %s is a directory; not linking the installer.\n' "$self_target" >&2
+    elif [[ "$(_resolve "$self_target")" == "$(_resolve "$INSTALLER")" ]]; then
+      printf 'install: installer already linked: %s -> %s\n' "$self_target" "$INSTALLER"
+    elif [[ ( -L "$self_target" || -e "$self_target" ) && "$force" -ne 1 ]]; then
+      # Refuse to clobber a foreign file OR symlink without --force (mirrors the runner).
+      printf 'install: %s already exists and is not ours; use --force to replace.\n' "$self_target" >&2
+    else
+      ln -sfn "$INSTALLER" "$self_target"
+      printf 'install: linked installer %s -> %s\n' "$self_target" "$INSTALLER"
+    fi
+  fi
   case ":$PATH:" in
     *":$prefix:"*) ;;
     *) printf 'install: NOTE: %s is not on your PATH; add it to use `deputy` directly.\n' "$prefix" >&2 ;;
@@ -79,7 +129,7 @@ cmd_link() {
     mkdir -p "$skills_dir"
     if [[ -d "$skill_dst" && ! -L "$skill_dst" ]]; then
       printf 'install: %s is a directory; not replacing the skill.\n' "$skill_dst" >&2
-    elif [[ -L "$skill_dst" && "$(readlink -f "$skill_dst" 2>/dev/null)" == "$(readlink -f "$skill_src")" ]]; then
+    elif [[ -L "$skill_dst" && "$(_resolve "$skill_dst")" == "$(_resolve "$skill_src")" ]]; then
       printf 'install: skill already linked: %s -> %s\n' "$skill_dst" "$skill_src"
     else
       ln -sfn "$skill_src" "$skill_dst"
@@ -149,11 +199,11 @@ DEPUTY_GUIDANCE
     printf 'install: appended Deputy guidance to %s\n' "$claude_md"
   fi
 
-  # Enable the cron heartbeat for this project (same as 'install.sh cron' run from $dir).
+  # Enable the cron heartbeat for this project (same as 'inst_deputy.sh cron' run from $dir).
   if DEPUTY_ROOT="$dir" bash "$RUNNER" cron --ensure 2>/dev/null; then
     printf 'install: cron heartbeat enabled for %s\n' "$dir"
   else
-    printf 'install: NOTE: could not enable cron heartbeat; run install.sh cron from %s to enable it manually\n' "$dir" >&2
+    printf 'install: NOTE: could not enable cron heartbeat; run inst_deputy.sh cron from %s to enable it manually\n' "$dir" >&2
   fi
 }
 
@@ -164,7 +214,7 @@ main() {
     init)          shift || true; cmd_init "$@" ;;
     cron)          shift || true; bash "$RUNNER" cron --ensure ;;
     help|-h|--help) usage ;;
-    --*)           cmd_link "$@" ;;   # allow `install.sh --prefix DIR` / `--force`
+    --*)           cmd_link "$@" ;;   # allow `inst_deputy.sh --prefix DIR` / `--force`
     *) usage >&2; return 2 ;;
   esac
 }

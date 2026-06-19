@@ -6,5 +6,5 @@ setup_repo
 out="$(bash "$DEPUTY" start p2 "g" && echo OK)"
 assert_contains "$out" "OK" "start completes cleanly (jq present)"
 assert_eq "$([[ -f "$DEPUTY_ROOT/.deputy/waypoints/p2/waypoint.json" ]] && echo yes || echo no)" "yes" "ledger written"
-# install.sh carries a jq preflight line.
-assert_eq "$([[ "$(grep -c 'jq' "$REPO/install.sh")" -ge 1 ]] && echo yes || echo no)" "yes" "install.sh references jq preflight"
+# inst_deputy.sh carries a jq preflight line.
+assert_eq "$([[ "$(grep -c 'jq' "$REPO/inst_deputy.sh")" -ge 1 ]] && echo yes || echo no)" "yes" "inst_deputy.sh references jq preflight"

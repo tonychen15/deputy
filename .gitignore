@@ -1,2 +1,5 @@
 # Deputy runtime state (per-repo). Keep BACKLOG.md and templates tracked.
 .deputy/
+
+# Local staging area for files pending deletion (never committed).
+to-be-deleted/
