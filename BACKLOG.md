@@ -10,12 +10,12 @@
 
 ## Items
 
-### Running (1)
-@[P1][#48] add one argument status for 'deputy list', e.g. 'deputy list --waiting', it means only list those items in waiting state. this argument could be all state types, such as running, surfaced, deferred
+### Running (0)
 
 ### Surfaced (0)
 
-### Waiting (6)
+### Waiting (7)
+[P1][#48] add one argument status for 'deputy list', e.g. 'deputy list --waiting', it means only list those items in waiting state. this argument could be all state types, such as running, surfaced, deferred
 [P3][#42] Add release-notes extraction: a command to print Done items above the most-recent release delimiter (done-since-last-release), ready to paste into CHANGELOG. Depends on the BACKLOG release-delimiter feature
 [P3][#43] Redesign 'deputy clean' for the sectioned/delimiter Done structure: decide and implement how 'clean --state done' (and clean <id> of a done item) handles release-delimiter lines — strip orphaned delimiters, or refuse, or collapse. Depends on #40 (sectioned BACKLOG) and #41 (release delimiter). Until then, avoid 'clean --state done'.
 [P3][#44] Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
