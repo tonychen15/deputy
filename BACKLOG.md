@@ -10,7 +10,7 @@
 
 ## Items
 
-@[P2][#39] Rework the post-completion queue display: trigger on every completion (in 'deputy set <line> done') so interactive and autonomous runs both show it, render as an aligned TABLE listing waiting+paused+deferred items (runnable first by priority+FIFO, deferred after) with per-state counts; remove the now-redundant cmd_run loop calls; update tests
+[P2][#39] Rework the post-completion queue display: trigger on every completion (in 'deputy set <line> done') so interactive and autonomous runs both show it, render as an aligned TABLE listing waiting+paused+deferred items (runnable first by priority+FIFO, deferred after) with per-state counts; remove the now-redundant cmd_run loop calls; update tests
 
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
