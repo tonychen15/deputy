@@ -10,17 +10,29 @@
 
 ## Items
 
+### Running (0)
+
+### Surfaced (0)
+
+### Waiting (4)
 [P2][#41] Add 'deputy release [version]' command: insert a parser-safe dated delimiter ('<!-- release vX — YYYY-MM-DD -->') at the top of the Done section; version defaults to the VERSION file; update help + README + tests
 [P3][#42] Add release-notes extraction: a command to print Done items above the most-recent release delimiter (done-since-last-release), ready to paste into CHANGELOG. Depends on the BACKLOG release-delimiter feature
 [P3][#43] Redesign 'deputy clean' for the sectioned/delimiter Done structure: decide and implement how 'clean --state done' (and clean <id> of a done item) handles release-delimiter lines — strip orphaned delimiters, or refuse, or collapse. Depends on #40 (sectioned BACKLOG) and #41 (release delimiter). Until then, avoid 'clean --state done'.
-[P2][#40] Reformat BACKLOG.md into headed sections (legend fixed on top; ## Items with ### sub-headers+counts in order: Running, Surfaced(+triaging), Waiting, Paused, Deferred, Failed/Cancelled, Done(+duplicate) at bottom). Newest-completed moves to top of Done. Rewrite _regroup_backlog for the sectioned layout + preserve release-delimiter lines within Done; make _each_item/_parse_item skip markdown headings and delimiter comments. Update template/README/SKILL backlog-format docs; add tests for layout, newest-on-top, delimiter preservation
 Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
 
+### Paused (0)
+
+### Deferred (4)
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 >[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 >[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
+### Failed / Cancelled / Duplicate (1)
+=[P1][#19] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
+
+### Done (35)
+#[P2][#40] Reformat BACKLOG.md into headed sections (legend fixed on top; ## Items with ### sub-headers+counts in order: Running, Surfaced(+triaging), Waiting, Paused, Deferred, Failed/Cancelled, Done(+duplicate) at bottom). Newest-completed moves to top of Done. Rewrite _regroup_backlog for the sectioned layout + preserve release-delimiter lines within Done; make _each_item/_parse_item skip markdown headings and delimiter comments. Update template/README/SKILL backlog-format docs; add tests for layout, newest-on-top, delimiter preservation
 #[P2][#39] Rework the post-completion queue display: trigger on every completion (in 'deputy set <line> done') so interactive and autonomous runs both show it, render as an aligned TABLE listing waiting+paused+deferred items (runnable first by priority+FIFO, deferred after) with per-state counts; remove the now-redundant cmd_run loop calls; update tests
 #[P2][#38] After each completed task in the run loop, display the remaining waiting task list (readable, priority-sorted; show 'queue empty' when none) before picking up the next waiting task to run
 #[P1][#37] Adopt xReview-style review audit trail in deputy: persist each review touchpoint (plan/design/each implementation commit) to a deputy-owned append-only log (.deputy/<slug>.review.md) mirroring xReview's .review/REVIEW.md structure — numbered Iterations with Reviewing line (reviewer+timestamp), Verdict (APPROVED/NEEDS_CHANGES), Findings, Action Items. Author != reviewer recorded. Part of v1.1.0 xReview migration with #36.
@@ -51,7 +63,6 @@ Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged
 #[P3][#16] Add external notifications (push/desktop/email) when an item is surfaced or finishes
 #[P0][#17] rename jobflow folder name to deputy and update its reference
 #[P0][#18] add a 'clean' option for deputy to clean those untouched items
-=[P1][#19] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
 #[P1][#20] install.sh should append project README/CLAUDE guidance instructing Claude to record any found unfinished or newly-planned tasks into BACKLOG.md, so deputy schedules them
 #[P0][#21] Make 'deputy add' trigger execution like research.sh, not just enqueue. On 'deputy add --pX <task>': if NO task is running, immediately run the new task (no separate 'deputy run' needed). If a task IS running and the new task is higher priority (P0>P1>P2>untagged), PREEMPT the running lower-priority task — checkpoint-pause it via the spine (paused/preempted status) and run the new one, then resume the paused one after. Builds on the checkpoint spine; overlaps the existing 'Priority preemption' item (consolidate).
 #[P2][#22] Group BACKLOG.md by state on write: waiting items first (right after the '## Items' title), done items at the bottom, each group separated by a blank line
