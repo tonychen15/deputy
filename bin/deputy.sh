@@ -362,40 +362,54 @@ _prio_rank() {
   case "$1" in P0) echo 0 ;; P1) echo 1 ;; P2) echo 2 ;; P3) echo 3 ;; P4) echo 4 ;; *) echo 5 ;; esac
 }
 
-# Print the remaining runnable queue — waiting + paused items, the exact set
-# cmd_pick draws from — highest-priority first with FIFO order preserved on ties
-# (rank ascending, original file order for equal priorities), so the displayed
-# order matches what runs next. Prints "Waiting tasks: queue empty." when nothing
-# is runnable. The run loop calls this after each item it finishes so the operator
-# sees what remains before the next pick.
+# Print the remaining queue as an aligned table: waiting + paused (the runnable
+# set cmd_pick draws from) grouped first, then deferred (inert — never auto-picked).
+# Within each group: priority rank ascending, original file order preserved on ties
+# (FIFO), matching cmd_pick. The header carries per-state counts. Prints a single
+# "queue empty" line when no waiting/paused/deferred items remain. Called from
+# cmd_set on the done-transition so every completion (interactive or autonomous)
+# shows what's left.
 _print_waiting_queue() {
-  local raw parsed state prio id desc rank idx=0 marker
+  _with_lock _allocate_ids   # ensure every item has a stable [#N] before rendering
+  local raw parsed state prio id desc rank grp idx=0
+  local nw=0 npa=0 nd=0
   local -a rows=()
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     state="${parsed%%|*}"
-    if [[ "$state" != "waiting" && "$state" != "paused" ]]; then idx=$((idx+1)); continue; fi
+    case "$state" in
+      waiting)  grp=0; nw=$((nw+1)) ;;
+      paused)   grp=0; npa=$((npa+1)) ;;
+      deferred) grp=1; nd=$((nd+1)) ;;
+      *)        idx=$((idx+1)); continue ;;
+    esac
     prio="${parsed#*|}"; prio="${prio%%|*}"
     id="${parsed#*|}"; id="${id#*|}"; id="${id%%|*}"
     desc="${parsed#*|}"; desc="${desc#*|}"; desc="${desc#*|}"
     rank="$(_prio_rank "$prio")"
     [[ -n "$prio" ]] || prio="P?"
     [[ -n "$id" ]] || id="?"
-    # truncate long descriptions so the queue view stays one tidy line per item
-    if [[ "${#desc}" -gt 100 ]]; then desc="${desc:0:99}…"; fi
-    marker=""; [[ "$state" == "paused" ]] && marker=" (paused)"
-    # rank \t zero-padded file index \t rendered line  → stable sort below
-    rows+=("$(printf '%s\t%06d\t  %s [#%s] %s%s' "$rank" "$idx" "$prio" "$id" "$desc" "$marker")")
+    # truncate long descriptions so each row stays a single tidy line
+    if [[ "${#desc}" -gt 80 ]]; then desc="${desc:0:79}…"; fi
+    # group \t rank \t zero-padded file index \t STATE \t PRI \t #ID \t TASK
+    rows+=("$(printf '%s\t%s\t%06d\t%s\t%s\t#%s\t%s' "$grp" "$rank" "$idx" "$state" "$prio" "$id" "$desc")")
     idx=$((idx+1))
   done < <(_each_item)
 
   if [[ "${#rows[@]}" -eq 0 ]]; then
-    printf 'Waiting tasks: queue empty.\n'
+    printf 'Queue: empty (no waiting, paused, or deferred items).\n'
     return 0
   fi
-  printf 'Waiting tasks (%d):\n' "${#rows[@]}"
-  # sort by rank (numeric), then file index (numeric) → priority order, FIFO ties
-  printf '%s\n' "${rows[@]}" | sort -t"$(printf '\t')" -k1,1n -k2,2n | cut -f3-
+  printf 'Queue — %d waiting, %d paused, %d deferred:\n' "$nw" "$npa" "$nd"
+  printf '%-9s %-4s %-6s %s\n' 'STATE' 'PRI' 'ID' 'TASK'
+  # sort by group (runnable<deferred), then rank, then file index (FIFO ties);
+  # drop the 3 sort-key columns and render the remaining 4 as aligned columns.
+  printf '%s\n' "${rows[@]}" \
+    | sort -t"$(printf '\t')" -k1,1n -k2,2n -k3,3n \
+    | cut -f4- \
+    | while IFS="$(printf '\t')" read -r st pr id_col task; do
+        printf '%-9s %-4s %-6s %s\n' "$st" "$pr" "$id_col" "$task"
+      done
 }
 
 cmd_pick() {
@@ -516,6 +530,14 @@ cmd_set() {
       _notify "$newstate" "$_desc" >/dev/null 2>&1 || true
     else
       _notify "$newstate" "$_desc" >/dev/null 2>&1 &
+    fi
+    # On a completion, show what's left. Done-only by design: a task is "completed"
+    # only when done — failures (which transition via internal _do_set_item_failed,
+    # not cmd_set) intentionally do not print the queue. In autonomous runs the
+    # orchestrator's `deputy set <line> done` stdout is captured + relayed by the
+    # run loop, so this single call covers both interactive and autonomous paths.
+    if [[ "$newstate" == "done" ]]; then
+      _print_waiting_queue
     fi
   fi
   return "$_set_rc"
@@ -1342,7 +1364,6 @@ cmd_run() {
       _with_lock _do_set_item_failed "$running_line" || true
       rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
       processed=$((processed + 1))
-      _print_waiting_queue   # show what remains before picking the next item
       [[ "$once" -eq 1 ]] && break
       [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
       continue
@@ -1402,7 +1423,6 @@ cmd_run() {
     fi
     rm -f "$log"
     processed=$((processed + 1))
-    _print_waiting_queue   # show what remains before picking the next item
     [[ "$once" -eq 1 ]] && break
     [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
   done
