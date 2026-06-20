@@ -362,6 +362,42 @@ _prio_rank() {
   case "$1" in P0) echo 0 ;; P1) echo 1 ;; P2) echo 2 ;; P3) echo 3 ;; P4) echo 4 ;; *) echo 5 ;; esac
 }
 
+# Print the remaining runnable queue — waiting + paused items, the exact set
+# cmd_pick draws from — highest-priority first with FIFO order preserved on ties
+# (rank ascending, original file order for equal priorities), so the displayed
+# order matches what runs next. Prints "Waiting tasks: queue empty." when nothing
+# is runnable. The run loop calls this after each item it finishes so the operator
+# sees what remains before the next pick.
+_print_waiting_queue() {
+  local raw parsed state prio id desc rank idx=0 marker
+  local -a rows=()
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    if [[ "$state" != "waiting" && "$state" != "paused" ]]; then idx=$((idx+1)); continue; fi
+    prio="${parsed#*|}"; prio="${prio%%|*}"
+    id="${parsed#*|}"; id="${id#*|}"; id="${id%%|*}"
+    desc="${parsed#*|}"; desc="${desc#*|}"; desc="${desc#*|}"
+    rank="$(_prio_rank "$prio")"
+    [[ -n "$prio" ]] || prio="P?"
+    [[ -n "$id" ]] || id="?"
+    # truncate long descriptions so the queue view stays one tidy line per item
+    if [[ "${#desc}" -gt 100 ]]; then desc="${desc:0:99}…"; fi
+    marker=""; [[ "$state" == "paused" ]] && marker=" (paused)"
+    # rank \t zero-padded file index \t rendered line  → stable sort below
+    rows+=("$(printf '%s\t%06d\t  %s [#%s] %s%s' "$rank" "$idx" "$prio" "$id" "$desc" "$marker")")
+    idx=$((idx+1))
+  done < <(_each_item)
+
+  if [[ "${#rows[@]}" -eq 0 ]]; then
+    printf 'Waiting tasks: queue empty.\n'
+    return 0
+  fi
+  printf 'Waiting tasks (%d):\n' "${#rows[@]}"
+  # sort by rank (numeric), then file index (numeric) → priority order, FIFO ties
+  printf '%s\n' "${rows[@]}" | sort -t"$(printf '\t')" -k1,1n -k2,2n | cut -f3-
+}
+
 cmd_pick() {
   _with_lock _allocate_ids
   local raw parsed state prio best_rank=99 best_line="" rank
@@ -1306,6 +1342,7 @@ cmd_run() {
       _with_lock _do_set_item_failed "$running_line" || true
       rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
       processed=$((processed + 1))
+      _print_waiting_queue   # show what remains before picking the next item
       [[ "$once" -eq 1 ]] && break
       [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
       continue
@@ -1365,6 +1402,7 @@ cmd_run() {
     fi
     rm -f "$log"
     processed=$((processed + 1))
+    _print_waiting_queue   # show what remains before picking the next item
     [[ "$once" -eq 1 ]] && break
     [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
   done
