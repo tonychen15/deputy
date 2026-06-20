@@ -72,7 +72,7 @@ assert_contains "$out" "another deferred"      "recover preserves deferred P1 de
 assert_contains "$out" "waiting|P2|"           "recover leaves waiting intact"
 
 # ── _regroup_backlog places deferred group in correct position ────────────────
-# Order: waiting → active (triaging/running/surfaced/paused) → deferred → terminal
+# New sectioned order: Running → ... → Waiting → ... → Deferred → ... → Done
 setup_repo
 printf '%s\n' \
   '[P2] waiting one' \
@@ -89,12 +89,12 @@ wait_n="$(echo "$body"    | grep -n 'waiting one'  | cut -d: -f1)"
 run_n="$(echo "$body"     | grep -n 'running one'  | cut -d: -f1)"
 deferred_n="$(echo "$body" | grep -n 'deferred one' | cut -d: -f1)"
 done_n="$(echo "$body"    | grep -n 'done one'     | cut -d: -f1)"
-if [[ "$wait_n" -lt "$run_n" && "$run_n" -lt "$deferred_n" && "$deferred_n" -lt "$done_n" ]]; then
+if [[ "$run_n" -lt "$wait_n" && "$wait_n" -lt "$deferred_n" && "$deferred_n" -lt "$done_n" ]]; then
   TESTS_RUN=$((TESTS_RUN + 1))
 else
   TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
-  printf 'FAIL: regroup order should be waiting < active < deferred < terminal\n  wait=%s run=%s deferred=%s done=%s\n' \
-    "$wait_n" "$run_n" "$deferred_n" "$done_n" >&2
+  printf 'FAIL: sectioned order should be running < waiting < deferred < done\n  run=%s wait=%s deferred=%s done=%s\n' \
+    "$run_n" "$wait_n" "$deferred_n" "$done_n" >&2
 fi
 
 # blank lines separate all groups

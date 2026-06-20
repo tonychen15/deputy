@@ -33,9 +33,27 @@ LOCK_FILE="$STATE_DIR/lock"
 mkdir -p "$STATE_DIR"
 [[ -f "$LOCK_FILE" ]] || : > "$LOCK_FILE"
 
+# True (0) only for real item lines. Excludes blank lines, markdown section
+# headings (TWO-or-more '#' followed by whitespace, e.g. '## Items',
+# '### Running (2)') and HTML comments / release delimiters
+# ('<!-- release vX — date -->'). A *done* item is a SINGLE '#' (optionally
+# followed by a space, e.g. '# three'), so it is NOT mistaken for a heading; the
+# H1 title '# Deputy Backlog' lives above '## Items' and never reaches here.
+# Single source of truth shared by _each_item and _allocate_ids so the two loops
+# can't drift.
+_is_item_line() {
+  local l="$1"
+  l="${l#"${l%%[![:space:]]*}"}"           # left-trim
+  [[ -z "$l" ]] && return 1                 # blank
+  [[ "$l" =~ ^##+[[:space:]] ]] && return 1 # markdown heading (## / ###), not '# done item'
+  case "$l" in '<!--'*) return 1 ;; esac    # HTML comment / release delimiter
+  return 0
+}
+
 # Yield raw item lines: everything after the "## Items" heading. Falls back to
-# after a legacy "<!-- ... -->" legend, else every non-blank line. Blank lines
-# are skipped for iteration (but left intact in the file).
+# after a legacy "<!-- ... -->" legend, else every non-blank line. Non-item lines
+# (blanks, '###' section headers, release delimiters) are skipped for iteration
+# (but left intact in the file).
 _each_item() {
   local line seen=0 mode=none
   [[ -f "$BACKLOG" ]] || return 0
@@ -48,7 +66,7 @@ _each_item() {
       [[ "$mode" == "comment" && "$line" == *'-->'* ]] && seen=1
       continue
     fi
-    [[ -z "${line//[[:space:]]/}" ]] && continue
+    _is_item_line "$line" || continue
     printf '%s\n' "$line"
   done < "$BACKLOG"
 }
@@ -164,33 +182,60 @@ _append_item() {
 # Caller holds the lock.
 _regroup_backlog() {
   grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null || return 0
-  local line tmp
-  local -a waiting_items=() active_items=() deferred_items=() terminal_items=()
+  local tmp phase=header raw trimmed parsed state
+  # Seven buckets in display order; done_stream interleaves done items AND
+  # release-delimiter lines (preserving their relative order). done_count tracks
+  # ITEMS only (delimiters excluded from the Done header count).
+  local -a running=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
+  local done_count=0
 
   tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
 
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    printf '%s\n' "$line" >> "$tmp"
-    if [[ "$line" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]]; then break; fi
+  # Single raw pass: copy the legend/header verbatim up to '## Items', then scan
+  # the items area RAW (NOT _each_item, which hides delimiters). Drop blanks and
+  # old '###' section headers (regenerated below); route release delimiters into
+  # the Done stream; bucket items by state. A freshly-completed item sits above
+  # the old Done block, so it is encountered first → lands at the TOP of Done.
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    if [[ "$phase" == header ]]; then
+      printf '%s\n' "$raw" >> "$tmp"
+      [[ "$raw" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]] && phase=items
+      continue
+    fi
+    [[ -z "${raw//[[:space:]]/}" ]] && continue                 # blank -> regenerated
+    [[ "$raw" =~ ^[[:space:]]*##+[[:space:]] ]] && continue     # old '###' header -> drop
+    trimmed="${raw#"${raw%%[![:space:]]*}"}"
+    case "$trimmed" in '<!--'*) done_stream+=("$raw"); continue ;; esac  # delimiter -> Done
+    _is_item_line "$raw" || continue                            # safety: skip non-items
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    case "$state" in
+      running)                    running+=("$raw") ;;
+      surfaced|triaging)          surfaced+=("$raw") ;;
+      waiting)                    waiting+=("$raw") ;;
+      paused)                     paused+=("$raw") ;;
+      deferred)                   deferred+=("$raw") ;;
+      failed|cancelled|duplicate) failcanc+=("$raw") ;;
+      done)                       done_stream+=("$raw"); done_count=$((done_count + 1)) ;;
+    esac
   done < "$BACKLOG"
 
-  local raw parsed state
-  while IFS= read -r raw; do
-    parsed="$(_parse_item "$raw")"
-    state="${parsed%%|*}"
-    case "$state" in
-      waiting)                              waiting_items+=("$raw") ;;
-      triaging|running|surfaced|paused)     active_items+=("$raw") ;;
-      deferred)                             deferred_items+=("$raw") ;;
-      done|failed|cancelled|duplicate)      terminal_items+=("$raw") ;;
-    esac
-  done < <(_each_item)
-
-  [[ ${#waiting_items[@]} -gt 0 ]]   && { printf '\n' >> "$tmp"; printf '%s\n' "${waiting_items[@]}"   >> "$tmp"; }
-  [[ ${#active_items[@]} -gt 0 ]]    && { printf '\n' >> "$tmp"; printf '%s\n' "${active_items[@]}"    >> "$tmp"; }
-  [[ ${#deferred_items[@]} -gt 0 ]]  && { printf '\n' >> "$tmp"; printf '%s\n' "${deferred_items[@]}"  >> "$tmp"; }
-  [[ ${#terminal_items[@]} -gt 0 ]]  && { printf '\n' >> "$tmp"; printf '%s\n' "${terminal_items[@]}"  >> "$tmp"; }
+  # Always emit all seven '### Section (N)' headers, in order, for a stable
+  # skeleton — even when a section is empty. Done is last (bottom of file).
+  printf '\n### Running (%d)\n' "${#running[@]}" >> "$tmp"
+  [[ ${#running[@]} -gt 0 ]] && printf '%s\n' "${running[@]}" >> "$tmp"
+  printf '\n### Surfaced (%d)\n' "${#surfaced[@]}" >> "$tmp"
+  [[ ${#surfaced[@]} -gt 0 ]] && printf '%s\n' "${surfaced[@]}" >> "$tmp"
+  printf '\n### Waiting (%d)\n' "${#waiting[@]}" >> "$tmp"
+  [[ ${#waiting[@]} -gt 0 ]] && printf '%s\n' "${waiting[@]}" >> "$tmp"
+  printf '\n### Paused (%d)\n' "${#paused[@]}" >> "$tmp"
+  [[ ${#paused[@]} -gt 0 ]] && printf '%s\n' "${paused[@]}" >> "$tmp"
+  printf '\n### Deferred (%d)\n' "${#deferred[@]}" >> "$tmp"
+  [[ ${#deferred[@]} -gt 0 ]] && printf '%s\n' "${deferred[@]}" >> "$tmp"
+  printf '\n### Failed / Cancelled / Duplicate (%d)\n' "${#failcanc[@]}" >> "$tmp"
+  [[ ${#failcanc[@]} -gt 0 ]] && printf '%s\n' "${failcanc[@]}" >> "$tmp"
+  printf '\n### Done (%d)\n' "$done_count" >> "$tmp"
+  [[ ${#done_stream[@]} -gt 0 ]] && printf '%s\n' "${done_stream[@]}" >> "$tmp"
 
   mv "$tmp" "$BACKLOG"
 }
@@ -228,8 +273,9 @@ _allocate_ids() {
       [[ "$_ai_mode" == "comment" && "$_ai_line" == *'-->'* ]] && _ai_seen=1
       continue
     fi
-    # Preserve blank lines
-    if [[ -z "${_ai_line//[[:space:]]/}" ]]; then
+    # Preserve non-item lines verbatim (blanks, '###' section headers, release
+    # delimiters) — they must never receive an ID or a priority tag.
+    if ! _is_item_line "$_ai_line"; then
       printf '%s\n' "$_ai_line" >> "$tmp"; continue
     fi
     # Check if this item line needs an ID or a default priority

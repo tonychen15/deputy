@@ -140,15 +140,40 @@ description that starts with `-`.
 
 ## The backlog file (`BACKLOG.md`)
 
-Human-editable. A markdown legend header, then a `## Items` section — one item per line:
+Human-editable. A fixed markdown legend at the top, then a `## Items` section that the
+tool keeps grouped into `### ` sub-sections (with live counts), in workflow order:
 
 ```markdown
 ## Items
 
-[P1][#7] Fix the login redirect loop
-#[P2][#8] Add caching
-Refactor the data layer            # waiting, no ID yet (assigned when first picked)
+### Running (1)
+@[P1][#3] Wire up the importer
+
+### Surfaced (0)
+
+### Waiting (2)
+[P0][#7] Fix the login redirect loop
+[P2][#9] Refactor the data layer
+
+### Paused (0)
+
+### Deferred (0)
+
+### Failed / Cancelled / Duplicate (0)
+
+### Done (2)
+#[P1][#8] Add caching
+<!-- release v1.1.1 — 2026-06-19 -->
+#[P0][#5] Initial setup
 ```
+
+All seven sections are **always present** (even when empty). The tool regroups on every
+write, so you can add a bare line anywhere under `## Items` and it lands in the right
+section. **Surfaced** also holds triaging items; **Failed / Cancelled / Duplicate** holds
+all three non-done terminals; **Done** is last, newest-completed first.
+
+`<!-- release vX — date -->` delimiters in **Done** mark release boundaries; completed
+tasks above the most-recent delimiter are the unreleased set for the next version.
 
 **Status prefix** (first char): *(none)* waiting · `~` triaging · `@` running · `?`
 surfaced · `#` done · `!` failed · `%` cancelled · `=` duplicate · `^` paused · `>` deferred.
@@ -160,7 +185,8 @@ at numbering time; FIFO within a lane. Use `--p0`/`--p1`/`--p2`/`--p3`/`--p4` fl
 with `deputy add` to assign a lane explicitly.
 **Item IDs** `[#N]` are assigned automatically on first reference (e.g., `list`, `run`, `reflect`); use
 `deputy run <id>` to target a specific item directly.
-Items are blank-line separated; the parser reads everything after `## Items`.
+The parser reads everything after `## Items`, skipping `###` section headers and release
+delimiter comments.
 
 ---
 
