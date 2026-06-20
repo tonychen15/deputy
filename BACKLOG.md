@@ -14,8 +14,7 @@
 
 ### Surfaced (0)
 
-### Waiting (7)
-[P2][#41] Add 'deputy release [version]' command: insert a parser-safe dated delimiter ('<!-- release vX — YYYY-MM-DD -->') at the top of the Done section; version defaults to the VERSION file; update help + README + tests
+### Waiting (6)
 [P3][#42] Add release-notes extraction: a command to print Done items above the most-recent release delimiter (done-since-last-release), ready to paste into CHANGELOG. Depends on the BACKLOG release-delimiter feature
 [P3][#43] Redesign 'deputy clean' for the sectioned/delimiter Done structure: decide and implement how 'clean --state done' (and clean <id> of a done item) handles release-delimiter lines — strip orphaned delimiters, or refuse, or collapse. Depends on #40 (sectioned BACKLOG) and #41 (release delimiter). Until then, avoid 'clean --state done'.
 [P3][#44] Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
@@ -34,7 +33,8 @@
 ### Failed / Cancelled / Duplicate (1)
 =[P1][#19] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
 
-### Done (35)
+### Done (36)
+#[P2][#41] Add 'deputy release [version]' command: insert a parser-safe dated delimiter ('<!-- release vX — YYYY-MM-DD -->') at the top of the Done section; version defaults to the VERSION file; update help + README + tests
 #[P2][#40] Reformat BACKLOG.md into headed sections (legend fixed on top; ## Items with ### sub-headers+counts in order: Running, Surfaced(+triaging), Waiting, Paused, Deferred, Failed/Cancelled, Done(+duplicate) at bottom). Newest-completed moves to top of Done. Rewrite _regroup_backlog for the sectioned layout + preserve release-delimiter lines within Done; make _each_item/_parse_item skip markdown headings and delimiter comments. Update template/README/SKILL backlog-format docs; add tests for layout, newest-on-top, delimiter preservation
 #[P2][#39] Rework the post-completion queue display: trigger on every completion (in 'deputy set <line> done') so interactive and autonomous runs both show it, render as an aligned TABLE listing waiting+paused+deferred items (runnable first by priority+FIFO, deferred after) with per-state counts; remove the now-redundant cmd_run loop calls; update tests
 #[P2][#38] After each completed task in the run loop, display the remaining waiting task list (readable, priority-sorted; show 'queue empty' when none) before picking up the next waiting task to run
