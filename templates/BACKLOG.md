@@ -1,7 +1,7 @@
 # Deputy Backlog
 
 ## LEGEND
-**Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `#` done | `!` failed | `%` cancelled | `=` duplicate | `^` paused | `>` deferred
+**Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `+` done | `!` failed | `%` cancelled | `=` duplicate | `^` paused | `;` deferred  (legacy `#`/`>` are still read and auto-migrated)
 **Priority (tag):** `[P0]` urgent+important | `[P1]` urgent | `[P2]` important | (none) lowest lane
 **Order:** P0 > P1 > P2 > untagged ; FIFO within a lane
 **Line format:** `<status?> <priority?> <description>`

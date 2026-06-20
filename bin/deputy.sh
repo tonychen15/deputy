@@ -941,7 +941,7 @@ config keys (.deputy/config):
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
 states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
-symbols: (none)=waiting ~=triaging @=running ?=surfaced #=done !=failed %=cancelled ==duplicate ^=paused >=deferred
+symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancelled ==duplicate ^=paused ;=deferred  (legacy #=done >=deferred still read and auto-migrated)
 EOF
 }
 
