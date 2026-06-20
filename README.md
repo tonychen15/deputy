@@ -126,6 +126,8 @@ deputy status          # counts by state
 deputy run [--once]    # work the backlog (triage → do / surface), until empty or session limit
 deputy run <id>        # targeted run: bypass priority order and run a specific item by id
 deputy reflect         # re-triage report: learnings, untagged items, reprioritization, duplicates
+deputy release [version] # mark a release boundary: insert a dated delimiter at the top of Done
+                       # (version defaults to ./VERSION); tasks above the last marker = next release
 deputy clean [<id>] [--dry-run] [--state <state>]
                        # <id>: remove one item by its numeric id (e.g. '7' or '#7')
                        # --state: remove all items of <state> (default: waiting = untouched)
