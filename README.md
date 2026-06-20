@@ -164,9 +164,9 @@ tool keeps grouped into `### ` sub-sections (with live counts), in workflow orde
 ### Failed / Cancelled / Duplicate (0)
 
 ### Done (2)
-#[P1][#8] Add caching
++[P1][#8] Add caching
 <!-- release v1.1.1 — 2026-06-19 -->
-#[P0][#5] Initial setup
++[P0][#5] Initial setup
 ```
 
 All seven sections are **always present** (even when empty). The tool regroups on every
@@ -178,9 +178,10 @@ all three non-done terminals; **Done** is last, newest-completed first.
 tasks above the most-recent delimiter are the unreleased set for the next version.
 
 **Status prefix** (first char): *(none)* waiting · `~` triaging · `@` running · `?`
-surfaced · `#` done · `!` failed · `%` cancelled · `=` duplicate · `^` paused · `>` deferred.
+surfaced · `+` done · `!` failed · `%` cancelled · `=` duplicate · `^` paused · `;` deferred.
+(Legacy `#` done / `>` deferred are still read and auto-migrated to `+`/`;` on the next write.)
 **`^` paused** — mid-execution checkpoint; auto-resumes on next heartbeat.
-**`>` deferred** — parked for future consideration; inert, never auto-scheduled; revive with
+**`;` deferred** — parked for future consideration; inert, never auto-scheduled; revive with
 `deputy set "<line>" waiting`.
 **Priority tag:** `[P0] > [P1] > [P2] > [P3] > [P4]`; untagged items default to `[P3]`
 at numbering time; FIFO within a lane. Use `--p0`/`--p1`/`--p2`/`--p3`/`--p4` flags

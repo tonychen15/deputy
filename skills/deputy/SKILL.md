@@ -275,12 +275,12 @@ mass/irreversible rewrites.
 | `~` | `triaging` | Being classified |
 | `@` | `running` | Actively executing |
 | `?` | `surfaced` | Awaiting human input |
-| `#` | `done` | Completed |
+| `+` | `done` | Completed (legacy `#` still read, auto-migrated) |
 | `!` | `failed` | Terminal failure |
 | `%` | `cancelled` | Won't-do, terminal |
 | `=` | `duplicate` | Redundant, terminal |
 | `^` | `paused` | Mid-execution checkpoint; auto-resumes |
-| `>` | `deferred` | Parked for future consideration; inert + intentional; never auto-scheduled; revive with `deputy set "<line>" waiting` |
+| `;` | `deferred` | Parked for future consideration; inert + intentional; never auto-scheduled; revive with `deputy set "<line>" waiting` (legacy `>` still read, auto-migrated) |
 
 states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
 

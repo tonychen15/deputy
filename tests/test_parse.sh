@@ -38,7 +38,7 @@ assert_eq "$(printf '%s\n' "$out" | grep -c 'LEGEND')" "0" "list: legend not par
 ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3" "$4"; }
 assert_eq "$(ser running P0 '' 'Fix it')"       "@[P0] Fix it"     "serialize running P0"
 assert_eq "$(ser waiting '' '' 'Plain')"         "Plain"             "serialize waiting untagged"
-assert_eq "$(ser done '' '' 'Thing')"            "#Thing"            "serialize done untagged"
+assert_eq "$(ser done '' '' 'Thing')"            "+Thing"            "serialize done untagged"
 assert_eq "$(ser surfaced P2 '' 'Ask')"          "?[P2] Ask"         "serialize surfaced P2"
 assert_eq "$(ser cancelled P1 '' 'Skip this')"   "%[P1] Skip this"  "serialize cancelled P1"
 assert_eq "$(ser cancelled '' '' 'Dropped')"     "%Dropped"          "serialize cancelled untagged"

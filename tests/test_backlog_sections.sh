@@ -91,3 +91,25 @@ dpos="$(printf '%s\n' "$dblk" | grep -n 'release v1.0' | cut -d: -f1)"
 rpos="$(printf '%s\n' "$dblk" | grep -n 'released item' | cut -d: -f1)"
 assert_eq "$([[ "$fpos" -lt "$dpos" && "$dpos" -lt "$rpos" ]] && echo ok)" "ok" "new completion above delimiter; older release below it"
 assert_contains "$(grep '^### Done' "$DEPUTY_ROOT/BACKLOG.md")" "(2)" "Done count = 2 items (delimiter excluded)"
+
+# --- symbol migration: old prefixes (# done, > deferred) rewritten to new (+, ;) on regroup ---
+# Dual-read parses the old symbols; _serialize_item (via regroup re-serialization)
+# writes the new ones, so an old-format file self-migrates on the next write.
+setup_repo
+{
+  printf '\n#[P0][#1] legacy done\n'
+  printf '>[P3][#2] legacy deferred\n'
+  printf '![P1][#3] legacy failed\n'
+  printf '[P2][#4] plain waiting\n'
+} >> "$DEPUTY_ROOT/BACKLOG.md"
+# read path: old symbols parse to the right states
+out="$(bash "$DEPUTY" list 2>&1)"
+assert_contains "$out" "done|P0|1|legacy done"         "dual-read: old '#' parses as done"
+assert_contains "$out" "deferred|P3|2|legacy deferred" "dual-read: old '>' parses as deferred"
+# trigger a regroup, then assert the file now uses the NEW symbols
+bash "$DEPUTY" set "$(grep -F 'plain waiting' "$DEPUTY_ROOT/BACKLOG.md" | head -1)" running >/dev/null
+assert_eq "$(grep -c '^+\[P0\]\[#1\] legacy done$' "$DEPUTY_ROOT/BACKLOG.md")"      "1" "migrated: done now '+'"
+assert_eq "$(grep -c '^;\[P3\]\[#2\] legacy deferred$' "$DEPUTY_ROOT/BACKLOG.md")"  "1" "migrated: deferred now ';'"
+assert_eq "$(grep -c '^!\[P1\]\[#3\] legacy failed$' "$DEPUTY_ROOT/BACKLOG.md")"     "1" "failed stays '!'"
+assert_eq "$(grep -c '^#\[' "$DEPUTY_ROOT/BACKLOG.md")" "0" "no old '#' item prefixes remain"
+assert_eq "$(grep -c '^>\[' "$DEPUTY_ROOT/BACKLOG.md")" "0" "no old '>' item prefixes remain"

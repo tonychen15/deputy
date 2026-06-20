@@ -36,11 +36,11 @@ mkdir -p "$STATE_DIR"
 # True (0) only for real item lines. Excludes blank lines, markdown section
 # headings (TWO-or-more '#' followed by whitespace, e.g. '## Items',
 # '### Running (2)') and HTML comments / release delimiters
-# ('<!-- release vX — date -->'). A *done* item is a SINGLE '#' (optionally
-# followed by a space, e.g. '# three'), so it is NOT mistaken for a heading; the
-# H1 title '# Deputy Backlog' lives above '## Items' and never reaches here.
-# Single source of truth shared by _each_item and _allocate_ids so the two loops
-# can't drift.
+# ('<!-- release vX — date -->'). Status prefixes are single non-'#' punctuation
+# (done '+', deferred ';', etc.; '#'/'>' are still read for back-compat), so item
+# lines never collide with the TWO-or-more-'#' heading rule; the H1 title
+# '# Deputy Backlog' lives above '## Items' and never reaches here. Single source
+# of truth shared by _each_item and _allocate_ids so the two loops can't drift.
 _is_item_line() {
   local l="$1"
   l="${l#"${l%%[![:space:]]*}"}"           # left-trim
@@ -78,12 +78,16 @@ _each_item() {
 _parse_item() {
   local line="$1" state="waiting" prio="" id="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
-  if [[ "$line" =~ ^([~@?#!%=^>])[[:space:]]*(.*)$ ]]; then
+  if [[ "$line" =~ ^([~@?+!%=^\;#>])[[:space:]]*(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
       '~') state=triaging ;;  '@') state=running ;;    '?') state=surfaced ;;
-      '#') state=done ;;      '!') state=failed ;;
+      '+') state=done ;;      '!') state=failed ;;
       '%') state=cancelled ;; '=') state=duplicate ;; '^') state=paused ;;
-      '>') state=deferred ;;
+      ';') state=deferred ;;
+      # Back-compat read of the pre-migration prefixes ('#' done, '>' deferred);
+      # _serialize_item always writes the new symbols, so any old line migrates to
+      # '+'/';' the next time it is re-serialized (e.g. on _regroup_backlog).
+      '#') state=done ;;      '>') state=deferred ;;
     esac
     line="${BASH_REMATCH[2]}"
   fi
@@ -109,9 +113,9 @@ _serialize_item() {
   local state="$1" prio="$2" id="$3" desc="$4" prefix="" body=""
   case "$state" in
     waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
-    surfaced)  prefix="?" ;; done)      prefix="#" ;; failed)    prefix="!" ;;
+    surfaced)  prefix="?" ;; done)      prefix="+" ;; failed)    prefix="!" ;;
     cancelled) prefix="%" ;; duplicate) prefix="=" ;; paused)    prefix="^" ;;
-    deferred)  prefix=">" ;;
+    deferred)  prefix=";" ;;
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
   body=""
@@ -182,7 +186,7 @@ _append_item() {
 # Caller holds the lock.
 _regroup_backlog() {
   grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null || return 0
-  local tmp phase=header raw trimmed parsed state
+  local tmp phase=header raw trimmed parsed state prio id desc rest norm
   # Seven buckets in display order; done_stream interleaves done items AND
   # release-delimiter lines (preserving their relative order). done_count tracks
   # ITEMS only (delimiters excluded from the Done header count).
@@ -208,15 +212,22 @@ _regroup_backlog() {
     trimmed="${raw#"${raw%%[![:space:]]*}"}"
     case "$trimmed" in '<!--'*) done_stream+=("$raw"); continue ;; esac  # delimiter -> Done
     _is_item_line "$raw" || continue                            # safety: skip non-items
-    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    rest="${parsed#*|}"; prio="${rest%%|*}"
+    rest="${rest#*|}";   id="${rest%%|*}"
+    desc="${rest#*|}"
+    # Re-serialize each item so the canonical (current) symbols are written back —
+    # this is what migrates pre-migration '#'/'>' lines to '+'/';' on regroup.
+    norm="$(_serialize_item "$state" "$prio" "$id" "$desc")"
     case "$state" in
-      running)                    running+=("$raw") ;;
-      surfaced|triaging)          surfaced+=("$raw") ;;
-      waiting)                    waiting+=("$raw") ;;
-      paused)                     paused+=("$raw") ;;
-      deferred)                   deferred+=("$raw") ;;
-      failed|cancelled|duplicate) failcanc+=("$raw") ;;
-      done)                       done_stream+=("$raw"); done_count=$((done_count + 1)) ;;
+      running)                    running+=("$norm") ;;
+      surfaced|triaging)          surfaced+=("$norm") ;;
+      waiting)                    waiting+=("$norm") ;;
+      paused)                     paused+=("$norm") ;;
+      deferred)                   deferred+=("$norm") ;;
+      failed|cancelled|duplicate) failcanc+=("$norm") ;;
+      done)                       done_stream+=("$norm"); done_count=$((done_count + 1)) ;;
     esac
   done < "$BACKLOG"
 
@@ -351,10 +362,13 @@ cmd_add() {
   [[ -n "$text" ]] || { printf 'deputy: add requires text\n' >&2; return 2; }
   text="${text#"${text%%[![:space:]]*}"}"   # left-trim (matches parser's own trim)
   local _pfx="${text:0:1}"
-  if [[ "$_pfx" == '~' || "$_pfx" == '@' || "$_pfx" == '?' || "$_pfx" == '#' || \
+  # Reject any leading status prefix — the new symbols (+ done, ; deferred) AND the
+  # back-compat-read legacy ones (# done, > deferred), so a description can never be
+  # silently re-bucketed/rewritten on regroup.
+  if [[ "$_pfx" == '~' || "$_pfx" == '@' || "$_pfx" == '?' || "$_pfx" == '+' || \
         "$_pfx" == '!' || "$_pfx" == '%' || "$_pfx" == '=' || "$_pfx" == '^' || \
-        "$_pfx" == '>' ]] || [[ "$text" =~ ^\[P[0-4]\] ]]; then
-    printf 'deputy: description may not begin with a status prefix (~@?#!%%=^>) or a [Px] tag: %s\n' "$text" >&2
+        "$_pfx" == ';' || "$_pfx" == '#' || "$_pfx" == '>' ]] || [[ "$text" =~ ^\[P[0-4]\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?+!%%=^; legacy #>) or a [Px] tag: %s\n' "$text" >&2
     return 2
   fi
   if [[ "$text" == *$'\n'* ]]; then
@@ -927,7 +941,7 @@ config keys (.deputy/config):
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
 states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
-symbols: (none)=waiting ~=triaging @=running ?=surfaced #=done !=failed %=cancelled ==duplicate ^=paused >=deferred
+symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancelled ==duplicate ^=paused ;=deferred  (legacy #=done >=deferred still read and auto-migrated)
 EOF
 }
 

@@ -40,6 +40,10 @@ assert_contains "$(bash "$DEPUTY" list)" "Buy the milk" "bare multi-word add joi
 # Descriptions that collide with the line grammar are rejected (would corrupt state).
 bash "$DEPUTY" add "@ ping the oncall" 2>/dev/null; rc=$?
 assert_eq "$rc" "2" "add rejects description starting with status prefix + space"
+bash "$DEPUTY" add "+ add logging" 2>/dev/null; rc=$?
+assert_eq "$rc" "2" "add rejects description starting with new done prefix '+'"
+bash "$DEPUTY" add "; parked thought" 2>/dev/null; rc=$?
+assert_eq "$rc" "2" "add rejects description starting with new deferred prefix ';'"
 bash "$DEPUTY" add "[P1] looks like a tag" 2>/dev/null; rc=$?
 assert_eq "$rc" "2" "add rejects description starting with priority tag"
 n="$(bash "$DEPUTY" list | grep -c 'oncall\|looks like a tag')"

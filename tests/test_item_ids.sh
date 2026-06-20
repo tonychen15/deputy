@@ -32,7 +32,7 @@ assert_eq "$(parse '[#0] zero id')"            "waiting||0|zero id"         "id=
 ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3" "$4"; }
 assert_eq "$(ser waiting P1 7 'fix the bug')"  "[P1][#7] fix the bug"    "serialize waiting P1+id"
 assert_eq "$(ser running P0 12 'run me')"      "@[P0][#12] run me"       "serialize running P0+id"
-assert_eq "$(ser done '' 9 'done one')"        "#[#9] done one"          "serialize done+id"
+assert_eq "$(ser done '' 9 'done one')"        "+[#9] done one"          "serialize done+id"
 assert_eq "$(ser waiting '' 3 'plain')"        "[#3] plain"              "serialize waiting no prio+id"
 assert_eq "$(ser waiting P2 '' 'no id')"       "[P2] no id"              "serialize waiting P2 no id"
 assert_eq "$(ser waiting '' '' 'bare')"        "bare"                    "serialize bare no prio no id"
