@@ -10,6 +10,8 @@
 
 ## Items
 
+[P2] Reformat BACKLOG.md into headed sections (legend fixed on top; ## Items with ### sub-headers+counts in order: Running, Surfaced(+triaging), Waiting, Paused, Deferred, Failed/Cancelled, Done(+duplicate) at bottom). Newest-completed moves to top of Done. Rewrite _regroup_backlog for the sectioned layout + preserve release-delimiter lines within Done; make _each_item/_parse_item skip markdown headings and delimiter comments. Update template/README/SKILL backlog-format docs; add tests for layout, newest-on-top, delimiter preservation
+
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 >[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
