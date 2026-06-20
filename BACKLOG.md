@@ -14,8 +14,7 @@
 
 ### Surfaced (0)
 
-### Waiting (7)
-[P1][#48] add one argument status for 'deputy list', e.g. 'deputy list --waiting', it means only list those items in waiting state. this argument could be all state types, such as running, surfaced, deferred
+### Waiting (6)
 [P3][#42] Add release-notes extraction: a command to print Done items above the most-recent release delimiter (done-since-last-release), ready to paste into CHANGELOG. Depends on the BACKLOG release-delimiter feature
 [P3][#43] Redesign 'deputy clean' for the sectioned/delimiter Done structure: decide and implement how 'clean --state done' (and clean <id> of a done item) handles release-delimiter lines — strip orphaned delimiters, or refuse, or collapse. Depends on #40 (sectioned BACKLOG) and #41 (release delimiter). Until then, avoid 'clean --state done'.
 [P3][#44] Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
@@ -34,7 +33,8 @@
 ### Failed / Cancelled / Duplicate (1)
 =[P1][#19] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
 
-### Done (37)
+### Done (38)
++[P1][#48] add one argument status for 'deputy list', e.g. 'deputy list --waiting', it means only list those items in waiting state. this argument could be all state types, such as running, surfaced, deferred
 +[P2][#46] Change BACKLOG state symbols to avoid Markdown conflicts (per research): deferred ">" -> ";", done "#" -> "+", failed "!" -> "X"; keep ~ @ ? % = ^ (low-risk). Update _parse_item (bin/deputy.sh ~L93) + _serialize_item, the LEGEND + templates/BACKLOG.md + README + SKILL symbol tables, and the _is_item_line markdown-heading guard (done is no longer "#"); MIGRATE the existing BACKLOG.md to the new prefixes in the same change; add tests. Note: swapping done off "#" also removes the heading-collision risk that _is_item_line currently guards. Optional follow-up: [Px]/[#N] tags are reference-link-shaped (low risk).
 +[P2][#41] Add 'deputy release [version]' command: insert a parser-safe dated delimiter ('<!-- release vX — YYYY-MM-DD -->') at the top of the Done section; version defaults to the VERSION file; update help + README + tests
 +[P2][#40] Reformat BACKLOG.md into headed sections (legend fixed on top; ## Items with ### sub-headers+counts in order: Running, Surfaced(+triaging), Waiting, Paused, Deferred, Failed/Cancelled, Done(+duplicate) at bottom). Newest-completed moves to top of Done. Rewrite _regroup_backlog for the sectioned layout + preserve release-delimiter lines within Done; make _each_item/_parse_item skip markdown headings and delimiter comments. Update template/README/SKILL backlog-format docs; add tests for layout, newest-on-top, delimiter preservation
