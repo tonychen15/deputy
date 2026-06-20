@@ -13,9 +13,9 @@ assert_contains "$out" "deferred|"          "parse: deferred untagged has deferr
 assert_contains "$out" "plain deferred"     "parse: deferred untagged description"
 
 ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3" "$4"; }
-assert_eq "$(ser deferred P2 3 'x')"             ">[P2][#3] x"           "serialize deferred P2 #3 x"
-assert_eq "$(ser deferred '' '' 'plain deferred')" ">plain deferred"      "serialize deferred untagged"
-assert_eq "$(ser deferred P1 '' 'Parked job')"    ">[P1] Parked job"      "serialize deferred P1 no-id"
+assert_eq "$(ser deferred P2 3 'x')"             ";[P2][#3] x"           "serialize deferred P2 #3 x"
+assert_eq "$(ser deferred '' '' 'plain deferred')" ";plain deferred"      "serialize deferred untagged"
+assert_eq "$(ser deferred P1 '' 'Parked job')"    ";[P1] Parked job"      "serialize deferred P1 no-id"
 
 # ── cmd_status counts deferred ───────────────────────────────────────────────
 setup_repo
