@@ -10,12 +10,12 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[P2][#41] Add 'deputy release [version]' command: insert a parser-safe dated delimiter ('<!-- release vX — YYYY-MM-DD -->') at the top of the Done section; version defaults to the VERSION file; update help + README + tests
 
 ### Surfaced (0)
 
-### Waiting (6)
-[P2][#41] Add 'deputy release [version]' command: insert a parser-safe dated delimiter ('<!-- release vX — YYYY-MM-DD -->') at the top of the Done section; version defaults to the VERSION file; update help + README + tests
+### Waiting (5)
 [P3][#42] Add release-notes extraction: a command to print Done items above the most-recent release delimiter (done-since-last-release), ready to paste into CHANGELOG. Depends on the BACKLOG release-delimiter feature
 [P3][#43] Redesign 'deputy clean' for the sectioned/delimiter Done structure: decide and implement how 'clean --state done' (and clean <id> of a done item) handles release-delimiter lines — strip orphaned delimiters, or refuse, or collapse. Depends on #40 (sectioned BACKLOG) and #41 (release delimiter). Until then, avoid 'clean --state done'.
 [P3][#44] Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
