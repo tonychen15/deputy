@@ -23,8 +23,16 @@ ONLY through the `deputy` CLI — never hand-edit `BACKLOG.md` or `.deputy/waypo
   current line as it appears in `BACKLOG.md` right now (running form, e.g.
   `@[P0] Fix the login bug`). You MUST pass this exact string back to
   `deputy set "<item-line>" <state>` — it is matched whole-line.
-- **Interactive:** the human typed `/deputy` or "work the backlog". Run `deputy status`
-  and `deputy reflect`, then drive the loop below, engaging the human at the gates.
+- **Interactive — work the backlog:** the human typed `/deputy` or "work the backlog".
+  Run `deputy status` and `deputy reflect`, then drive the loop below, engaging the human
+  at the gates.
+- **Interactive — read-only query:** the human asked only to *see* state (`/deputy status`,
+  `/deputy list`, "what's the status", "list the backlog"). This is **read-only**: run the
+  matching command, report the result, and **stop**. Do NOT run `deputy reflect`, do NOT
+  drive the loop, and do NOT append a "defer / leave waiting / start one now?" prompt or
+  otherwise solicit an action. The action gates (triage, grill, pick-and-run) fire only
+  when the human asks to *work / run / start* something — never inferred from a status or
+  list request. Suggest a next step only if the human explicitly asks what to do next.
 
 ## Per-item loop
 
