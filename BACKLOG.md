@@ -10,7 +10,7 @@
 
 ## Items
 
-@[P2][#38] After each completed task in the run loop, display the remaining waiting task list (readable, priority-sorted; show 'queue empty' when none) before picking up the next waiting task to run
+[P2][#38] After each completed task in the run loop, display the remaining waiting task list (readable, priority-sorted; show 'queue empty' when none) before picking up the next waiting task to run
 
 >[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 >[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
