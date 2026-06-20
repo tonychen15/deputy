@@ -33,9 +33,27 @@ LOCK_FILE="$STATE_DIR/lock"
 mkdir -p "$STATE_DIR"
 [[ -f "$LOCK_FILE" ]] || : > "$LOCK_FILE"
 
+# True (0) only for real item lines. Excludes blank lines, markdown section
+# headings (TWO-or-more '#' followed by whitespace, e.g. '## Items',
+# '### Running (2)') and HTML comments / release delimiters
+# ('<!-- release vX — date -->'). A *done* item is a SINGLE '#' (optionally
+# followed by a space, e.g. '# three'), so it is NOT mistaken for a heading; the
+# H1 title '# Deputy Backlog' lives above '## Items' and never reaches here.
+# Single source of truth shared by _each_item and _allocate_ids so the two loops
+# can't drift.
+_is_item_line() {
+  local l="$1"
+  l="${l#"${l%%[![:space:]]*}"}"           # left-trim
+  [[ -z "$l" ]] && return 1                 # blank
+  [[ "$l" =~ ^##+[[:space:]] ]] && return 1 # markdown heading (## / ###), not '# done item'
+  case "$l" in '<!--'*) return 1 ;; esac    # HTML comment / release delimiter
+  return 0
+}
+
 # Yield raw item lines: everything after the "## Items" heading. Falls back to
-# after a legacy "<!-- ... -->" legend, else every non-blank line. Blank lines
-# are skipped for iteration (but left intact in the file).
+# after a legacy "<!-- ... -->" legend, else every non-blank line. Non-item lines
+# (blanks, '###' section headers, release delimiters) are skipped for iteration
+# (but left intact in the file).
 _each_item() {
   local line seen=0 mode=none
   [[ -f "$BACKLOG" ]] || return 0
@@ -48,7 +66,7 @@ _each_item() {
       [[ "$mode" == "comment" && "$line" == *'-->'* ]] && seen=1
       continue
     fi
-    [[ -z "${line//[[:space:]]/}" ]] && continue
+    _is_item_line "$line" || continue
     printf '%s\n' "$line"
   done < "$BACKLOG"
 }
@@ -228,8 +246,9 @@ _allocate_ids() {
       [[ "$_ai_mode" == "comment" && "$_ai_line" == *'-->'* ]] && _ai_seen=1
       continue
     fi
-    # Preserve blank lines
-    if [[ -z "${_ai_line//[[:space:]]/}" ]]; then
+    # Preserve non-item lines verbatim (blanks, '###' section headers, release
+    # delimiters) — they must never receive an ID or a priority tag.
+    if ! _is_item_line "$_ai_line"; then
       printf '%s\n' "$_ai_line" >> "$tmp"; continue
     fi
     # Check if this item line needs an ID or a default priority
