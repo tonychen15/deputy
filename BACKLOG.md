@@ -22,7 +22,7 @@
 [P3][#45] Investigate why the /deputy orchestrator still asks "defer / leave waiting / start one now?" when the user only requested status (seen in stock_pick: it listed waiting #79/#80 + deferred #71, then prompted to defer-or-start). Decide intended behavior — a status/list request should be read-only and never solicit an action — and fix the SKILL status-flow guidance so it does not prompt defer-vs-start unprompted.
 [P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
 [P1][#48] add one argument status for 'deputy list', e.g. 'deputy list --waiting', it means only list those items in waiting state. this argument could be all state types, such as running, surfaced, deferred
-[P3] add one scenario for reviewer fallback case. If the coder is Codex, then the fallback order for reviewer should be Claude Code, Gemini
+[P3][#49] add one scenario for reviewer fallback case. If the coder is Codex, then the fallback order for reviewer should be Claude Code, Gemini
 
 ### Paused (0)
 
