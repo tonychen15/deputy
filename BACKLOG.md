@@ -14,13 +14,14 @@
 
 ### Surfaced (0)
 
-### Waiting (6)
+### Waiting (7)
 [P2][#41] Add 'deputy release [version]' command: insert a parser-safe dated delimiter ('<!-- release vX — YYYY-MM-DD -->') at the top of the Done section; version defaults to the VERSION file; update help + README + tests
 [P3][#42] Add release-notes extraction: a command to print Done items above the most-recent release delimiter (done-since-last-release), ready to paste into CHANGELOG. Depends on the BACKLOG release-delimiter feature
 [P3][#43] Redesign 'deputy clean' for the sectioned/delimiter Done structure: decide and implement how 'clean --state done' (and clean <id> of a done item) handles release-delimiter lines — strip orphaned delimiters, or refuse, or collapse. Depends on #40 (sectioned BACKLOG) and #41 (release delimiter). Until then, avoid 'clean --state done'.
 [P3][#44] Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
 [P3][#45] Investigate why the /deputy orchestrator still asks "defer / leave waiting / start one now?" when the user only requested status (seen in stock_pick: it listed waiting #79/#80 + deferred #71, then prompted to defer-or-start). Decide intended behavior — a status/list request should be read-only and never solicit an action — and fix the SKILL status-flow guidance so it does not prompt defer-vs-start unprompted.
 [P2][#46] Change BACKLOG state symbols to avoid Markdown conflicts (per research): deferred ">" -> ";", done "#" -> "+", failed "!" -> "X"; keep ~ @ ? % = ^ (low-risk). Update _parse_item (bin/deputy.sh ~L93) + _serialize_item, the LEGEND + templates/BACKLOG.md + README + SKILL symbol tables, and the _is_item_line markdown-heading guard (done is no longer "#"); MIGRATE the existing BACKLOG.md to the new prefixes in the same change; add tests. Note: swapping done off "#" also removes the heading-collision risk that _is_item_line currently guards. Optional follow-up: [Px]/[#N] tags are reference-link-shaped (low risk).
+[P3] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
 
 ### Paused (0)
 
