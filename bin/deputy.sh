@@ -810,6 +810,59 @@ cmd_version() {
   fi
 }
 
+# Mark a release boundary in the Done section. Inserts a parser-safe delimiter
+# (`<!-- release v<ver> — <date> -->`) at the TOP of Done. Completed tasks
+# accumulate above the most-recent delimiter (the unreleased set); running
+# `deputy release` draws the line under them. Version defaults to the PROJECT's
+# VERSION file ($ROOT/VERSION); pass an explicit version to override. Idempotent:
+# a no-op if that exact delimiter (version + today's date) already exists.
+cmd_release() {
+  local ver="${1:-}"
+  if [[ -z "$ver" && -r "$ROOT/VERSION" ]]; then
+    # read -r (default IFS) trims leading/trailing whitespace but preserves any
+    # INTERNAL whitespace, so a malformed 'VERSION' like '1.0 beta' is caught by
+    # the validation below instead of being silently squashed to '1.0beta'.
+    read -r ver < "$ROOT/VERSION" || ver=""
+  fi
+  ver="${ver#[vV]}"                 # normalize a single leading v/V
+  # Reject anything that would break the HTML comment or the one-line format
+  # ('--' terminates an HTML comment; '<'/'>' and whitespace are unsafe).
+  if [[ -z "$ver" || "$ver" == *[[:space:]]* || "$ver" == *"<"* || "$ver" == *">"* || "$ver" == *"--"* ]]; then
+    printf 'deputy: release requires a clean version; pass one explicitly or set %s/VERSION\n' "$ROOT" >&2
+    return 2
+  fi
+  grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null || {
+    printf 'deputy: release: no "## Items" section in %s\n' "$BACKLOG" >&2; return 1; }
+  local delim; delim="<!-- release v$ver — $(date +%Y-%m-%d) -->"
+  # The authoritative idempotency check + insert run TOGETHER under the lock so two
+  # concurrent releases can't both insert the same marker. _do_release returns 3
+  # (sentinel) when the marker already exists.
+  _do_release() {
+    _regroup_backlog                 # ensure the sectioned layout / '### Done' header exists
+    grep -qxF -- "$delim" "$BACKLOG" 2>/dev/null && return 3   # already present
+    local tmp; tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")" || return 1
+    chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+    # Insert the delimiter immediately after the '### Done (N)' header line.
+    # Explicitly check the write path: _with_lock invokes us under '|| rrc=$?',
+    # which suppresses set -e here, so an unchecked awk/mv failure could replace
+    # the backlog with partial/empty output and still report success.
+    awk -v d="$delim" '{ print } /^### Done / && !seen { print d; seen=1 }' "$BACKLOG" > "$tmp" \
+      || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$BACKLOG" || { rm -f "$tmp"; return 1; }
+    _regroup_backlog                 # normalize; regroup preserves the delimiter at top of Done
+  }
+  local rrc=0; _with_lock _do_release || rrc=$?
+  if [[ "$rrc" -eq 3 ]]; then
+    printf 'deputy: release marker already present: %s\n' "$delim"
+    return 0
+  elif [[ "$rrc" -ne 0 ]]; then
+    printf 'deputy: release failed (exit %s)\n' "$rrc" >&2
+    return 1
+  fi
+  _commit_queue "release v$ver"      # commit AFTER the lock is released
+  printf 'deputy: release marker added: %s\n' "$delim"
+}
+
 # Append-only xReview audit trail. Reads the review-iteration record from stdin and
 # appends it to .deputy/<slug>.review.md (deputy's equivalent of xReview's
 # .review/REVIEW.md). NEVER overwrites — always appends, with a blank-line separator.
@@ -859,6 +912,9 @@ commands:
                                   list, surfaced items + question files, duplicate candidates, status
                                   digest; --apply writes .deputy/learnings.md
                                   (alias: review)
+  release [version]               mark a release boundary in Done: insert a dated
+                                  `<!-- release vX — YYYY-MM-DD -->` delimiter at the top
+                                  of the Done section (version defaults to ./VERSION)
   version                         print the installed deputy version (also --version, -V)
   help                            show this message
 
@@ -2063,6 +2119,7 @@ main() {
     review) cmd_review; return 0 ;;
     clean) shift; cmd_clean "$@"; return $? ;;
     reflect) shift; cmd_reflect "$@"; return $? ;;
+    release) shift; cmd_release "$@"; return $? ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
     route) shift; _route "${1:-}" "${2:-}" "${3:-}"; return $? ;;
     avail) _availability; return 0 ;;
