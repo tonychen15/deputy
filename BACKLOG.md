@@ -10,8 +10,7 @@
 
 ## Items
 
-### Running (1)
-@[P3][#45] Investigate why the /deputy orchestrator still asks "defer / leave waiting / start one now?" when the user only requested status (seen in stock_pick: it listed waiting #79/#80 + deferred #71, then prompted to defer-or-start). Decide intended behavior — a status/list request should be read-only and never solicit an action — and fix the SKILL status-flow guidance so it does not prompt defer-vs-start unprompted.
+### Running (0)
 
 ### Surfaced (0)
 
@@ -33,7 +32,8 @@
 ### Failed / Cancelled / Duplicate (1)
 =[P1][#19] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
 
-### Done (38)
+### Done (39)
++[P3][#45] Investigate why the /deputy orchestrator still asks "defer / leave waiting / start one now?" when the user only requested status (seen in stock_pick: it listed waiting #79/#80 + deferred #71, then prompted to defer-or-start). Decide intended behavior — a status/list request should be read-only and never solicit an action — and fix the SKILL status-flow guidance so it does not prompt defer-vs-start unprompted.
 +[P1][#48] add one argument status for 'deputy list', e.g. 'deputy list --waiting', it means only list those items in waiting state. this argument could be all state types, such as running, surfaced, deferred
 +[P2][#46] Change BACKLOG state symbols to avoid Markdown conflicts (per research): deferred ">" -> ";", done "#" -> "+", failed "!" -> "X"; keep ~ @ ? % = ^ (low-risk). Update _parse_item (bin/deputy.sh ~L93) + _serialize_item, the LEGEND + templates/BACKLOG.md + README + SKILL symbol tables, and the _is_item_line markdown-heading guard (done is no longer "#"); MIGRATE the existing BACKLOG.md to the new prefixes in the same change; add tests. Note: swapping done off "#" also removes the heading-collision risk that _is_item_line currently guards. Optional follow-up: [Px]/[#N] tags are reference-link-shaped (low risk).
 +[P2][#41] Add 'deputy release [version]' command: insert a parser-safe dated delimiter ('<!-- release vX — YYYY-MM-DD -->') at the top of the Done section; version defaults to the VERSION file; update help + README + tests
