@@ -130,10 +130,25 @@ _serialize_item() {
 }
 
 cmd_list() {
+  # Optional state filter: 'deputy list --<state>' (e.g. --waiting, --running,
+  # --deferred) lists only items in that state. Bare 'deputy list' lists all.
+  local filter="" arg s
+  while [[ $# -gt 0 ]]; do
+    arg="$1"
+    case "$arg" in
+      --*)
+        s="${arg#--}"
+        if _valid_state "$s"; then filter="$s"; shift
+        else printf 'deputy: list: unknown state filter: %s\n' "$arg" >&2; return 2; fi ;;
+      *) printf 'deputy: list: unexpected argument: %s\n' "$arg" >&2; return 2 ;;
+    esac
+  done
   _with_lock _allocate_ids
-  local raw
+  local raw parsed
   while IFS= read -r raw; do
-    _parse_item "$raw"; printf '\n'
+    parsed="$(_parse_item "$raw")"
+    [[ -n "$filter" && "${parsed%%|*}" != "$filter" ]] && continue
+    printf '%s\n' "$parsed"
   done < <(_each_item)
 }
 
@@ -909,7 +924,9 @@ commands:
                                   no flag → default priority P3 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
-  list                            print parsed items (state|priority|id|description)
+  list [--<state>]                print parsed items (state|priority|id|description);
+                                  optional --<state> (e.g. --waiting, --running, --deferred)
+                                  lists only items in that state
   status                          counts by state
   run [<id>] [--once]             work the backlog: claim the top item, run the orchestrator
                                   if <id> given (integer; '#7' also accepted), run that
@@ -2122,7 +2139,7 @@ main() {
     help|-h|--help) usage; return 0 ;;
     version|--version|-V) cmd_version; return $? ;;
     _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
-    list) cmd_list; return 0 ;;
+    list) shift; cmd_list "$@"; return $? ;;
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
     status) cmd_status; return 0 ;;
