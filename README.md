@@ -121,7 +121,8 @@ your existing `BACKLOG.md` or config:
 ```bash
 deputy add "fix the login redirect loop" -ui   # add an urgent+important item (-ui=P0, -u=P1, -i=P2)
 deputy add "tidy the README"                    # untagged = lowest lane; --p0/--p1/--p2 also accepted
-deputy list            # parsed items: state|priority|id|description
+deputy list [--<state>] # parsed items: state|priority|id|description; optional
+                       # --<state> (e.g. --waiting, --running, --deferred) filters to that state
 deputy status          # counts by state
 deputy run [--once]    # work the backlog (triage → do / surface), until empty or session limit
 deputy run <id>        # targeted run: bypass priority order and run a specific item by id
