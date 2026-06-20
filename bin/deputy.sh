@@ -182,33 +182,60 @@ _append_item() {
 # Caller holds the lock.
 _regroup_backlog() {
   grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null || return 0
-  local line tmp
-  local -a waiting_items=() active_items=() deferred_items=() terminal_items=()
+  local tmp phase=header raw trimmed parsed state
+  # Seven buckets in display order; done_stream interleaves done items AND
+  # release-delimiter lines (preserving their relative order). done_count tracks
+  # ITEMS only (delimiters excluded from the Done header count).
+  local -a running=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
+  local done_count=0
 
   tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
 
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    printf '%s\n' "$line" >> "$tmp"
-    if [[ "$line" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]]; then break; fi
+  # Single raw pass: copy the legend/header verbatim up to '## Items', then scan
+  # the items area RAW (NOT _each_item, which hides delimiters). Drop blanks and
+  # old '###' section headers (regenerated below); route release delimiters into
+  # the Done stream; bucket items by state. A freshly-completed item sits above
+  # the old Done block, so it is encountered first → lands at the TOP of Done.
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    if [[ "$phase" == header ]]; then
+      printf '%s\n' "$raw" >> "$tmp"
+      [[ "$raw" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]] && phase=items
+      continue
+    fi
+    [[ -z "${raw//[[:space:]]/}" ]] && continue                 # blank -> regenerated
+    [[ "$raw" =~ ^[[:space:]]*##+[[:space:]] ]] && continue     # old '###' header -> drop
+    trimmed="${raw#"${raw%%[![:space:]]*}"}"
+    case "$trimmed" in '<!--'*) done_stream+=("$raw"); continue ;; esac  # delimiter -> Done
+    _is_item_line "$raw" || continue                            # safety: skip non-items
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    case "$state" in
+      running)                    running+=("$raw") ;;
+      surfaced|triaging)          surfaced+=("$raw") ;;
+      waiting)                    waiting+=("$raw") ;;
+      paused)                     paused+=("$raw") ;;
+      deferred)                   deferred+=("$raw") ;;
+      failed|cancelled|duplicate) failcanc+=("$raw") ;;
+      done)                       done_stream+=("$raw"); done_count=$((done_count + 1)) ;;
+    esac
   done < "$BACKLOG"
 
-  local raw parsed state
-  while IFS= read -r raw; do
-    parsed="$(_parse_item "$raw")"
-    state="${parsed%%|*}"
-    case "$state" in
-      waiting)                              waiting_items+=("$raw") ;;
-      triaging|running|surfaced|paused)     active_items+=("$raw") ;;
-      deferred)                             deferred_items+=("$raw") ;;
-      done|failed|cancelled|duplicate)      terminal_items+=("$raw") ;;
-    esac
-  done < <(_each_item)
-
-  [[ ${#waiting_items[@]} -gt 0 ]]   && { printf '\n' >> "$tmp"; printf '%s\n' "${waiting_items[@]}"   >> "$tmp"; }
-  [[ ${#active_items[@]} -gt 0 ]]    && { printf '\n' >> "$tmp"; printf '%s\n' "${active_items[@]}"    >> "$tmp"; }
-  [[ ${#deferred_items[@]} -gt 0 ]]  && { printf '\n' >> "$tmp"; printf '%s\n' "${deferred_items[@]}"  >> "$tmp"; }
-  [[ ${#terminal_items[@]} -gt 0 ]]  && { printf '\n' >> "$tmp"; printf '%s\n' "${terminal_items[@]}"  >> "$tmp"; }
+  # Always emit all seven '### Section (N)' headers, in order, for a stable
+  # skeleton — even when a section is empty. Done is last (bottom of file).
+  printf '\n### Running (%d)\n' "${#running[@]}" >> "$tmp"
+  [[ ${#running[@]} -gt 0 ]] && printf '%s\n' "${running[@]}" >> "$tmp"
+  printf '\n### Surfaced (%d)\n' "${#surfaced[@]}" >> "$tmp"
+  [[ ${#surfaced[@]} -gt 0 ]] && printf '%s\n' "${surfaced[@]}" >> "$tmp"
+  printf '\n### Waiting (%d)\n' "${#waiting[@]}" >> "$tmp"
+  [[ ${#waiting[@]} -gt 0 ]] && printf '%s\n' "${waiting[@]}" >> "$tmp"
+  printf '\n### Paused (%d)\n' "${#paused[@]}" >> "$tmp"
+  [[ ${#paused[@]} -gt 0 ]] && printf '%s\n' "${paused[@]}" >> "$tmp"
+  printf '\n### Deferred (%d)\n' "${#deferred[@]}" >> "$tmp"
+  [[ ${#deferred[@]} -gt 0 ]] && printf '%s\n' "${deferred[@]}" >> "$tmp"
+  printf '\n### Failed / Cancelled / Duplicate (%d)\n' "${#failcanc[@]}" >> "$tmp"
+  [[ ${#failcanc[@]} -gt 0 ]] && printf '%s\n' "${failcanc[@]}" >> "$tmp"
+  printf '\n### Done (%d)\n' "$done_count" >> "$tmp"
+  [[ ${#done_stream[@]} -gt 0 ]] && printf '%s\n' "${done_stream[@]}" >> "$tmp"
 
   mv "$tmp" "$BACKLOG"
 }

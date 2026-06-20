@@ -51,12 +51,13 @@ body="$(awk '/^## Items/{found=1; next} found{print}' "$DEPUTY_ROOT/BACKLOG.md")
 wait_line=$(echo "$body" | grep -n 'waiting one' | cut -d: -f1)
 run_line=$(echo  "$body" | grep -n 'running one' | cut -d: -f1)
 done_ln=$(echo   "$body" | grep -n 'done one'    | cut -d: -f1)
-if [[ "$wait_line" -lt "$run_line" && "$run_line" -lt "$done_ln" ]]; then
+# New sectioned layout: Running section is above Waiting, both above Done.
+if [[ "$run_line" -lt "$wait_line" && "$wait_line" -lt "$done_ln" ]]; then
   TESTS_RUN=$((TESTS_RUN + 1))
 else
   TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1))
-  printf 'FAIL: groups should be ordered waiting < active < terminal\n  wait=%s run=%s done=%s\n' \
-    "$wait_line" "$run_line" "$done_ln" >&2
+  printf 'FAIL: sectioned order should be running < waiting < done\n  run=%s wait=%s done=%s\n' \
+    "$run_line" "$wait_line" "$done_ln" >&2
 fi
 
 # ── file with no '## Items' heading is left unchanged ────────────────────────
