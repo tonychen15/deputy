@@ -10,14 +10,14 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[P3][#44] Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
 
 ### Surfaced (2)
 ?[P3][#43] Redesign 'deputy clean' for the sectioned/delimiter Done structure: decide and implement how 'clean --state done' (and clean <id> of a done item) handles release-delimiter lines — strip orphaned delimiters, or refuse, or collapse. Depends on #40 (sectioned BACKLOG) and #41 (release delimiter). Until then, avoid 'clean --state done'.
 ?[P3][#42] Add release-notes extraction: a command to print Done items above the most-recent release delimiter (done-since-last-release), ready to paste into CHANGELOG. Depends on the BACKLOG release-delimiter feature
 
-### Waiting (3)
-[P3][#44] Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
+### Waiting (2)
 [P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
 [P3][#49] add one scenario for reviewer fallback case. If the coder is Codex, then the fallback order for reviewer should be Claude Code, Gemini
 
