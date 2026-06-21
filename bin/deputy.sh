@@ -1929,8 +1929,19 @@ _run_orchestrator_logged() {
     _spawn_orchestrator "$item" "$provider" 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}
   else
-    _spawn_orchestrator "$item" "$provider" >"$log" 2>&1
-    rc=$?
+    # #58: run the headless worker in its OWN process group (set -m) and, when it returns,
+    # reap any children it leaked. Under monitor mode a backgrounded job's PGID == its pid
+    # ($!), so kill -- -$wpid targets the worker's group — guarded with wpid != deputy's own
+    # pgid so we never SIGTERM deputy's group. rc is the worker's real exit (via wait), which
+    # preserves #51 quota detection.
+    local _had_m=0; [[ $- == *m* ]] && _had_m=1
+    local _self_pgid; _self_pgid="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')"
+    set -m
+    _spawn_orchestrator "$item" "$provider" >"$log" 2>&1 &
+    local wpid=$!
+    wait "$wpid"; rc=$?
+    [[ "$wpid" =~ ^[0-9]+$ && "$wpid" != "$_self_pgid" ]] && kill -TERM -- "-$wpid" 2>/dev/null
+    [[ "$_had_m" -eq 1 ]] || set +m
     cat "$log"
   fi
   [[ "$_had_e" -eq 1 ]] && set -e
