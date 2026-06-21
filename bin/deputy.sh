@@ -892,6 +892,48 @@ cmd_release() {
   printf 'deputy: release marker added: %s\n' "$delim"
 }
 
+# Print done items above the most-recent release delimiter in BACKLOG.md, one bullet
+# per item, ready to paste into CHANGELOG. Read-only: no writes, no ID allocation.
+# If no release delimiter exists, all done items are printed.
+# Exits 0 (with bullet list or 'No unreleased items.'); exits 1 if BACKLOG.md missing.
+cmd_release_notes() {
+  [[ -f "$BACKLOG" ]] || { printf 'deputy: release-notes: %s not found\n' "$BACKLOG" >&2; return 1; }
+  local -a results=()
+  local line parsed state prio id desc rest
+  # Sectioned path: scan raw file after '### Done' header, stop at first delimiter.
+  # Legacy fallback: if no '### Done' header exists, iterate all done items via
+  # _each_item (no delimiter can exist without a header, so all done items qualify).
+  if grep -qE '^### Done' "$BACKLOG" 2>/dev/null; then
+    local in_done=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$in_done" -eq 0 ]]; then
+        [[ "$line" =~ ^###[[:space:]]+Done ]] && in_done=1
+        continue
+      fi
+      [[ "$line" == '<!-- release v'* ]] && break  # most-recent delimiter: stop here
+      [[ "$line" =~ ^###[[:space:]] ]] && break    # next section header: layout safety
+      _is_item_line "$line" || continue
+      parsed="$(_parse_item "$line")"
+      state="${parsed%%|*}"; [[ "$state" == done ]] || continue
+      rest="${parsed#*|}"; prio="${rest%%|*}"; rest="${rest#*|}"; id="${rest%%|*}"; desc="${rest#*|}"
+      if [[ -n "$id" ]]; then results+=("- [#${id}] ${desc}"); else results+=("- ${desc}"); fi
+    done < "$BACKLOG"
+  else
+    # Legacy backlog without section headers: all done items qualify (no delimiters exist).
+    while IFS= read -r line; do
+      parsed="$(_parse_item "$line")"
+      state="${parsed%%|*}"; [[ "$state" == done ]] || continue
+      rest="${parsed#*|}"; prio="${rest%%|*}"; rest="${rest#*|}"; id="${rest%%|*}"; desc="${rest#*|}"
+      if [[ -n "$id" ]]; then results+=("- [#${id}] ${desc}"); else results+=("- ${desc}"); fi
+    done < <(_each_item)
+  fi
+  if [[ ${#results[@]} -eq 0 ]]; then
+    printf 'No unreleased items.\n'
+  else
+    printf '%s\n' "${results[@]}"
+  fi
+}
+
 # Append-only xReview audit trail. Reads the review-iteration record from stdin and
 # appends it to .deputy/<slug>.review.md (deputy's equivalent of xReview's
 # .review/REVIEW.md). NEVER overwrites — always appends, with a blank-line separator.
@@ -946,6 +988,9 @@ commands:
   release [version]               mark a release boundary in Done: insert a dated
                                   `<!-- release vX — YYYY-MM-DD -->` delimiter at the top
                                   of the Done section (version defaults to ./VERSION)
+  release-notes                   print Done items above the most-recent release delimiter
+                                  as a CHANGELOG-ready bullet list (done-since-last-release);
+                                  if no delimiter exists, prints all Done items
   version                         print the installed deputy version (also --version, -V)
   help                            show this message
 
@@ -2151,6 +2196,7 @@ main() {
     clean) shift; cmd_clean "$@"; return $? ;;
     reflect) shift; cmd_reflect "$@"; return $? ;;
     release) shift; cmd_release "$@"; return $? ;;
+    release-notes) cmd_release_notes; return $? ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;
     route) shift; _route "${1:-}" "${2:-}" "${3:-}"; return $? ;;
     avail) _availability; return 0 ;;
