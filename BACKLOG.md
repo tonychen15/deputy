@@ -10,13 +10,13 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[P1][#59] Notify (and prominently log) when the heartbeat AUTO-SPAWNS a worker, so autonomous pickups are never silent. OBSERVED: the */3 cron heartbeat proceeded during an idle window, claimed the top item (#57, then P0) and spawned a HEADLESS worker (cron has no TTY, so #51 headed mode cannot apply); nothing surfaced it, so it ran ~24min invisibly and COLLIDED with concurrent interactive work on the same item (same slug/branch/worktree) while bin/deputy.sh was being merged underneath it (the #44/#50 truncation hazard). DESIGN: in cmd_run, right after a successful _active_run_acquire + cmd_claim on the autonomous path (about to spawn a worker), fire _notify (push/desktop) + a prominent cron.log line naming the item id + pid so the human is alerted an autonomous run started; consider also notifying on completion/failure. Gate behind config notify_on_spawn=1 (default on) reusing the existing notify channels; distinguish cron/heartbeat spawns from interactive deputy run. TESTS: heartbeat-proceed fires the notify; nothing claimed -> no notify; config toggle honored. Complements #50 (removes the merge hazard) and #58 (worker reaping). Surfaced after a 24min invisible runaway worker collided with interactive work on #57.
 
 ### Surfaced (0)
 
-### Waiting (2)
+### Waiting (1)
 [P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
-[P1][#59] Notify (and prominently log) when the heartbeat AUTO-SPAWNS a worker, so autonomous pickups are never silent. OBSERVED: the */3 cron heartbeat proceeded during an idle window, claimed the top item (#57, then P0) and spawned a HEADLESS worker (cron has no TTY, so #51 headed mode cannot apply); nothing surfaced it, so it ran ~24min invisibly and COLLIDED with concurrent interactive work on the same item (same slug/branch/worktree) while bin/deputy.sh was being merged underneath it (the #44/#50 truncation hazard). DESIGN: in cmd_run, right after a successful _active_run_acquire + cmd_claim on the autonomous path (about to spawn a worker), fire _notify (push/desktop) + a prominent cron.log line naming the item id + pid so the human is alerted an autonomous run started; consider also notifying on completion/failure. Gate behind config notify_on_spawn=1 (default on) reusing the existing notify channels; distinguish cron/heartbeat spawns from interactive deputy run. TESTS: heartbeat-proceed fires the notify; nothing claimed -> no notify; config toggle honored. Complements #50 (removes the merge hazard) and #58 (worker reaping). Surfaced after a 24min invisible runaway worker collided with interactive work on #57.
 
 ### Paused (0)
 
