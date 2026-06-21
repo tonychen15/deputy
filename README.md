@@ -89,6 +89,12 @@ cd <deputy-repo>
 git pull          # command + skill auto-update — symlinks resolve to the live files
 ```
 
+**`git pull` is safe even while a `deputy run` is executing.** On startup `deputy` re-execs
+from an immutable, content-addressed snapshot under `~/.cache/deputy/` (keyed by the source
+hash, rebuilt only when `bin/deputy.sh` changes), so editing or merging the working-tree
+file mid-run can't truncate a running invocation. The change simply takes effect on the
+next invocation. (Set `XDG_CACHE_HOME` to relocate the snapshot cache.)
+
 No per-repo skill re-install is needed in any project that uses Deputy.
 
 **Re-link only if** the symlinks are missing or broken, or if `inst_deputy.sh`'s link layout
