@@ -14,11 +14,10 @@
 
 ### Surfaced (0)
 
-### Waiting (4)
+### Waiting (3)
 [P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
 [P2][#51] Add a headed (visible) worker mode for interactive deputy run: when a TTY is present, run the worker in the FOREGROUND and stream its output live to the terminal (blocking until the item finishes) instead of spawning a detached headless claude -p, so the human can watch progress without inspecting waypoints. Applies to simple AND complex items. Headless stays the only mode for cron/heartbeat runs (no TTY). Additive: headed mode still writes the waypoint ledger, the .deputy/<slug>.review.md trail, and appends cron.log exactly as headless does, so runs stay inspectable after the fact. Decided: stream-in-current-terminal (NOT tmux pane or new window). Confirm at grill: flag/config name (e.g. --headed or headed=1) and whether headed auto-defaults when stdout is a TTY.
 [P2][#52] change human grace period from 5 min to 150 seconds
-[P1][#54] check the reviewer queue is codex and gemini when the author is Claude. When the author is Codex, then the reviewer queue should be claude and gemini
 
 ### Paused (0)
 
@@ -33,7 +32,8 @@
 =[P3][#49] add one scenario for reviewer fallback case. If the coder is Codex, then the fallback order for reviewer should be Claude Code, Gemini
 =[P1][#19] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
 
-### Done (43)
+### Done (44)
++[P1][#54] check the reviewer queue is codex and gemini when the author is Claude. When the author is Codex, then the reviewer queue should be claude and gemini
 +[P0][#53] when the worker is trying to add a new task, it should involve human to approve those new-added task first
 +[P3][#44] Doc sync: README usage + templates/BACKLOG.md legend still say P0-P2 + 'untagged lowest'; update to P0-P4 (bare items default to P3 at numbering, P4 is the lowest lane) and mention --p3/--p4 flags
 +[P3][#43] Redesign 'deputy clean' for the sectioned/delimiter Done structure: decide and implement how 'clean --state done' (and clean <id> of a done item) handles release-delimiter lines — strip orphaned delimiters, or refuse, or collapse. Depends on #40 (sectioned BACKLOG) and #41 (release delimiter). Until then, avoid 'clean --state done'.
