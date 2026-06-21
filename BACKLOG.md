@@ -14,13 +14,13 @@
 
 ### Surfaced (0)
 
-### Waiting (1)
+### Waiting (2)
 [P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
+[P1][#50] Decouple the executed deputy from the git working-tree bin/deputy.sh: run/install deputy from a stable copy OUTSIDE the repo (e.g. ~/.local/share/deputy/deputy.sh) updated via atomic temp+rename, so a git merge or edit of the repo bin/deputy.sh can never truncate a live deputy invocation. Root cause of the #44 worker crash: 'line 2282: unexpected EOF' from reading a half-written script while three commits/merges rewrote bin/deputy.sh within 13s (18:20:22 worker live; 18:20:24/31/37 rewrites). Trade-off to confirm at grill: source changes then need an explicit install/sync step instead of being live; install.sh must atomic-rename and resolve the canonical repo root (see #10). Also fix the runner to ALWAYS hold .deputy/active-run.lock for its full lifetime (the #44 gap where no lock existed). Optional defense-in-depth: install the guardrail + DEPUTY_ROOT in interactive sessions so the lock can block Claude-initiated merges during a live run.
 
 ### Paused (0)
 
-### Deferred (5)
-;[P1][#50] Decouple the executed deputy from the git working-tree bin/deputy.sh: run/install deputy from a stable copy OUTSIDE the repo (e.g. ~/.local/share/deputy/deputy.sh) updated via atomic temp+rename, so a git merge or edit of the repo bin/deputy.sh can never truncate a live deputy invocation. Root cause of the #44 worker crash: 'line 2282: unexpected EOF' from reading a half-written script while three commits/merges rewrote bin/deputy.sh within 13s (18:20:22 worker live; 18:20:24/31/37 rewrites). Trade-off to confirm at grill: source changes then need an explicit install/sync step instead of being live; install.sh must atomic-rename and resolve the canonical repo root (see #10). Also fix the runner to ALWAYS hold .deputy/active-run.lock for its full lifetime (the #44 gap where no lock existed). Optional defense-in-depth: install the guardrail + DEPUTY_ROOT in interactive sessions so the lock can block Claude-initiated merges during a live run.
+### Deferred (4)
 ;[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 ;[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 ;[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
