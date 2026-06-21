@@ -25,8 +25,7 @@
 ;[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 ;[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
-### Failed / Cancelled / Duplicate (1)
-%[P2][#52] change human grace period from 5 min to 150 seconds
+### Failed / Cancelled / Duplicate (0)
 
 ### Done (52)
 +[P2][#58] Worker subtree reaping (split from #57 Part A; deferred for careful supervised work — risky). Make a headless deputy worker run in its OWN process group so background children it leaks are reaped when it finishes (prevents a worker pinning things / accumulating orphans). DESIGN (codex-approved at #57 plan stage): in _run_orchestrator_logged, set -m; background the worker; capture wpid; capture pgid=ps -o pgid= -p wpid WHILE alive; preserve the orchestrator's REAL rc via wait wpid (not tee's — keeps #51 quota detection); headed streaming via a FIFO-fed background tee whose PID is captured and WAITED after the worker exits so the log is flushed before _detect_outcome. CRITICAL (codex): reap ONLY if pgid is numeric AND pgid==wpid, then kill -TERM -- -pgid; else SKIP (never risk killing deputy's own process group). Restore prior errexit + monitor-mode; keep the errexit-safe rc-capture call sites + cron/no-TTY behavior; watch set -m job-control noise leaking into output (test_run/test_heartbeat quota tests guard the rc path). TESTS: a worker (DEPUTY_ORCHESTRATOR_CMD) that backgrounds a child -> child reaped after completion; rc/quota path unchanged; headed log fully flushed + no double-print. Restructures the run-loop worker spawn (#51 code) — do supervised, no other deputy run active.
