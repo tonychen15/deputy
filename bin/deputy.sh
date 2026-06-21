@@ -1,6 +1,54 @@
 #!/usr/bin/env bash
 # deputy.sh — the Deputy runner (queue plumbing). Stateless tooling: it reads and
 # mutates BACKLOG.md + .deputy/ under a repo root. No LLM logic lives here.
+
+# #50: Decouple the EXECUTED deputy from its live working-tree source. At startup, re-exec
+# from an immutable, content-addressed snapshot under the user cache, so editing or merging
+# bin/deputy.sh mid-run can't truncate a running invocation (the #44/#50 crash). The dev
+# symlink (~/.local/bin/deputy -> repo/bin/deputy.sh) is preserved; the snapshot is reused
+# across runs by content hash and rebuilt only when the source changes. This runs BEFORE
+# 'set -euo pipefail' so the guard can't trip errexit, and falls back to running in place if
+# it can't snapshot. DEPUTY_REEXEC prevents an exec loop; SRC_DIR is preserved so the
+# re-exec'd copy still resolves the real install dir; exec preserves TTY (for #51 headed),
+# args, stdin and exit code. Only fires when deputy is EXECUTED as the main program
+# (BASH_SOURCE==$0) — never when a test sources this file to unit-test internal functions.
+if [[ -z "${DEPUTY_REEXEC:-}" && "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  _dep_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+  if [[ -r "$_dep_self" ]] && command -v sha256sum >/dev/null 2>&1; then
+    _dep_cache="${XDG_CACHE_HOME:-$HOME/.cache}/deputy"
+    _dep_sha="$(sha256sum "$_dep_self" 2>/dev/null | cut -c1-16)"
+    _dep_snap="$_dep_cache/deputy-${_dep_sha}.sh"
+    # Fast path: a snapshot whose CONTENT hashes to the current source already exists
+    # (self-verifying — the on-disk name must match the on-disk content).
+    if [[ -n "$_dep_sha" && -s "$_dep_snap" ]]; then
+      _dep_snap_sha="$(sha256sum "$_dep_snap" 2>/dev/null | cut -c1-16)"
+      if [[ "$_dep_snap_sha" == "$_dep_sha" ]]; then
+        export DEPUTY_REEXEC=1
+        export SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$_dep_self")/.." && pwd)}"
+        exec bash "$_dep_snap" "$@"
+      fi
+    fi
+    # Slow path: build it — copy, verify syntax (rejects a mid-write/truncated source),
+    # hash the COPY (no TOCTOU), publish under the copy's own hash via atomic rename.
+    if mkdir -p "$_dep_cache" 2>/dev/null; then
+      _dep_tmp="$_dep_cache/.build.$$.${RANDOM}"
+      if cp "$_dep_self" "$_dep_tmp" 2>/dev/null && bash -n "$_dep_tmp" 2>/dev/null; then
+        _dep_sha2="$(sha256sum "$_dep_tmp" 2>/dev/null | cut -c1-16)"
+        if [[ -n "$_dep_sha2" ]]; then
+          _dep_snap2="$_dep_cache/deputy-${_dep_sha2}.sh"
+          mv -f "$_dep_tmp" "$_dep_snap2" 2>/dev/null
+          if [[ -s "$_dep_snap2" ]]; then
+            export DEPUTY_REEXEC=1
+            export SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$_dep_self")/.." && pwd)}"
+            exec bash "$_dep_snap2" "$@"
+          fi
+        fi
+      fi
+      rm -f "$_dep_tmp" 2>/dev/null
+    fi
+  fi
+  export DEPUTY_REEXEC=1   # could not snapshot -> run in place (no re-exec loop)
+fi
 set -euo pipefail
 
 # Ensure agent CLIs are found under cron's minimal PATH (idempotent).
