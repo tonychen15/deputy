@@ -15,8 +15,8 @@ genuinely hard calls, and never blocks the queue while it waits on you.
 
 > **v1.1.1** — adds a `deputy version` subcommand (`--version`/`-V`). Builds on
 > **v1.1.0**, where the xReview gate became **Codex-default and author-aware**: the
-> reviewer is chosen by `deputy route review` (`codex → gemini → claude`, author
-> excluded), so a dead or rate-limited reviewer no longer deadlocks the spine, plus a
+> reviewer is chosen by `deputy route review` (author-aware: claude-first when codex/gemini
+> authored, codex-first when claude authored), so a dead or rate-limited reviewer no longer deadlocks the spine, plus a
 > per-project `auto_mode` no-peer degradation policy and an append-only
 > `.deputy/<slug>.review.md` audit trail (`deputy review-log`). The repo's own
 > `BACKLOG.md` is the project's task queue — Deputy dogfoods itself.
@@ -213,7 +213,8 @@ delimiter comments.
   Every iteration is logged to a deputy-owned `.deputy/<slug>.review.md` trail (deputy's
   equivalent of xReview's `.review/REVIEW.md`).
 - **Routing** — `claude` orchestrates and executes steps. The reviewer is chosen by
-  `deputy route review` (author-excluded): **Codex by default**, then Gemini, then Claude
+  `deputy route review` (author-aware, author-excluded): claude authored → **codex** then
+  gemini; codex authored → **claude** then gemini; gemini authored → **claude** then codex
   — so a dead or rate-limited reviewer no longer deadlocks the gate. If only the author is
   up, the gate degrades per the project's `auto_mode` config (`auto_mode=1` → self-review
   with a warning; default → surface the item). The routing infrastructure also supports a

@@ -164,9 +164,15 @@ avail="$(deputy avail)"                       # providers currently up (csv)
 #                    code-simple to codex on quota/rate-limit failover)
 reviewer="$(deputy route review "$avail" "<author>")"
 ```
-`deputy route review` returns the highest-preference **non-author** peer — **Codex by
-default**, then Gemini, then Claude — so the author never reviews its own work. This
-replaces the old Gemini-only gate that bare-`wait`ed (and deadlocked) when Gemini was
+`deputy route review` returns the highest-preference **non-author** peer, **author-aware**
+so the author never reviews its own work and a flaky peer isn't preferred for an external
+author. The order depends on who authored:
+- author = **claude** → `codex`, then `gemini`
+- author = **codex** → `claude`, then `gemini` (claude-first; gemini is unreliable)
+- author = **gemini** → `claude`, then `codex` (claude-first)
+- no author named → `codex`, then `gemini` (claude is the orchestrator, never self-reviews unnamed)
+
+This replaces the old Gemini-only gate that bare-`wait`ed (and deadlocked) when Gemini was
 down. Two special returns:
 - `self` — only the author is up (both peers down). Degrade per the project's
   `auto_mode` config (`deputy config auto_mode`):
@@ -236,9 +242,10 @@ counts against the retry budget in §4).
 - **`deputy commit` stages ALL changes** (`git add -A` internally). Do not rely on
   per-file declarations; undeclared edits would otherwise bleed into the next step or be
   lost on resume.
-- **Author ≠ reviewer.** The reviewer (Codex by default; Gemini/Claude fallback) never
-  wrote the artifact it reviews. `deputy route review` enforces this; the only exception
-  is a recorded degraded self-review (only the author up + `auto_mode=1`).
+- **Author ≠ reviewer.** The reviewer is an author-aware non-author peer (claude-first
+  when codex/gemini authored; codex-first when claude authored) and never wrote the
+  artifact it reviews. `deputy route review` enforces this; the only exception is a
+  recorded degraded self-review (only the author up + `auto_mode=1`).
 - **No plan/step/design advances without an APPROVED verdict**, logged to
   `.deputy/<slug>.review.md`.
 - **Worker-proposed tasks need human approval.** When *you* (a headless worker) run
