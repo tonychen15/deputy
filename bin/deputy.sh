@@ -789,8 +789,24 @@ _notify() {
 
 cmd_set() {
   local from="${1:-}" newstate="${2:-}"
-  [[ -n "$from" && -n "$newstate" ]] || { printf 'deputy: set requires "<line>" <state>\n' >&2; return 2; }
+  [[ -n "$from" && -n "$newstate" ]] || { printf 'deputy: set requires "<line>|<id>" <state>\n' >&2; return 2; }
   _valid_state "$newstate" || { printf 'deputy: invalid state: %s\n' "$newstate" >&2; return 2; }
+  # #56: accept an item id (N or #N) as the <line> arg, for parity with `run #N` /
+  # `clean N`. Only when 'from' is NOT already a literal backlog line (whole-line form
+  # always wins, so a legacy numeric raw line is unaffected) and looks like an id, resolve
+  # it to THE line by parsed id field (robust vs description text that contains "[#N]").
+  # Resolved here so the post-lock notify + marker-cleanup parse the real line; _do_set's
+  # under-lock grep -qxF re-validates, so a line that moved meanwhile errors cleanly.
+  if [[ "$from" =~ ^#?[0-9]+$ ]] && ! grep -qxF -- "$from" "$BACKLOG" 2>/dev/null; then
+    local _want="${from#'#'}" _raw _p _rid _n=0 _hit=""
+    while IFS= read -r _raw; do
+      _p="$(_parse_item "$_raw")"; _rid="${_p#*|}"; _rid="${_rid#*|}"; _rid="${_rid%%|*}"
+      [[ "$_rid" == "$_want" ]] && { _n=$((_n + 1)); _hit="$_raw"; }
+    done < <(_each_item)
+    [[ "$_n" -eq 0 ]] && { printf 'deputy: set: no item with id #%s\n' "$_want" >&2; return 2; }
+    [[ "$_n" -gt 1 ]] && { printf 'deputy: set: multiple items with id #%s — pass the exact line instead\n' "$_want" >&2; return 2; }
+    from="$_hit"
+  fi
   _do_set() {
     grep -qxF -- "$from" "$BACKLOG" || return 1     # exact-line existence
     local parsed prio desc to _id_rest _id
@@ -1193,7 +1209,8 @@ commands:
                                   headed=0 config forces the buffered/cron behavior)
                                   if <id> given (integer; '#7' also accepted), run that
                                   specific item bypassing priority order (targeted, one item only)
-  set "<exact line>" <state>      transition an item's state by exact-line match
+  set "<exact line>"|<id> <state> transition an item's state — by exact-line match, or by
+                                  item id (e.g. `deputy set 50 waiting` / `set #50 waiting`)
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
   clean [<id>] [--dry-run] [--state <state>]
                                   remove items matching the filter:
