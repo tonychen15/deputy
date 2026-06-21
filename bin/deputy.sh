@@ -560,8 +560,8 @@ _blocking_surfaced_count() {
     state="${parsed%%|*}"
     [[ "$state" == "surfaced" ]] || continue
     _bs_rest="${parsed#*|}"; _bs_rest="${_bs_rest#*|}"; _bs_id="${_bs_rest%%|*}"
-    if [[ "$_bs_id" =~ ^[0-9]+$ && -f "$STATE_DIR/proposed-$_bs_id" ]]; then
-      continue   # a worker proposal — not a blocking surface
+    if [[ "$_bs_id" =~ ^[0-9]+$ && ( -f "$STATE_DIR/proposed-$_bs_id" || -f "$STATE_DIR/ready-merge-$_bs_id" ) ]]; then
+      continue   # a worker proposal (#53) or a ready-to-merge surface (#60) — not a blocking surface
     fi
     n=$(( n + 1 ))
   done < <(_each_item)
@@ -839,6 +839,15 @@ _notify() {
 cmd_set() {
   local from="${1:-}" newstate="${2:-}"
   [[ -n "$from" && -n "$newstate" ]] || { printf 'deputy: set requires "<line>|<id>" <state>\n' >&2; return 2; }
+  # #60: --ready-merge marks a 'surfaced' item as "branch ready for human merge-review"
+  # (distinct from a blocked surface) so it's excluded from the blocking-surfaced count.
+  local _ready_merge=0 _a
+  for _a in "${@:3}"; do          # flags only AFTER <line> <state> — never the line/desc itself
+    case "$_a" in
+      --ready-merge) _ready_merge=1 ;;
+      *) printf 'deputy: set: unknown argument: %s\n' "$_a" >&2; return 2 ;;
+    esac
+  done
   _valid_state "$newstate" || { printf 'deputy: invalid state: %s\n' "$newstate" >&2; return 2; }
   # #56: accept an item id (N or #N) as the <line> arg, for parity with `run #N` /
   # `clean N`. Only when 'from' is NOT already a literal backlog line (whole-line form
@@ -865,6 +874,15 @@ cmd_set() {
     desc="${_id_rest#*|}"
     to="$(_serialize_item "$newstate" "$prio" "$_id" "$desc")"
     _flip_line "$from" "$to"
+    # #60: maintain the ready-merge marker under the SAME lock as the line flip, so scheduling
+    # never sees a 'surfaced' item without its marker (no blocking-count race window).
+    if [[ "$_id" =~ ^[0-9]+$ ]]; then
+      if [[ "$newstate" == "surfaced" && "$_ready_merge" == "1" ]]; then
+        printf 'ready-merge-at: %s\nbranch ready for human merge-review\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
+      elif [[ "$newstate" != "surfaced" ]]; then
+        rm -f "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
+      fi
+    fi
   }
   local _set_rc=0
   _with_lock _do_set || _set_rc=$?
@@ -1281,12 +1299,13 @@ commands:
   help                            show this message
 
 config keys (.deputy/config):
-  max_items=N                     items started per run cycle (default 0 = unlimited)
+  max_items=N                     items started per run cycle (default 1; min 1). MIGRATION: 0 no longer means unlimited — it clamps to 1; set an explicit N for a multi-item drain
   heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59)
   human_backoff=1                 back off when an interactive Claude session is busy/recent in this repo (default 1; set 0 to disable)
   human_idle_grace_mins=N         allow cron to run when Claude has been idle this many minutes (default 5)
   waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
+  auto_merge=1                    allow a spawned (headless) worker to git-merge its branch to the default branch; default 0 = the guardrail blocks the merge and the worker must surface the branch for human review
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
@@ -1817,8 +1836,11 @@ _human_backoff_gate() {
 # build a headless prompt that runs the deputy orchestrator skill on this one item.
 _spawn_orchestrator() {
   local item="$1" provider="$2"
+  # #60: signal autonomous/headless to the worker (SKILL keys off it; the guardrail enforces
+  # surface-not-merge independently). 1 = headless/cron, 0 = headed/interactive.
+  local _headless; _run_is_headed && _headless=0 || _headless=1
   if [[ -n "${DEPUTY_ORCHESTRATOR_CMD:-}" ]]; then
-    "$DEPUTY_ORCHESTRATOR_CMD" "$item" "$provider"
+    DEPUTY_HEADLESS="$_headless" "$DEPUTY_ORCHESTRATOR_CMD" "$item" "$provider"
     return $?
   fi
   local prompt
@@ -1828,7 +1850,7 @@ Item (the exact current BACKLOG.md line — pass it verbatim to 'deputy set'): $
 Provider for coding: $provider
 Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
   local gset; gset="$(_guardrail_settings_path)"
-  DEPUTY_GUARDED=1 DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
+  DEPUTY_GUARDED=1 DEPUTY_HEADLESS="$_headless" DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
     claude -p "$prompt" --model claude-sonnet-4-6 \
       --allowedTools "Bash,Edit,Write,Read,Glob,Grep" \
       --settings "$gset"
@@ -1958,7 +1980,9 @@ cmd_run() {
 
   # Always-on model: do NOT remove the cron line while running. The line persists;
   # each tick is state-aware (skip when live, recover orphans, etc.).
-  local cap; cap="$(_config_get max_items)"; cap="${cap:-0}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+  # #60: cap items per run. Default/clamp to >=1 — there is NO unbounded mode (a 0/unset/
+  # invalid value clamps to 1) so one cron tick can't drain+merge the whole queue unsupervised.
+  local cap; cap="$(_config_get max_items)"; cap="${cap:-1}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=1; [[ "$cap" -lt 1 ]] && cap=1
   local processed=0 item avail decision running_line log rc outcome reset
 
   # ── Targeted run: find item by id and run it (bypasses priority) ─────────────
@@ -2185,7 +2209,7 @@ cmd_clean() {
       mv "$tmp" "$BACKLOG"
       # #53: drop the proposal marker for the removed id (filter_id is validated
       # numeric) so a freed/reusable id can't inherit a stale proposed-<id> marker.
-      rm -f "$STATE_DIR/proposed-$filter_id" 2>/dev/null || true
+      rm -f "$STATE_DIR/proposed-$filter_id" "$STATE_DIR/ready-merge-$filter_id" 2>/dev/null || true
       if [[ "$state" == "done" ]]; then
         _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
       else
@@ -2249,7 +2273,7 @@ cmd_clean() {
     for r in "${doomed[@]}"; do
       _dc_parsed="$(_parse_item "$r")"
       _dc_rest="${_dc_parsed#*|}"; _dc_rest="${_dc_rest#*|}"; _dc_id="${_dc_rest%%|*}"
-      [[ "$_dc_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_dc_id" 2>/dev/null || true
+      [[ "$_dc_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_dc_id" "$STATE_DIR/ready-merge-$_dc_id" 2>/dev/null || true
     done
     if [[ "$filter_state" == "done" ]]; then
       _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
