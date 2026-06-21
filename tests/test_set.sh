@@ -46,3 +46,26 @@ pipe_line="$(grep 'a|b' "$DEPUTY_ROOT/BACKLOG.md")"
 bash "$DEPUTY" set "$pipe_line" running
 assert_contains "$(bash "$DEPUTY" list)" "running|P1|" "set preserves pipe in description (state)"
 assert_contains "$(bash "$DEPUTY" list)" "a|b"          "set preserves pipe in description"
+
+# ── #56: set by item id (N or #N) resolves to the unique line ────────────────────
+printf '%s\n' '[P2] set-by-id target' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+sid="$(bash "$DEPUTY" list | grep 'set-by-id target' | cut -d'|' -f3)"
+bash "$DEPUTY" set "$sid" deferred
+assert_contains "$(bash "$DEPUTY" list)" "deferred|P2|"    "set <id> resolves and transitions"
+assert_contains "$(bash "$DEPUTY" list)" "set-by-id target" "set <id>: description preserved"
+bash "$DEPUTY" set "#$sid" waiting
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P2|"     "set #<id> resolves and transitions"
+
+# absent id -> exit 2 + message, file unchanged.
+b2="$(cat "$DEPUTY_ROOT/BACKLOG.md")"
+out="$(bash "$DEPUTY" set 99999 waiting 2>&1)"; rc=$?
+assert_eq "$rc" "2" "set <absent id> exits 2"
+assert_contains "$out" "no item with id #99999" "set <absent id>: clear error"
+assert_eq "$(cat "$DEPUTY_ROOT/BACKLOG.md")" "$b2" "set <absent id> leaves file unchanged"
+
+# duplicated [#N] -> 'multiple items' error (defensive; ids are normally unique).
+printf '%s\n' "[P2][#$sid] duplicate id line" >> "$DEPUTY_ROOT/BACKLOG.md"
+out="$(bash "$DEPUTY" set "$sid" running 2>&1)"; rc=$?
+assert_eq "$rc" "2" "set <duplicated id> exits 2"
+assert_contains "$out" "multiple items with id #$sid" "set <duplicated id>: clear error"
