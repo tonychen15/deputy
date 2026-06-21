@@ -6,3 +6,6 @@ build_cmd=
 # is empty or Claude's session limit is hit (then deputy reschedules cron for reset).
 max_items=0
 time_cap_mins=30
+heartbeat_mins=10
+human_backoff=1
+human_idle_grace_mins=5

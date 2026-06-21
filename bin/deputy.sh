@@ -30,6 +30,7 @@ ROOT="$(resolve_root)"
 BACKLOG="$ROOT/BACKLOG.md"
 STATE_DIR="$ROOT/.deputy"
 LOCK_FILE="$STATE_DIR/lock"
+ACTIVE_RUN_DIR="$STATE_DIR/active-run.lock"
 mkdir -p "$STATE_DIR"
 [[ -f "$LOCK_FILE" ]] || : > "$LOCK_FILE"
 
@@ -154,6 +155,89 @@ cmd_list() {
 
 # Run a function while holding an exclusive lock on LOCK_FILE (short-held).
 _with_lock() { ( flock -x 200; "$@" ) 200>"$LOCK_FILE"; }
+
+_now_ms() {
+  local n s
+  n="$(date +%s%3N 2>/dev/null || true)"
+  if [[ "$n" =~ ^[0-9]{13,}$ ]]; then
+    printf '%s' "$n"
+    return 0
+  fi
+  s="$(date +%s)"
+  printf '%s000' "$s"
+}
+
+_valid_positive_int() { [[ "${1:-}" =~ ^[0-9]+$ && "${1:-}" -gt 0 ]]; }
+
+_epoch_ms() {
+  local ts="${1:-}"
+  if [[ "$ts" =~ ^[0-9]{13,}$ ]]; then
+    printf '%s' "$ts"
+  elif [[ "$ts" =~ ^[0-9]{10}$ ]]; then
+    printf '%s000' "$ts"
+  else
+    return 1
+  fi
+}
+
+_active_run_live() {
+  local d="${1:-$ACTIVE_RUN_DIR}" pid recorded_start actual_start
+  [[ -d "$d" ]] || return 1
+  pid="$(sed -n '1p' "$d/pid" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  recorded_start="$(sed -n '1p' "$d/start_time" 2>/dev/null || true)"
+  if [[ -n "$recorded_start" ]]; then
+    actual_start="$(_pid_start_time "$pid")"
+    [[ "$actual_start" == "$recorded_start" ]] || return 1
+  fi
+  return 0
+}
+
+_active_run_summary() {
+  local d="${1:-$ACTIVE_RUN_DIR}" pid owner item started
+  pid="$(sed -n '1p' "$d/pid" 2>/dev/null || printf '?')"
+  owner="$(sed -n '1p' "$d/owner" 2>/dev/null || printf '?')"
+  item="$(sed -n '1p' "$d/item" 2>/dev/null || printf '?')"
+  started="$(sed -n '1p' "$d/started_at" 2>/dev/null || printf '?')"
+  printf 'owner=%s pid=%s started=%s item=%s' "$owner" "$pid" "$started" "$item"
+}
+
+_active_run_acquire() {
+  local item="${1:-}" owner="${2:-run}"
+  _do_active_run_acquire() {
+    if [[ -e "$ACTIVE_RUN_DIR" ]]; then
+      if _active_run_live "$ACTIVE_RUN_DIR"; then
+        printf 'deputy: active run exists (%s) — skipping this tick.\n' "$(_active_run_summary "$ACTIVE_RUN_DIR")" >&2
+        return 3
+      fi
+      rm -rf "$ACTIVE_RUN_DIR"
+    fi
+    mkdir "$ACTIVE_RUN_DIR" || return 1
+    printf '%s\n' "$$" > "$ACTIVE_RUN_DIR/pid"
+    printf '%s\n' "$(_pid_start_time "$$")" > "$ACTIVE_RUN_DIR/start_time"
+    printf '%s\n' "$owner" > "$ACTIVE_RUN_DIR/owner"
+    printf '%s\n' "$item" > "$ACTIVE_RUN_DIR/item"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$ACTIVE_RUN_DIR/started_at"
+  }
+  _with_lock _do_active_run_acquire
+}
+
+_active_run_release() {
+  _do_active_run_release() {
+    [[ -d "$ACTIVE_RUN_DIR" ]] || return 0
+    local pid recorded_start actual_start
+    pid="$(sed -n '1p' "$ACTIVE_RUN_DIR/pid" 2>/dev/null || true)"
+    [[ "$pid" == "$$" ]] || return 0
+    recorded_start="$(sed -n '1p' "$ACTIVE_RUN_DIR/start_time" 2>/dev/null || true)"
+    if [[ -n "$recorded_start" ]]; then
+      actual_start="$(_pid_start_time "$$")"
+      [[ "$actual_start" == "$recorded_start" ]] || return 0
+    fi
+    rm -rf "$ACTIVE_RUN_DIR"
+  }
+  _with_lock _do_active_run_release
+}
 
 # Commit BACKLOG.md to git with a short reason message.
 # Fails soft: a non-zero git exit never aborts the caller (deputy mutations must
@@ -683,12 +767,12 @@ _interactive_session_active() {
     return 1
   fi
 
-  local f fields pid cwd entrypoint procstart norm_cwd stat_start
+  local f fields pid cwd entrypoint procstart status status_updated_at norm_cwd stat_start
   for f in "$sessions_dir"/*.json; do
     [[ -f "$f" ]] || continue
     # Extract all needed fields in one jq call (avoids per-field subshell cost).
-    fields="$(jq -r '[.pid // "", .cwd // "", .entrypoint // "", .procStart // ""] | @tsv' "$f" 2>/dev/null)" || continue
-    IFS=$'\t' read -r pid cwd entrypoint procstart <<< "$fields"
+    fields="$(jq -r '[.pid // "", .cwd // "", .entrypoint // "", .procStart // "", .status // "", (.statusUpdatedAt // .updatedAt // "")] | @tsv' "$f" 2>/dev/null)" || continue
+    IFS=$'\t' read -r pid cwd entrypoint procstart status status_updated_at <<< "$fields"
 
     # Only interactive CLI sessions — not sdk-cli (deputy/headless invocations).
     [[ "$entrypoint" == "cli" ]] || continue
@@ -723,6 +807,8 @@ _interactive_session_active() {
     fi
 
     _isa_pid="$pid"
+    _isa_status="$status"
+    _isa_status_updated_at="$status_updated_at"
     return 0
   done
   return 1
@@ -952,7 +1038,8 @@ commands:
 config keys (.deputy/config):
   max_items=N                     items started per run cycle (default 0 = unlimited)
   heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59)
-  human_backoff=1                 back off when an interactive Claude session is active in this repo (default 1; set 0 to disable)
+  human_backoff=1                 back off when an interactive Claude session is busy/recent in this repo (default 1; set 0 to disable)
+  human_idle_grace_mins=N         allow cron to run when Claude has been idle this many minutes (default 5)
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
@@ -1249,21 +1336,38 @@ _guardrail_settings_path() {
 # _interactive_session_active, performs the side-effect (stderr message or stale
 # surface), and returns:
 #   0 → deputy should STOP this tick (live session detected, or stale handled)
-#   1 → deputy should PROCEED (no session, or human_backoff=0)
+#   1 → deputy should PROCEED (no session, old idle session, or human_backoff=0)
 #
-# Callers must declare `local _isa_pid="" _isa_stale_pid=""` in their own scope
-# before calling (the function uses those upvar names).
+# Callers must declare `local _isa_pid="" _isa_status="" _isa_status_updated_at=""
+# _isa_stale_pid=""` in their own scope before calling (the function uses those
+# upvar names).
 # This function is self-contained: it does its own cmd_pick for the stale path.
 _human_backoff_gate() {
   local _hb; _hb="$(_config_get human_backoff)"; _hb="${_hb:-1}"
   # human_backoff=0 → feature disabled; always proceed.
   [[ "$_hb" == "0" ]] && return 1
   # Reset upvars so each call starts fresh.
-  _isa_pid=""; _isa_stale_pid=""
+  _isa_pid=""; _isa_status=""; _isa_status_updated_at=""; _isa_stale_pid=""
   if _interactive_session_active "$ROOT"; then
-    # Live interactive session in this repo — back off.
-    printf 'deputy: interactive Claude session active in %s (PID: %s) — backing off (next heartbeat will retry).\n' \
-      "$ROOT" "$_isa_pid" >&2
+    local _status_lc _grace _idle_ms _now _ts _age _max_age
+    _status_lc="$(printf '%s' "$_isa_status" | tr '[:upper:]' '[:lower:]')"
+    _grace="$(_config_get human_idle_grace_mins)"; _grace="${_grace:-5}"
+    _valid_positive_int "$_grace" || _grace=5
+    if [[ "$_status_lc" == "idle" ]] && _ts="$(_epoch_ms "$_isa_status_updated_at")"; then
+      _now="$(_now_ms)"
+      if [[ "$_now" =~ ^[0-9]+$ && "$_now" -ge "$_ts" ]]; then
+        _idle_ms=$((_grace * 60 * 1000))
+        _age=$((_now - _ts))
+        _max_age=$((30 * 24 * 60 * 60 * 1000))
+        if [[ "$_age" -le "$_max_age" && "$_age" -ge "$_idle_ms" ]]; then
+          return 1
+        fi
+      fi
+    fi
+    # Live interactive session in this repo is busy, recently idle, or lacks a
+    # reliable idle timestamp — back off.
+    printf 'deputy: interactive Claude session active in %s (PID: %s, status: %s) — backing off (next heartbeat will retry).\n' \
+      "$ROOT" "$_isa_pid" "${_isa_status:-unknown}" >&2
     return 0
   elif [[ -n "$_isa_stale_pid" ]]; then
     # Stale session file (dead PID) in this repo, no live session.
@@ -1324,7 +1428,7 @@ Item (the exact current BACKLOG.md line — pass it verbatim to 'deputy set'): $
 Provider for coding: $provider
 Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
   local gset; gset="$(_guardrail_settings_path)"
-  DEPUTY_GUARDED=1 DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
+  DEPUTY_GUARDED=1 DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
     claude -p "$prompt" --model claude-sonnet-4-6 \
       --allowedTools "Bash,Edit,Write,Read,Glob,Grep" \
       --settings "$gset"
@@ -1412,7 +1516,7 @@ cmd_run() {
   # tick to avoid mixing deputy commits with the human's uncommitted work.
   # Disable with: deputy config set human_backoff 0
   # Note: DEPUTY_ALLOW_ANY_BRANCH=1 does NOT bypass this check (independent guards).
-  local _isa_pid="" _isa_stale_pid=""
+  local _isa_pid="" _isa_status="" _isa_status_updated_at="" _isa_stale_pid=""
   if _human_backoff_gate; then return 0; fi
 
   # Always-on model: do NOT remove the cron line while running. The line persists;
@@ -1445,7 +1549,11 @@ cmd_run() {
     if [[ "$decision" != "claude" ]]; then
       return 0
     fi
-    cmd_claim "$found_line" --pid "$$" >/dev/null 2>&1 || return 1
+    _active_run_acquire "$found_line" "targeted" || return 0
+    if ! cmd_claim "$found_line" --pid "$$" >/dev/null 2>&1; then
+      _active_run_release
+      return 1
+    fi
     # Read item line from line 1 of claim file (claim file now has 2 lines).
     running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
     log="$(mktemp)"
@@ -1462,9 +1570,11 @@ cmd_run() {
       # Always-on: do NOT reschedule the shared cron line for quota.
       # The fixed */N heartbeat will retry on the next tick; quota is a per-task skip.
       printf 'deputy: Claude session limit reached — will retry on next heartbeat tick.\n'
+      _active_run_release
       return 0
     fi
     rm -f "$log"
+    _active_run_release
     return 0
   fi
 
@@ -1472,7 +1582,7 @@ cmd_run() {
   while :; do
     # Re-evaluate the human-session back-off gate on each iteration so that a
     # session started MID-DRAIN is honoured before we claim the next item.
-    _isa_pid=""; _isa_stale_pid=""
+    _isa_pid=""; _isa_status=""; _isa_status_updated_at=""; _isa_stale_pid=""
     if _human_backoff_gate; then break; fi
     item="$(cmd_pick)"; [[ -n "$item" ]] || break
     avail="$(_availability)"; decision="$(_route orchestrate "$avail")"
@@ -1480,7 +1590,11 @@ cmd_run() {
       # Provider unavailable: leave item waiting; the next heartbeat tick will retry.
       return 0
     fi
-    cmd_claim "$item" --pid "$$" >/dev/null 2>&1 || break
+    _active_run_acquire "$item" "run" || break
+    if ! cmd_claim "$item" --pid "$$" >/dev/null 2>&1; then
+      _active_run_release
+      break
+    fi
     # Read item line from line 1 of claim file (claim file now has 2 lines).
     running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$item")"
 
@@ -1496,6 +1610,7 @@ cmd_run() {
       printf '%s\n' "$_fail_reason" > "$STATE_DIR/$_rb_slug.fail.md"
       _with_lock _do_set_item_failed "$running_line" || true
       rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
+      _active_run_release
       processed=$((processed + 1))
       [[ "$once" -eq 1 ]] && break
       [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
@@ -1535,6 +1650,7 @@ cmd_run() {
         fi
       fi
       printf 'deputy: Claude session limit reached — will retry on next heartbeat tick.\n'
+      _active_run_release
       return 0
     fi
     # Successful orchestrator exit: track attempt progress.
@@ -1555,6 +1671,7 @@ cmd_run() {
       fi
     fi
     rm -f "$log"
+    _active_run_release
     processed=$((processed + 1))
     [[ "$once" -eq 1 ]] && break
     [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break

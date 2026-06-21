@@ -14,6 +14,18 @@ gr() {
 # A guarded worktree + root for path tests (Task 3 reuses these).
 ROOT="$(mktemp -d)"; WT="$ROOT/.deputy/wt"; mkdir -p "$WT" "$ROOT/.deputy"
 
+active_gr() {
+  local tool="$1" ti="$2" owner_pid="${3:-}"
+  if [[ -n "$owner_pid" ]]; then
+    printf '{"tool_name":"%s","tool_input":%s}' "$tool" "$ti" \
+      | DEPUTY_ACTIVE_RUN_PID="$owner_pid" DEPUTY_ROOT="$ROOT" bash "$HOOK" >/dev/null 2>&1
+  else
+    printf '{"tool_name":"%s","tool_input":%s}' "$tool" "$ti" \
+      | DEPUTY_ROOT="$ROOT" bash "$HOOK" >/dev/null 2>&1
+  fi
+  echo $?
+}
+
 # bash() helper: pass a command string as Bash tool_input.
 bash_cmd() { gr Bash "$(printf '{"command":%s}' "$(printf '%s' "$1" | jq -Rs .)")"; }
 
@@ -30,6 +42,22 @@ bash_cwd() {
 # --- self-gate: unguarded = allow everything ---
 out="$(printf '{"tool_name":"Bash","tool_input":{"command":"git push"}}' | bash "$HOOK"; echo $?)"
 assert_eq "$out" "0" "unguarded (no DEPUTY_GUARDED) allows everything"
+assert_eq "$(printf 'not-json' | DEPUTY_ROOT="$ROOT" bash "$HOOK" >/dev/null 2>&1; echo $?)" "0" \
+  "unguarded with no active-run lock exits before JSON validation"
+
+# --- active-run lock: unguarded interactive mutating tools are blocked ---
+sleep 300 & LOCK_PID=$!
+mkdir -p "$ROOT/.deputy/active-run.lock"
+printf '%s\n' "$LOCK_PID" > "$ROOT/.deputy/active-run.lock/pid"
+ps -o lstart= -p "$LOCK_PID" 2>/dev/null | sed 's/^ *//' > "$ROOT/.deputy/active-run.lock/start_time"
+printf 'test\n' > "$ROOT/.deputy/active-run.lock/owner"
+printf 'item\n' > "$ROOT/.deputy/active-run.lock/item"
+printf 'now\n' > "$ROOT/.deputy/active-run.lock/started_at"
+assert_eq "$(active_gr Write '{"file_path":"/tmp/x"}')" "2" "active-run lock blocks non-owner Write"
+assert_eq "$(active_gr Bash '{"command":"sed -i s/a/b/ file"}')" "2" "active-run lock blocks non-owner Bash"
+assert_eq "$(active_gr Write '{"file_path":"/tmp/x"}' "$LOCK_PID")" "0" "active-run lock allows owner past self-gate"
+kill "$LOCK_PID" 2>/dev/null || true
+rm -rf "$ROOT/.deputy/active-run.lock"
 
 # --- denylisted Bash → deny (exit 2) ---
 assert_eq "$(bash_cmd 'git push origin master')" "2" "git push denied"

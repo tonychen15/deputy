@@ -6,8 +6,12 @@
 # docs/superpowers/specs/2026-06-08-deputy-risky-op-guardrail-design.md.
 set -uo pipefail
 
-# Self-gate: only enforce for the guarded orchestrator session.
-[[ "${DEPUTY_GUARDED:-}" == "1" ]] || exit 0
+# Fast no-op for ordinary sessions. The heavier JSON/jq path is needed only for
+# guarded Deputy workers or when an active-run marker exists for this repo.
+if [[ "${DEPUTY_GUARDED:-}" != "1" ]]; then
+  _root="${DEPUTY_ROOT:-}"
+  [[ -n "$_root" && -d "$_root/.deputy/active-run.lock" ]] || exit 0
+fi
 
 input="$(cat)"
 command -v jq >/dev/null 2>&1 || { echo "guardrail: jq missing; denying for safety" >&2; exit 2; }
@@ -18,6 +22,46 @@ deny() {
   echo "BLOCKED by deputy guardrail: $1 Do NOT retry or work around it — run: deputy set \"<item-line>\" surfaced (with a note explaining why), then stop." >&2
   exit 2
 }
+
+_pid_start_time() {
+  local pid="$1"
+  ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//' || true
+}
+
+_active_run_blocks() {
+  local root="${DEPUTY_ROOT:-}" d pid recorded_start actual_start
+  [[ -n "$root" ]] || return 1
+  d="$root/.deputy/active-run.lock"
+  [[ -d "$d" ]] || return 1
+  pid="$(sed -n '1p' "$d/pid" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "${DEPUTY_ACTIVE_RUN_PID:-}" == "$pid" ]] && return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  recorded_start="$(sed -n '1p' "$d/start_time" 2>/dev/null || true)"
+  if [[ -n "$recorded_start" ]]; then
+    actual_start="$(_pid_start_time "$pid")"
+    [[ "$actual_start" == "$recorded_start" ]] || return 1
+  fi
+  return 0
+}
+
+tool="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
+
+# A live active-run marker means an autonomous Deputy process owns writes for this
+# repo. If this hook is active in an interactive session, fail closed for mutating
+# tools unless the session was launched by that owner.
+if _active_run_blocks; then
+  case "$tool" in
+    Bash|Edit|Write|MultiEdit|NotebookEdit)
+      deny "active Deputy run in progress; mutating tool [$tool] is blocked until .deputy/active-run.lock is released."
+      ;;
+  esac
+fi
+
+# Self-gate for the normal risky-op policy: only enforce it for the guarded
+# orchestrator session. The active-run check above can still protect an
+# interactive session if this hook is installed there.
+[[ "${DEPUTY_GUARDED:-}" == "1" ]] || exit 0
 
 # Normalize for pattern matching: tabs -> space, and NEWLINES -> ';' (a command
 # separator) so a risky command on a later line of a multi-line script is still split
@@ -180,7 +224,6 @@ _path_outside_wt() {
   return 0                                   # everything else -> deny
 }
 
-tool="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 # Fix 2: extract top-level .cwd from the PreToolUse JSON (session working directory).
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty')"
 case "$tool" in

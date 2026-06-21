@@ -243,9 +243,12 @@ counts against the retry budget in §4).
 - Do not manage cron yourself except via `deputy cron --reschedule` on quota exhaustion.
 - **Human-session back-off**: `cmd_run` checks for live interactive Claude sessions
   (`entrypoint=="cli"` in `~/.claude/sessions/`) in the repo before claiming an item.
-  If a human session is detected, the tick is skipped silently (logged to stderr with PID).
+  If a human session is busy or recently idle, the tick is skipped silently (logged to
+  stderr with PID/status). If the session has been idle longer than
+  `human_idle_grace_mins` (default 5), cron may proceed.
   This applies to both priority-driven and targeted (`deputy run #N`) invocations.
-  Config key: `human_backoff=1` (default ON); set `0` to disable (e.g. in CI).
+  Config keys: `human_backoff=1` (default ON; set `0` to disable, e.g. in CI) and
+  `human_idle_grace_mins=5`.
   `DEPUTY_ALLOW_ANY_BRANCH=1` does NOT bypass this check — they are independent guards.
   A stale (dead-PID) session file in this repo causes `cmd_run` to **surface** the top
   runnable item for a human to check (a sign of an abnormal Claude crash), rather than

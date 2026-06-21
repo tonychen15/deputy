@@ -3,15 +3,18 @@
 source "$(dirname "$0")/lib.sh"
 
 # Helper: write a mock Claude Code session file.
-# usage: write_session <sessions_dir> <filename> <pid> <cwd> <entrypoint> [procstart]
+# usage: write_session <sessions_dir> <filename> <pid> <cwd> <entrypoint> [procstart] [status] [status_updated_at]
 write_session() {
   local dir="$1" name="$2" pid="$3" cwd="$4" entry="$5"
   local procstart="${6:-}"
+  local status="${7:-busy}"
+  local status_updated_at="${8:-}"
   mkdir -p "$dir"
   local ps_field=""
   [[ -n "$procstart" ]] && ps_field=", \"procStart\": $procstart"
-  printf '{"pid": %s, "cwd": "%s", "entrypoint": "%s", "status": "busy"%s}\n' \
-    "$pid" "$cwd" "$entry" "$ps_field" > "$dir/$name"
+  [[ -n "$status_updated_at" ]] || status_updated_at="$(date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)")"
+  printf '{"pid": %s, "cwd": "%s", "entrypoint": "%s", "status": "%s", "statusUpdatedAt": %s%s}\n' \
+    "$pid" "$cwd" "$entry" "$status" "$status_updated_at" "$ps_field" > "$dir/$name"
 }
 
 # ── Test 1: live cli session in this repo → deputy run backs off ──────────────
@@ -37,6 +40,56 @@ assert_contains "$(cat /tmp/t1_stderr.txt)" "$SESSION_PID1" "back-off message in
 
 kill "$SESSION_PID1" 2>/dev/null || true
 rm -rf "$FAKE_HOME1"
+
+# ── Test 1b: old idle cli session in this repo → deputy run proceeds ───────────
+setup_repo
+printf '[P1] idle can run\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+
+FAKE_HOME1B="$(mktemp -d)"
+sleep 300 & SESSION_PID1B=$!
+PROC_START1B="$(sed 's/.*) //' /proc/"$SESSION_PID1B"/stat 2>/dev/null | awk '{print $20}' || true)"
+OLD_IDLE_MS="$(($(date +%s) * 1000 - 10 * 60 * 1000))"
+write_session "$FAKE_HOME1B/.claude/sessions" "sess1b.json" \
+  "$SESSION_PID1B" "$DEPUTY_ROOT" "cli" "$PROC_START1B" "idle" "$OLD_IDLE_MS"
+ORCH1B="$(mktemp)"
+printf '#!/usr/bin/env bash\nbash "%s" set "$1" done >/dev/null 2>&1\n' "$DEPUTY" > "$ORCH1B"
+chmod +x "$ORCH1B"
+
+HOME="$FAKE_HOME1B" DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_AVAIL="claude,gemini" \
+  DEPUTY_ORCHESTRATOR_CMD="$ORCH1B" bash "$DEPUTY" run 2>/tmp/t1b_stderr.txt
+item_state1b="$(bash "$DEPUTY" list | head -1 | cut -d'|' -f1)"
+assert_eq "$item_state1b" "done" "old idle cli session in repo → item can run"
+assert_eq "$(grep -c 'backing off' /tmp/t1b_stderr.txt 2>/dev/null || true)" "0" \
+  "old idle cli session → no back-off message"
+
+kill "$SESSION_PID1B" 2>/dev/null || true
+rm -f "$ORCH1B"
+rm -rf "$FAKE_HOME1B"
+
+# ── Test 1c: old idle timestamp in seconds is normalized safely ────────────────
+setup_repo
+printf '[P1] idle seconds can run\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+
+FAKE_HOME1C="$(mktemp -d)"
+sleep 300 & SESSION_PID1C=$!
+PROC_START1C="$(sed 's/.*) //' /proc/"$SESSION_PID1C"/stat 2>/dev/null | awk '{print $20}' || true)"
+OLD_IDLE_SECS="$(($(date +%s) - 10 * 60))"
+write_session "$FAKE_HOME1C/.claude/sessions" "sess1c.json" \
+  "$SESSION_PID1C" "$DEPUTY_ROOT" "cli" "$PROC_START1C" "idle" "$OLD_IDLE_SECS"
+ORCH1C="$(mktemp)"
+printf '#!/usr/bin/env bash\nbash "%s" set "$1" done >/dev/null 2>&1\n' "$DEPUTY" > "$ORCH1C"
+chmod +x "$ORCH1C"
+
+HOME="$FAKE_HOME1C" DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_AVAIL="claude,gemini" \
+  DEPUTY_ORCHESTRATOR_CMD="$ORCH1C" bash "$DEPUTY" run 2>/tmp/t1c_stderr.txt
+item_state1c="$(bash "$DEPUTY" list | head -1 | cut -d'|' -f1)"
+assert_eq "$item_state1c" "done" "old idle seconds timestamp → normalized and item can run"
+
+kill "$SESSION_PID1C" 2>/dev/null || true
+rm -f "$ORCH1C"
+rm -rf "$FAKE_HOME1C"
 
 # ── Test 2: cli session in a DIFFERENT repo → deputy run proceeds (no item to claim) ──
 # (We can't test a full run end-to-end without a provider, but we can verify the item
@@ -245,8 +298,8 @@ _lpid="\$(sed -n '1p' "$SESSION_PID_FILE11")"
 _lps="\$(sed -n '2p' "$SESSION_PID_FILE11")"
 _sdir="$FAKE_HOME11/.claude/sessions"
 mkdir -p "\$_sdir"
-printf '{"pid": %s, "cwd": "%s", "entrypoint": "cli", "status": "busy", "procStart": %s}\n' \\
-  "\$_lpid" "$DEPUTY_ROOT" "\${_lps:-0}" > "\$_sdir/live_session.json"
+printf '{"pid": %s, "cwd": "%s", "entrypoint": "cli", "status": "busy", "statusUpdatedAt": %s, "procStart": %s}\n' \\
+  "\$_lpid" "$DEPUTY_ROOT" "\$(date +%s%3N 2>/dev/null || printf '%s000' \"\$(date +%s)\")" "\${_lps:-0}" > "\$_sdir/live_session.json"
 EOF
 chmod +x "$ORCH11"
 
@@ -265,6 +318,8 @@ assert_eq "$item2_state11" "waiting" "mid-drain: second item stays waiting after
 # The back-off message must have been emitted.
 assert_contains "$(cat /tmp/t11_stderr.txt)" "backing off" \
   "mid-drain: back-off message emitted when session appeared mid-drain"
+assert_contains "$(cat /tmp/t11_stderr.txt)" "status: busy" \
+  "mid-drain: back-off message includes busy status"
 
 # No stale claim file should remain.
 assert_eq "$(ls "$DEPUTY_ROOT"/.deputy/*.claim 2>/dev/null | wc -l | tr -d ' ')" "0" \
