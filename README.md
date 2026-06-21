@@ -120,7 +120,7 @@ your existing `BACKLOG.md` or config:
 
 ```bash
 deputy add "fix the login redirect loop" -ui   # add an urgent+important item (-ui=P0, -u=P1, -i=P2)
-deputy add "tidy the README"                    # untagged = lowest lane; --p0/--p1/--p2 also accepted
+deputy add "tidy the README"                    # bare items default to P3 at numbering (P4 is the lowest lane); --p0/--p1/--p2/--p3/--p4 also accepted
 deputy list [--<state>] # parsed items: state|priority|id|description; optional
                        # --<state> (e.g. --waiting, --running, --deferred) filters to that state
 deputy status          # counts by state
@@ -136,8 +136,8 @@ deputy clean [<id>] [--dry-run] [--state <state>]
 ```
 
 **Priority flags** (Eisenhower): `-ui` urgent+important (`P0`), `-u` urgent (`P1`),
-`-i` important (`P2`), none = lowest. `--p0/--p1/--p2` also accepted. Use `--` before a
-description that starts with `-`.
+`-i` important (`P2`), none = defaults to P3 at numbering (P4 is the lowest lane).
+`--p0/--p1/--p2/--p3/--p4` also accepted. Use `--` before a description that starts with `-`.
 
 ---
 

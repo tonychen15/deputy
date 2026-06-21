@@ -19,12 +19,20 @@ pick_out2="$(bash "$DEPUTY" pick)"
 assert_contains "$pick_out2" "[P1]"         "pick FIFO: P1 line"
 assert_contains "$pick_out2" "first urgent" "pick FIFO within lane"
 
-# Untagged is the lowest lane but still picked when nothing else waits.
+# Untagged items are assigned [P3] at numbering; still picked when nothing higher waits.
 setup_repo
 printf '%s\n' '@ [P0] running' 'plain waiting' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
 pick_out3="$(bash "$DEPUTY" pick)"
-assert_contains "$pick_out3" "plain waiting" "pick falls back to untagged"
+assert_contains "$pick_out3" "plain waiting" "pick falls back to untagged (normalized to P3)"
+
+# P3 is picked before P4: P4 is the lowest explicit lane.
+setup_repo
+printf '%s\n' '[P4] lowest task' '[P3] default task' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+pick_out3b="$(bash "$DEPUTY" pick)"
+assert_contains "$pick_out3b" "[P3]"         "pick prefers P3 over P4"
+assert_contains "$pick_out3b" "default task" "pick prefers P3 default over P4 lowest"
 
 # Nothing waiting -> empty output, exit 0.
 setup_repo

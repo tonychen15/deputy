@@ -202,7 +202,7 @@ Add an item:
   deputy add "description"        # appends with auto-priority
   # or append a plain line to BACKLOG.md directly
 
-Deputy processes `BACKLOG.md` on its next run; items are picked by priority (P0 > P1 > P2 > untagged).
+Deputy processes `BACKLOG.md` on its next run; items are picked by priority (P0 > P1 > P2 > P3 > P4); bare items default to P3 at numbering (P4 is the lowest lane).
 DEPUTY_GUIDANCE
     printf 'install: appended Deputy guidance to %s\n' "$claude_md"
   fi
