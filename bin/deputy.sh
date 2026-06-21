@@ -729,7 +729,6 @@ _notify_label() {
     surfaced)  printf 'Needs Input' ;;
     proposed)  printf 'Worker proposed — approve?' ;;
     warn)      printf 'Warning' ;;
-    spawn)     printf 'Autonomous spawn' ;;
     done)      printf 'Done' ;;
     failed)    printf 'Failed' ;;
     cancelled) printf 'Cancelled' ;;
@@ -773,7 +772,7 @@ _notify_email() {
 # or when no channels are configured.
 _notify() {
   local state="$1" desc="$2"
-  case "$state" in surfaced|proposed|warn|spawn|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
+  case "$state" in surfaced|proposed|warn|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
   local channels; channels="$(_config_get notify)"
   [[ -n "$channels" ]] || return 0
   local label; label="$(_notify_label "$state")"
@@ -787,23 +786,6 @@ _notify() {
       email)   _notify_email   "$title" "$desc" ;;
     esac
   done < <(printf '%s\n' "$channels" | tr ',' '\n')
-}
-
-# #59: Fire spawn notification on autonomous (headless) claim. Skips for interactive
-# (headed) runs. Gated by notify_on_spawn config key (default 1 = on). Writes a
-# prominent ===SPAWN=== line to cron.log so autonomous pickups are never silent.
-_fire_spawn_notify() {
-  local item="$1"
-  _run_is_headed && return 0
-  local nos; nos="$(_config_get notify_on_spawn)"; nos="${nos:-1}"
-  [[ "$nos" == "0" ]] && return 0
-  local ts; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
-  printf '[%s] ===SPAWN=== pid=%s item=%s\n' "$ts" "$$" "$item" >> "$STATE_DIR/cron.log" 2>/dev/null || true
-  if [[ "${DEPUTY_NOTIFY_SYNC:-0}" == "1" ]]; then
-    _notify spawn "$item" >/dev/null 2>&1 || true
-  else
-    _notify spawn "$item" >/dev/null 2>&1 &
-  fi
 }
 
 cmd_set() {
@@ -1258,10 +1240,9 @@ config keys (.deputy/config):
   waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
-  notify=desktop,push,email       channels for item-surfaced/finished/spawn notifications
+  notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
-  notify_on_spawn=1               notify (desktop/push) + log to cron.log when cron auto-spawns a worker (default 1; set 0 to silence)
 states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
 symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancelled ==duplicate ^=paused ;=deferred  (legacy #=done >=deferred still read and auto-migrated)
 EOF
@@ -1964,7 +1945,6 @@ cmd_run() {
     fi
     # Read item line from line 1 of claim file (claim file now has 2 lines).
     running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
-    _fire_spawn_notify "$running_line"
     log="$(mktemp)"
     rc=0
     _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
@@ -2023,7 +2003,6 @@ cmd_run() {
       continue
     fi
 
-    _fire_spawn_notify "$running_line"
     log="$(mktemp)"
     rc=0
     _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
