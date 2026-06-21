@@ -500,6 +500,26 @@ _next_id() {
   printf '%s' "$(( max_id + 1 ))"
 }
 
+# #53: count surfaced items that genuinely BLOCK (a running item that flipped to
+# surfaced because it needs human help) — EXCLUDING worker proposals, which are also
+# 'surfaced' but carry a .deputy/proposed-<id> marker and must never stall scheduling
+# or the cascade guard. A surfaced item with no id is counted as blocking (we cannot
+# prove it is a proposal). Used in place of the raw cmd_status surfaced count.
+_blocking_surfaced_count() {
+  local n=0 raw parsed state _bs_rest _bs_id
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    [[ "$state" == "surfaced" ]] || continue
+    _bs_rest="${parsed#*|}"; _bs_rest="${_bs_rest#*|}"; _bs_id="${_bs_rest%%|*}"
+    if [[ "$_bs_id" =~ ^[0-9]+$ && -f "$STATE_DIR/proposed-$_bs_id" ]]; then
+      continue   # a worker proposal — not a blocking surface
+    fi
+    n=$(( n + 1 ))
+  done < <(_each_item)
+  printf '%s' "$n"
+}
+
 cmd_add() {
   # Priority flags: -ui/-u/-i (urgent+important / urgent / important) are aliases
   # for --p0/--p1/--p2. A `--` marker ends flag parsing so a description may begin
@@ -1535,8 +1555,10 @@ _human_backoff_gate() {
         "$_isa_stale_pid" >&2
     else
       # Cascade guard: do not surface a second item if one is already surfaced.
+      # #53: count only BLOCKING surfaces — worker proposals (also 'surfaced') must
+      # not suppress surfacing a genuinely-stuck item.
       local _surfaced_count
-      _surfaced_count="$(cmd_status | grep '^surfaced:' | awk '{print $2}')"
+      _surfaced_count="$(_blocking_surfaced_count)"
       if [[ "${_surfaced_count:-0}" -gt 0 ]]; then
         printf 'deputy: stale Claude session file found (PID %s) — an item is already surfaced; skipping cascade surface.\n' \
           "$_isa_stale_pid" >&2
@@ -1909,6 +1931,9 @@ cmd_clean() {
         printf '%s\n' "$line"
       done < "$BACKLOG" > "$tmp"
       mv "$tmp" "$BACKLOG"
+      # #53: drop the proposal marker for the removed id (filter_id is validated
+      # numeric) so a freed/reusable id can't inherit a stale proposed-<id> marker.
+      rm -f "$STATE_DIR/proposed-$filter_id" 2>/dev/null || true
       if [[ "$state" == "done" ]]; then
         _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
       else
@@ -1965,6 +1990,15 @@ cmd_clean() {
       printf '%s\n' "$line"
     done < "$BACKLOG" > "$tmp"
     mv "$tmp" "$BACKLOG"
+    # #53: drop any proposal marker for a removed item, so a freed (and later
+    # reusable) id can never inherit a stale .deputy/proposed-<id> marker that would
+    # hide a genuine surfaced blocker from _blocking_surfaced_count.
+    local _dc_parsed _dc_rest _dc_id
+    for r in "${doomed[@]}"; do
+      _dc_parsed="$(_parse_item "$r")"
+      _dc_rest="${_dc_parsed#*|}"; _dc_rest="${_dc_rest#*|}"; _dc_id="${_dc_rest%%|*}"
+      [[ "$_dc_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_dc_id" 2>/dev/null || true
+    done
     if [[ "$filter_state" == "done" ]]; then
       _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
     else
