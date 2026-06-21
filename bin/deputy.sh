@@ -1281,7 +1281,7 @@ commands:
   help                            show this message
 
 config keys (.deputy/config):
-  max_items=N                     items started per run cycle (default 0 = unlimited)
+  max_items=N                     items started per run cycle (default 1; min 1). MIGRATION: 0 no longer means unlimited — it clamps to 1; set an explicit N for a multi-item drain
   heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59)
   human_backoff=1                 back off when an interactive Claude session is busy/recent in this repo (default 1; set 0 to disable)
   human_idle_grace_mins=N         allow cron to run when Claude has been idle this many minutes (default 5)
@@ -1958,7 +1958,9 @@ cmd_run() {
 
   # Always-on model: do NOT remove the cron line while running. The line persists;
   # each tick is state-aware (skip when live, recover orphans, etc.).
-  local cap; cap="$(_config_get max_items)"; cap="${cap:-0}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+  # #60: cap items per run. Default/clamp to >=1 — there is NO unbounded mode (a 0/unset/
+  # invalid value clamps to 1) so one cron tick can't drain+merge the whole queue unsupervised.
+  local cap; cap="$(_config_get max_items)"; cap="${cap:-1}"; [[ "$cap" =~ ^[0-9]+$ ]] || cap=1; [[ "$cap" -lt 1 ]] && cap=1
   local processed=0 item avail decision running_line log rc outcome reset
 
   # ── Targeted run: find item by id and run it (bypasses priority) ─────────────

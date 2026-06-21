@@ -69,4 +69,24 @@ assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "1" "max_items=1 processe
 assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "the second item is left for the next cycle"
 assert_contains "$(bash "$DEPUTY" list)" "two"         "item 'two' is left for the next cycle"
 
+# --- #60: max_items defaults to 1 when unset (one tick = one item) ---
+setup_repo
+bash "$DEPUTY" add "a" --p0; bash "$DEPUTY" add "b" --p0
+out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
+assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "1" "unset max_items defaults to 1 (not unlimited)"
+
+# --- #60: max_items=0 clamps to 1 (NO unbounded drain) ---
+setup_repo
+mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=0\n' > "$DEPUTY_ROOT/.deputy/config"
+bash "$DEPUTY" add "x" --p0; bash "$DEPUTY" add "y" --p0; bash "$DEPUTY" add "z" --p0
+out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
+assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "1" "max_items=0 clamps to 1 (no unbounded drain)"
+
+# --- #60: an explicit max_items=N still processes up to N ---
+setup_repo
+mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=2\n' > "$DEPUTY_ROOT/.deputy/config"
+bash "$DEPUTY" add "p" --p0; bash "$DEPUTY" add "q" --p0; bash "$DEPUTY" add "r" --p0
+out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
+assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "2" "explicit max_items=2 processes up to 2"
+
 rm -f "$ORCH"

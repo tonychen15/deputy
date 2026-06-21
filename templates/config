@@ -2,9 +2,10 @@
 test_cmd=
 lint_cmd=
 build_cmd=
-# max_items: optional per-cycle cap. 0 (or empty) = unlimited — run until the queue
-# is empty or Claude's session limit is hit (then deputy reschedules cron for reset).
-max_items=0
+# max_items: items started per run cycle. Default/minimum 1 (one tick = one item) so a
+# single autonomous tick can't drain + merge the whole queue unsupervised. There is NO
+# unbounded mode: 0/empty/invalid clamps to 1. Set an explicit N for a multi-item drain.
+max_items=1
 time_cap_mins=30
 heartbeat_mins=10
 human_backoff=1

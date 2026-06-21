@@ -303,6 +303,10 @@ printf '{"pid": %s, "cwd": "%s", "entrypoint": "cli", "status": "busy", "statusU
 EOF
 chmod +x "$ORCH11"
 
+# #60: this mid-drain test needs the loop to continue past item 1 to reach the gate on
+# item 2 — max_items now defaults to 1, so opt into a 2-item drain explicitly.
+mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=2\n' >> "$DEPUTY_ROOT/.deputy/config"
+
 HOME="$FAKE_HOME11" DEPUTY_ALLOW_ANY_BRANCH=1 \
   DEPUTY_ORCHESTRATOR_CMD="$ORCH11" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true \
   bash "$DEPUTY" run 2>/tmp/t11_stderr.txt
