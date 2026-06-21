@@ -13,3 +13,7 @@ human_idle_grace_mins=5
 # hold it for this many consecutive heartbeat ticks before cron proceeds (cautious: a
 # transient mid-tool 'waiting' can't survive N ticks). Default 3.
 waiting_backoff_strikes=3
+# orphan_warn_mins: on each run, deputy WARNS (never kills) about a bash process running
+# longer than this many minutes under an in-repo interactive Claude session — a likely
+# leaked background command that can pin the session busy and stall the heartbeat. Default 30.
+orphan_warn_mins=30
