@@ -1297,15 +1297,25 @@ _route() {
       _in_csv codex  "$avail" && { printf 'codex\n';  return 0; }
       printf 'wait\n' ;;
     review)
-      # Prefer a non-author peer: codex (default) -> gemini -> claude.
-      # claude is the orchestrator, so it is only an eligible reviewer when an
-      # explicit non-claude author is given (otherwise returning claude would risk
-      # letting the orchestrator review its own work). External peers (codex,
-      # gemini) are always eligible.
-      local candidates="codex gemini"
-      [[ -n "$author" ]] && candidates="codex gemini claude"
+      # Pick a non-author peer, AUTHOR-AWARE (preference depends on who wrote the
+      # artifact). claude is the orchestrator, so it self-reviews only as a last
+      # resort — it is never the *first* choice when it is the author, and it is not
+      # an eligible reviewer at all when no author is named (an unnamed author is
+      # claude by convention, so offering claude would risk reviewing its own work).
+      #   author=claude -> codex, gemini          (external peers; codex preferred)
+      #   author=codex  -> claude, gemini         (claude-first; gemini is flaky)
+      #   author=gemini -> claude, codex          (claude-first)
+      #   author=''     -> codex, gemini          (no claude self-review)
+      local candidates
+      case "$author" in
+        claude) candidates="codex gemini" ;;
+        codex)  candidates="claude gemini" ;;
+        gemini) candidates="claude codex" ;;
+        "")     candidates="codex gemini" ;;
+        *)      candidates="codex gemini claude" ;;   # unknown author: full peer set
+      esac
       for cand in $candidates; do
-        [[ "$cand" == "$author" ]] && continue
+        [[ "$cand" == "$author" ]] && continue        # safety: never the author
         _in_csv "$cand" "$avail" && { printf '%s\n' "$cand"; return 0; }
       done
       # No non-author peer available. If only the author is up, signal self-review.
