@@ -9,3 +9,7 @@ time_cap_mins=30
 heartbeat_mins=10
 human_backoff=1
 human_idle_grace_mins=5
+# waiting_backoff_strikes: a session reporting the (undocumented) 'waiting' status must
+# hold it for this many consecutive heartbeat ticks before cron proceeds (cautious: a
+# transient mid-tool 'waiting' can't survive N ticks). Default 3.
+waiting_backoff_strikes=3

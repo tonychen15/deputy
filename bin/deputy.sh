@@ -1219,6 +1219,7 @@ config keys (.deputy/config):
   heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59)
   human_backoff=1                 back off when an interactive Claude session is busy/recent in this repo (default 1; set 0 to disable)
   human_idle_grace_mins=N         allow cron to run when Claude has been idle this many minutes (default 5)
+  waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
@@ -1530,6 +1531,43 @@ _guardrail_settings_path() {
 # Callers must declare `local _isa_pid="" _isa_status="" _isa_status_updated_at=""
 # _isa_stale_pid=""` in their own scope before calling (the function uses those
 # upvar names).
+# #55: durable consecutive-'waiting' strike counter for the human back-off gate.
+# The undocumented 'waiting' session status can mean idle-at-prompt — but we can't be
+# sure it isn't a transient mid-tool pause, so instead of trusting it we require it to
+# PERSIST across N consecutive heartbeat ticks before proceeding. The counter file holds
+# 'pid|statusUpdatedAt|count|last_bump_ms'; _with_lock serializes the read-increment-write
+# so overlapping ticks can't race it. A transient 'waiting' can't survive N ticks (any
+# status flip changes statusUpdatedAt -> reset), so N-in-a-row implies genuine idle.
+_bump_locked() {
+  local pid="$1" sua="$2" f="$STATE_DIR/.backoff_waiting" now hb min_gap
+  local cur_pid="" cur_sua="" cur_cnt=0 cur_last=0 cnt tmp
+  now="$(_now_ms)"
+  hb="$(_config_get heartbeat_mins)"; hb="${hb:-10}"; _valid_positive_int "$hb" || hb=10
+  min_gap=$(( hb * 60 * 1000 / 2 )); [[ "$min_gap" -ge 1 ]] || min_gap=30000
+  if [[ -f "$f" ]]; then IFS='|' read -r cur_pid cur_sua cur_cnt cur_last < "$f"; fi
+  [[ "$cur_cnt" =~ ^[0-9]+$ ]] || cur_cnt=0
+  if [[ "$cur_pid" == "$pid" && "$cur_sua" == "$sua" ]]; then
+    # Same continuous 'waiting'. Increment only when this bump is >= half a heartbeat
+    # since the last, so overlapping ticks / an add-instant-trigger race collapse to one
+    # strike. A future/malformed last_bump_ms (now < cur_last) falls through to increment.
+    if [[ "$now" =~ ^[0-9]+$ && "$cur_last" =~ ^[0-9]+$ && "$now" -ge "$cur_last" \
+          && $(( now - cur_last )) -lt "$min_gap" ]]; then
+      cnt="$cur_cnt"
+    else
+      cnt=$(( cur_cnt + 1 ))
+    fi
+  else
+    cnt=1   # new / changed session or fresh 'waiting' -> first strike
+  fi
+  tmp="$(mktemp "$STATE_DIR/.backoff_waiting.XXXXXX" 2>/dev/null)" || tmp="$f.$$"
+  if printf '%s|%s|%s|%s\n' "$pid" "$sua" "$cnt" "$now" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  fi
+  printf '%s' "$cnt"
+}
+_backoff_waiting_bump()  { _with_lock _bump_locked "$1" "$2"; }
+_backoff_waiting_reset() { _with_lock rm -f "$STATE_DIR/.backoff_waiting" 2>/dev/null; return 0; }
+
 # This function is self-contained: it does its own cmd_pick for the stale path.
 _human_backoff_gate() {
   local _hb; _hb="$(_config_get human_backoff)"; _hb="${_hb:-1}"
@@ -1542,23 +1580,52 @@ _human_backoff_gate() {
     _status_lc="$(printf '%s' "$_isa_status" | tr '[:upper:]' '[:lower:]')"
     _grace="$(_config_get human_idle_grace_mins)"; _grace="${_grace:-5}"
     _valid_positive_int "$_grace" || _grace=5
-    if [[ "$_status_lc" == "idle" ]] && _ts="$(_epoch_ms "$_isa_status_updated_at")"; then
-      _now="$(_now_ms)"
-      if [[ "$_now" =~ ^[0-9]+$ && "$_now" -ge "$_ts" ]]; then
-        _idle_ms=$((_grace * 60 * 1000))
-        _age=$((_now - _ts))
-        _max_age=$((30 * 24 * 60 * 60 * 1000))
-        if [[ "$_age" -le "$_max_age" && "$_age" -ge "$_idle_ms" ]]; then
-          return 1
+    if [[ "$_status_lc" == "idle" ]]; then
+      _backoff_waiting_reset                     # #55: not 'waiting' -> clear strikes
+      if _ts="$(_epoch_ms "$_isa_status_updated_at")"; then
+        _now="$(_now_ms)"
+        if [[ "$_now" =~ ^[0-9]+$ && "$_now" -ge "$_ts" ]]; then
+          _idle_ms=$((_grace * 60 * 1000))
+          _age=$((_now - _ts))
+          _max_age=$((30 * 24 * 60 * 60 * 1000))
+          if [[ "$_age" -le "$_max_age" && "$_age" -ge "$_idle_ms" ]]; then
+            return 1
+          fi
         fi
       fi
+    elif [[ "$_status_lc" == "waiting" ]]; then
+      # #55: 3-strike persistence for the undocumented 'waiting' status — proceed only
+      # after it holds for waiting_backoff_strikes consecutive heartbeat ticks.
+      if [[ -n "$_isa_status_updated_at" ]]; then
+        local _strikes _cnt
+        _strikes="$(_config_get waiting_backoff_strikes)"; _strikes="${_strikes:-3}"
+        _valid_positive_int "$_strikes" || _strikes=3
+        _cnt="$(_backoff_waiting_bump "$_isa_pid" "$_isa_status_updated_at")"
+        [[ "$_cnt" =~ ^[0-9]+$ ]] || _cnt=1
+        if [[ "$_cnt" -ge "$_strikes" ]]; then
+          # Do NOT reset here: while 'waiting' persists we keep proceeding every tick
+          # (the counter stays >= strikes; the same-run second gate call dedups to the
+          # same count). It resets only when the session leaves 'waiting' (status change
+          # -> the busy/idle/other branches reset) or the session goes away.
+          printf 'deputy: interactive Claude session in %s held '\''waiting'\'' %s consecutive ticks (>= %s strikes) — proceeding.\n' \
+            "$ROOT" "$_cnt" "$_strikes" >&2
+          return 1
+        fi
+        printf 'deputy: interactive Claude session in %s (PID: %s) '\''waiting'\'' — strike %s/%s, backing off (next heartbeat will retry).\n' \
+          "$ROOT" "$_isa_pid" "$_cnt" "$_strikes" >&2
+        return 0
+      fi
+      _backoff_waiting_reset                     # 'waiting' without a timestamp -> reset
+    else
+      _backoff_waiting_reset                     # busy/shell/unknown -> reset strikes
     fi
-    # Live interactive session in this repo is busy, recently idle, or lacks a
-    # reliable idle timestamp — back off.
+    # Live interactive session: busy, recently idle (within grace), 'waiting' without a
+    # reliable timestamp, or an unknown status — back off.
     printf 'deputy: interactive Claude session active in %s (PID: %s, status: %s) — backing off (next heartbeat will retry).\n' \
       "$ROOT" "$_isa_pid" "${_isa_status:-unknown}" >&2
     return 0
   elif [[ -n "$_isa_stale_pid" ]]; then
+    _backoff_waiting_reset                       # #55: no live session -> clear strikes
     # Stale session file (dead PID) in this repo, no live session.
     local _stale_item; _stale_item="$(cmd_pick)"
     if [[ -z "$_stale_item" ]]; then
@@ -1600,6 +1667,7 @@ _human_backoff_gate() {
     fi
   fi
   # No session detected — proceed.
+  _backoff_waiting_reset                         # #55: no session -> clear strikes
   return 1
 }
 
