@@ -79,7 +79,7 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    cherry-pick files.
    - **Preemption check:** after the commit, run `deputy pick`. If the returned line
      is non-empty and its priority is strictly higher than the current item's priority
-     (P0=0 P1=1 P2=2 untagged=3 — lower number wins), run
+     (P0=0 P1=1 P2=2 P3=3 P4=4; missing priority is normalized to P3 during ID allocation, otherwise ranks as 5 — lower number wins), run
      `deputy set "<item-line>" paused` and stop cleanly (do not call `deputy done`).
      The runner will execute the higher-priority item next, then resume this one.
 9. When `deputy resume <slug>` returns empty (all steps succeeded):
