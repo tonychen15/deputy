@@ -51,6 +51,19 @@ _is_item_line() {
   return 0
 }
 
+# True (0) only for real release-delimiter lines matching the exact deputy format:
+# '<!-- release vX.Y.Z — YYYY-MM-DD -->'. Anchored to the date pattern to avoid
+# matching arbitrary HTML comments like '<!-- release notes -->'.
+_is_release_delim_line() {
+  local l="$1"
+  l="${l#"${l%%[![:space:]]*}"}"   # left-trim
+  case "$l" in
+    '<!-- release v'*' — '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -->')
+      return 0 ;;
+  esac
+  return 1
+}
+
 # Yield raw item lines: everything after the "## Items" heading. Falls back to
 # after a legacy "<!-- ... -->" legend, else every non-blank line. Non-item lines
 # (blanks, '###' section headers, release delimiters) are skipped for iteration
@@ -329,6 +342,27 @@ _regroup_backlog() {
       done)                       done_stream+=("$norm"); done_count=$((done_count + 1)) ;;
     esac
   done < "$BACKLOG"
+
+  # When called from cmd_clean for done items, strip release delimiters that are
+  # orphaned: no items appear between the delimiter and the next delimiter (or end).
+  # Only real release delimiters are stripped — arbitrary HTML comments are kept.
+  if [[ "${_REGROUP_STRIP_ORPHANED_DELIMS:-0}" -eq 1 && ${#done_stream[@]} -gt 0 ]]; then
+    local -a _fds=()
+    local _dsi _dsj _dsn=${#done_stream[@]} _dsh
+    for (( _dsi=0; _dsi<_dsn; _dsi++ )); do
+      if _is_release_delim_line "${done_stream[$_dsi]}"; then
+        _dsh=0
+        for (( _dsj=_dsi+1; _dsj<_dsn; _dsj++ )); do
+          _is_release_delim_line "${done_stream[$_dsj]}" && break
+          _is_item_line "${done_stream[$_dsj]}" && { _dsh=1; break; }
+        done
+        [[ "$_dsh" -eq 1 ]] && _fds+=("${done_stream[$_dsi]}")
+      else
+        _fds+=("${done_stream[$_dsi]}")
+      fi
+    done
+    done_stream=("${_fds[@]}")
+  fi
 
   # Always emit all seven '### Section (N)' headers, in order, for a stable
   # skeleton — even when a section is empty. Done is last (bottom of file).
@@ -1797,7 +1831,11 @@ cmd_clean() {
         printf '%s\n' "$line"
       done < "$BACKLOG" > "$tmp"
       mv "$tmp" "$BACKLOG"
-      _regroup_backlog
+      if [[ "$state" == "done" ]]; then
+        _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
+      else
+        _regroup_backlog
+      fi
     }
     _with_lock _do_clean_id
     _commit_queue "clean"
@@ -1849,7 +1887,11 @@ cmd_clean() {
       printf '%s\n' "$line"
     done < "$BACKLOG" > "$tmp"
     mv "$tmp" "$BACKLOG"
-    _regroup_backlog
+    if [[ "$filter_state" == "done" ]]; then
+      _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
+    else
+      _regroup_backlog
+    fi
   }
   _with_lock _do_clean
   _commit_queue "clean"

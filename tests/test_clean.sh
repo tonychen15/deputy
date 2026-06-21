@@ -174,3 +174,64 @@ assert_contains "$out" "cleaned 2" "bare clean removes 2 waiting items (back-com
 list_out="$(bash "$DEPUTY" list)"
 assert_eq "$(printf '%s\n' "$list_out" | grep -c 'w one\|w two')" "0" "bare clean removed waiting items"
 assert_contains "$list_out" "done three" "bare clean preserved done items"
+
+# ── Release-delimiter orphan stripping ────────────────────────────────────────
+lof() { grep -F -- "$1" "$DEPUTY_ROOT/BACKLOG.md" | head -1; }
+
+# --- clean --state done strips all delimiters when all done items are removed ---
+setup_repo
+printf '%s\n' '+[P1][#1] done alpha' '+[P2][#2] done beta' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null   # allocate IDs
+bash "$DEPUTY" release 1.0.0 >/dev/null 2>&1
+assert_eq "$(grep -cE '^<!-- release ' "$DEPUTY_ROOT/BACKLOG.md")" "1" "delimiter present before clean"
+bash "$DEPUTY" clean --state done
+assert_eq "$(grep -cE '^<!-- release ' "$DEPUTY_ROOT/BACKLOG.md")" "0" "clean --state done strips orphaned delimiter when all done items removed"
+assert_eq "$(grep -c 'done alpha\|done beta' "$DEPUTY_ROOT/BACKLOG.md")" "0" "clean --state done removed the done items"
+
+# --- trailing-bucket: sole item in release bucket is cleaned → delimiter stripped ---
+# Structure after setup: [post release item] <!-- release v2.0.0 --> [pre release item]
+# Cleaning 'pre release item' (the only item in the v2.0.0 bucket) leaves
+# nothing below the delimiter, so it is orphaned and must be stripped.
+setup_repo
+printf '+[P2][#1] pre release item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+bash "$DEPUTY" release 2.0.0 >/dev/null 2>&1
+bash "$DEPUTY" add "post release item" --p1 >/dev/null
+bash "$DEPUTY" set "$(lof 'post release item')" done >/dev/null
+id_pre="$(bash "$DEPUTY" list | grep 'pre release item' | grep -oP '\|\K[0-9]+(?=\|)')"
+bash "$DEPUTY" clean "$id_pre"
+assert_eq "$(grep -cE '^<!-- release v2.0.0' "$DEPUTY_ROOT/BACKLOG.md")" "0" "trailing-bucket: delimiter stripped when released bucket is emptied"
+assert_contains "$(bash "$DEPUTY" list)" "post release item" "trailing-bucket: post-release item preserved"
+assert_eq "$(grep -c 'pre release item' "$DEPUTY_ROOT/BACKLOG.md")" "0" "trailing-bucket: pre-release item removed"
+
+# --- delimiter preserved when items remain below it ---
+# Structure: [post release item] <!-- release v3.0.0 --> [pre release item]
+# Cleaning 'post release item' (above delimiter) still leaves 'pre release item'
+# below the delimiter, so the delimiter is NOT orphaned and must be kept.
+setup_repo
+printf '+[P1][#1] pre release item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+bash "$DEPUTY" release 3.0.0 >/dev/null 2>&1
+bash "$DEPUTY" add "post release item" --p1 >/dev/null
+bash "$DEPUTY" set "$(lof 'post release item')" done >/dev/null
+id_post="$(bash "$DEPUTY" list | grep 'post release item' | grep -oP '\|\K[0-9]+(?=\|)')"
+bash "$DEPUTY" clean "$id_post"
+assert_eq "$(grep -cE '^<!-- release v3.0.0' "$DEPUTY_ROOT/BACKLOG.md")" "1" "delimiter preserved when items remain below it"
+assert_contains "$(bash "$DEPUTY" list)" "pre release item" "pre-release item preserved"
+assert_eq "$(grep -c 'post release item' "$DEPUTY_ROOT/BACKLOG.md")" "0" "post-release item removed"
+
+# --- dry-run does NOT strip delimiters ---
+setup_repo
+printf '+[P1][#1] done item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+bash "$DEPUTY" release 4.0.0 >/dev/null 2>&1
+bash "$DEPUTY" clean --dry-run --state done >/dev/null
+assert_eq "$(grep -cE '^<!-- release v4.0.0' "$DEPUTY_ROOT/BACKLOG.md")" "1" "dry-run leaves delimiter intact"
+assert_contains "$(bash "$DEPUTY" list)" "done item" "dry-run leaves done item intact"
+
+# --- clean --state done does not strip non-release HTML comments ---
+setup_repo
+printf '+[P1][#1] done item\n<!-- arbitrary comment -->\n' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+bash "$DEPUTY" clean --state done
+assert_eq "$(grep -c '<!-- arbitrary comment -->' "$DEPUTY_ROOT/BACKLOG.md")" "1" "non-release HTML comment preserved after clean --state done"
