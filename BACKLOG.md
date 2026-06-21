@@ -15,9 +15,10 @@
 
 ### Surfaced (0)
 
-### Waiting (2)
+### Waiting (3)
 [P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
 [P3][#49] add one scenario for reviewer fallback case. If the coder is Codex, then the fallback order for reviewer should be Claude Code, Gemini
+[P1] Decouple the executed deputy from the git working-tree bin/deputy.sh: run/install deputy from a stable copy OUTSIDE the repo (e.g. ~/.local/share/deputy/deputy.sh) updated via atomic temp+rename, so a git merge or edit of the repo bin/deputy.sh can never truncate a live deputy invocation. Root cause of the #44 worker crash: 'line 2282: unexpected EOF' from reading a half-written script while three commits/merges rewrote bin/deputy.sh within 13s (18:20:22 worker live; 18:20:24/31/37 rewrites). Trade-off to confirm at grill: source changes then need an explicit install/sync step instead of being live; install.sh must atomic-rename and resolve the canonical repo root (see #10). Also fix the runner to ALWAYS hold .deputy/active-run.lock for its full lifetime (the #44 gap where no lock existed). Optional defense-in-depth: install the guardrail + DEPUTY_ROOT in interactive sessions so the lock can block Claude-initiated merges during a live run.
 
 ### Paused (0)
 
