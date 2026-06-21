@@ -728,6 +728,7 @@ _notify_label() {
   case "$1" in
     surfaced)  printf 'Needs Input' ;;
     proposed)  printf 'Worker proposed — approve?' ;;
+    warn)      printf 'Warning' ;;
     done)      printf 'Done' ;;
     failed)    printf 'Failed' ;;
     cancelled) printf 'Cancelled' ;;
@@ -771,7 +772,7 @@ _notify_email() {
 # or when no channels are configured.
 _notify() {
   local state="$1" desc="$2"
-  case "$state" in surfaced|proposed|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
+  case "$state" in surfaced|proposed|warn|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
   local channels; channels="$(_config_get notify)"
   [[ -n "$channels" ]] || return 0
   local label; label="$(_notify_label "$state")"
@@ -1237,6 +1238,7 @@ config keys (.deputy/config):
   human_backoff=1                 back off when an interactive Claude session is busy/recent in this repo (default 1; set 0 to disable)
   human_idle_grace_mins=N         allow cron to run when Claude has been idle this many minutes (default 5)
   waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
+  orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
@@ -1585,6 +1587,80 @@ _bump_locked() {
 _backoff_waiting_bump()  { _with_lock _bump_locked "$1" "$2"; }
 _backoff_waiting_reset() { _with_lock rm -f "$STATE_DIR/.backoff_waiting" 2>/dev/null; return 0; }
 
+# #57 (Part B): echo (one per line) the PIDs of LIVE interactive cli Claude sessions whose
+# cwd is in $1 (default $ROOT), validated by procStart (PID-recycle guard) — same checks as
+# _interactive_session_active, but ALL of them. Anchors the stale-orphan scan to real Claude
+# sessions, never a generic repo-cwd process sweep (which would flag legit user shells).
+_inrepo_session_pids() {
+  local repo_root="${1:-$ROOT}" norm_root sessions_dir f fields pid cwd entrypoint procstart norm_cwd stat_start
+  norm_root="$(realpath "$repo_root" 2>/dev/null || readlink -f "$repo_root" 2>/dev/null || printf '%s' "$repo_root")"
+  sessions_dir="$HOME/.claude/sessions"
+  { [[ -d "$sessions_dir" ]] && command -v jq >/dev/null 2>&1; } || return 0
+  for f in "$sessions_dir"/*.json; do
+    [[ -f "$f" ]] || continue
+    fields="$(jq -r '[.pid // "", .cwd // "", .entrypoint // "", .procStart // ""] | @tsv' "$f" 2>/dev/null)" || continue
+    IFS=$'\t' read -r pid cwd entrypoint procstart <<< "$fields"
+    [[ "$entrypoint" == "cli" && "$pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    norm_cwd="$(realpath "$cwd" 2>/dev/null || readlink -f "$cwd" 2>/dev/null || printf '%s' "$cwd")"
+    [[ "$norm_cwd" == "$norm_root" || "$norm_cwd" == "$norm_root/"* ]] || continue
+    if [[ -n "$procstart" ]]; then
+      stat_start="$(sed 's/.*) //' /proc/"$pid"/stat 2>/dev/null | awk '{print $20}' || true)"
+      [[ -n "$stat_start" && "$stat_start" != "$procstart" ]] && continue
+    fi
+    printf '%s\n' "$pid"
+  done
+}
+
+# #57 (Part B): WARN-ONLY stale-orphan detection. For each live in-repo cli Claude session,
+# walk its process descendants and warn (stderr/cron.log + notify) about any `bash` process
+# running longer than orphan_warn_mins (config, default 30) — a likely leaked background
+# command (e.g. a hung `until…sleep` review-wait) that pins the session non-idle and stalls
+# the heartbeat. NEVER kills (that's a human judgment call); just surfaces a `kill <pid>`
+# hint. Per-PID throttled via .deputy/.orphan_warned so the heartbeat doesn't re-notify
+# every tick. Best-effort: silently no-ops without ps/proc.
+_warn_stale_orphans() {
+  command -v ps >/dev/null 2>&1 || return 0
+  local _owm; _owm="$(_config_get orphan_warn_mins)"; _owm="${_owm:-30}"
+  [[ "$_owm" =~ ^[0-9]+$ ]] || _owm=30   # non-negative; 0 = warn about all orphans (noisy)
+  local roots; roots="$(_inrepo_session_pids)"; [[ -n "$roots" ]] || return 0
+  # Build pid -> "ppid comm etimes" once.
+  local snap; snap="$(ps -eo pid=,ppid=,comm=,etimes= 2>/dev/null)" || return 0
+  local thresh=$(( _owm * 60 )) now; now="$(_now_ms)"
+  # BFS descendants of each root; collect bash pids older than the threshold.
+  local -a queue=() ; local r; while IFS= read -r r; do [[ "$r" =~ ^[0-9]+$ ]] && queue+=("$r"); done <<< "$roots"
+  local -A seen=() ; local -a stale=()
+  local cur line p pp comm et
+  while [[ "${#queue[@]}" -gt 0 ]]; do
+    cur="${queue[0]}"; queue=("${queue[@]:1}")
+    [[ -n "${seen[$cur]:-}" ]] && continue; seen[$cur]=1
+    while IFS= read -r line; do
+      read -r p pp comm et <<< "$line"
+      [[ "$pp" == "$cur" ]] || continue
+      queue+=("$p")
+      if [[ "$comm" == "bash" && "$et" =~ ^[0-9]+$ && "$et" -gt "$thresh" ]]; then stale+=("$p|$et"); fi
+    done <<< "$snap"
+  done
+  local wf="$STATE_DIR/.orphan_warned"
+  if [[ "${#stale[@]}" -eq 0 ]]; then rm -f "$wf" 2>/dev/null; return 0; fi
+  local _owt=$(( _owm < 1 ? 1 : _owm )) throttle prior="" newf="" ent spid s_et last
+  throttle=$(( _owt * 60 * 1000 ))   # re-warn window (>= 1 min, so the heartbeat doesn't spam)
+  [[ -f "$wf" ]] && prior="$(cat "$wf" 2>/dev/null)"
+  for ent in "${stale[@]}"; do
+    spid="${ent%%|*}"; s_et="${ent#*|}"
+    last="$(printf '%s\n' "$prior" | awk -F'|' -v p="$spid" '$1==p{print $2}' | head -1)"
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    if [[ "$now" =~ ^[0-9]+$ && $(( now - last )) -ge "$throttle" ]]; then
+      printf 'deputy: WARNING — orphaned process pid %s (a bash command running %sm under an interactive Claude session in %s) may be pinning the session busy and stalling the heartbeat; investigate and, if dead weight, run: kill %s\n' \
+        "$spid" "$(( s_et / 60 ))" "$ROOT" "$spid" >&2
+      _notify warn "orphaned pid $spid running $(( s_et / 60 ))m in $ROOT — kill $spid" >/dev/null 2>&1 &
+      last="$now"
+    fi
+    newf+="$spid|$last"$'\n'
+  done
+  printf '%s' "$newf" > "$wf" 2>/dev/null || true
+}
+
 # This function is self-contained: it does its own cmd_pick for the stale path.
 _human_backoff_gate() {
   local _hb; _hb="$(_config_get human_backoff)"; _hb="${_hb:-1}"
@@ -1798,6 +1874,10 @@ cmd_run() {
       printf 'deputy: run: id must be an integer (got: %s)\n' "$target_id" >&2; return 2
     fi
   fi
+
+  # #57 (Part B): warn (never kill) about leaked long-running orphans under in-repo
+  # Claude sessions that could pin a session busy and stall the heartbeat. Best-effort.
+  _warn_stale_orphans || true
 
   # ── Default-branch guard ────────────────────────────────────────────────────
   # Refuse to run if the repo is on a feature branch. This prevents the cron
