@@ -777,6 +777,7 @@ _notify_label() {
     surfaced)  printf 'Needs Input' ;;
     proposed)  printf 'Worker proposed — approve?' ;;
     warn)      printf 'Warning' ;;
+    spawn)     printf 'Autonomous spawn' ;;
     done)      printf 'Done' ;;
     failed)    printf 'Failed' ;;
     cancelled) printf 'Cancelled' ;;
@@ -820,7 +821,7 @@ _notify_email() {
 # or when no channels are configured.
 _notify() {
   local state="$1" desc="$2"
-  case "$state" in surfaced|proposed|warn|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
+  case "$state" in surfaced|proposed|warn|spawn|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
   local channels; channels="$(_config_get notify)"
   [[ -n "$channels" ]] || return 0
   local label; label="$(_notify_label "$state")"
@@ -1306,6 +1307,7 @@ config keys (.deputy/config):
   waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
   auto_merge=1                    allow a spawned (headless) worker to git-merge its branch to the default branch; default 0 = the guardrail blocks the merge and the worker must surface the branch for human review
+  notify_on_spawn=0               silence the notification + cron.log '===SPAWN===' line emitted when the heartbeat autonomously spawns a worker; default 1 = announce every autonomous pickup (never silent)
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
@@ -1899,6 +1901,26 @@ _run_is_headed() {
 # to the log, then print it once. $log is ALWAYS written so _detect_outcome/quota
 # parsing is mode-independent. Returns the orchestrator's REAL exit code
 # (PIPESTATUS[0] under tee, not tee's). Saves/restores errexit for callers under set -e.
+# #59: when the heartbeat AUTONOMOUSLY spawns a worker (headless/no-TTY), announce it loudly
+# so an unattended pickup is never silent (the gap behind the 24min invisible runaway): a
+# prominent ===SPAWN=== line to stderr (-> cron.log) + a notification. No-ops for interactive
+# runs (the human is watching) and when notify_on_spawn=0. Backgrounded; never blocks.
+_fire_spawn_notify() {
+  local line="$1" pid="${2:-$$}" on parsed _rest id desc
+  _run_is_headed && return 0
+  on="$(_config_get notify_on_spawn)"; [[ "${on:-1}" == "0" ]] && return 0
+  parsed="$(_parse_item "$line")"; _rest="${parsed#*|}"; _rest="${_rest#*|}"
+  id="${_rest%%|*}"; desc="${_rest#*|}"
+  printf 'deputy: ===SPAWN=== pid=%s item=#%s — autonomous worker started: %s\n' "$pid" "${id:-?}" "$desc" >&2
+  # Background by default (a slow push/desktop channel must not delay the spawn);
+  # DEPUTY_NOTIFY_SYNC=1 runs it inline (tests).
+  if [[ "${DEPUTY_NOTIFY_SYNC:-0}" == "1" ]]; then
+    _notify spawn "autonomous worker started for #${id:-?}: $desc" >/dev/null 2>&1 || true
+  else
+    _notify spawn "autonomous worker started for #${id:-?}: $desc" >/dev/null 2>&1 &
+  fi
+}
+
 _run_orchestrator_logged() {
   local item="$1" provider="$2" log="$3" rc _had_e=0
   [[ $- == *e* ]] && _had_e=1
@@ -2018,7 +2040,7 @@ cmd_run() {
     # Read item line from line 1 of claim file (claim file now has 2 lines).
     running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
     log="$(mktemp)"
-    rc=0
+    rc=0   # #59: NO spawn-notify here — a targeted `deputy run <id>` is a deliberate invocation, not the heartbeat
     _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
     rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
     outcome="$(_detect_outcome claude "$rc" "$log")"
@@ -2076,6 +2098,7 @@ cmd_run() {
     fi
 
     log="$(mktemp)"
+    _fire_spawn_notify "$running_line" "$$"   # #59: announce an autonomous (headless) spawn
     rc=0
     _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
     rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true

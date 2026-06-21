@@ -22,3 +22,7 @@ orphan_warn_mins=30
 # branch. Default 0 — the guardrail BLOCKS the merge and the worker must SURFACE the branch
 # for a human to review and merge. Set 1 only if you trust autonomous merges.
 auto_merge=0
+# notify_on_spawn: announce (notification + a prominent cron.log "===SPAWN===" line)
+# every time the heartbeat autonomously spawns a worker, so an unattended pickup is never
+# silent. Default 1 (on). Set 0 to silence. Interactive runs never fire it.
+notify_on_spawn=1
