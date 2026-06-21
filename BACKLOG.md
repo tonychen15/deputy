@@ -14,8 +14,9 @@
 
 ### Surfaced (0)
 
-### Waiting (1)
+### Waiting (2)
 [P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
+[P3] deputy set: accept an item id (N or #N) as the <line> argument — resolve it to the unique current BACKLOG line by parsed id field (robust vs description text that may contain [#N]), then transition; keep the existing whole-line form intact for the headless orchestrator contract; error clearly when the id is absent. Consistency with 'deputy run #N' and 'deputy clean N'. Update deputy help usage + test_set.sh.
 
 ### Paused (0)
 
