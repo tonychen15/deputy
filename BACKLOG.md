@@ -28,9 +28,7 @@
 ;[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 ;[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
-### Failed / Cancelled / Duplicate (2)
-=[P3][#49] add one scenario for reviewer fallback case. If the coder is Codex, then the fallback order for reviewer should be Claude Code, Gemini
-=[P1][#19] Priority preemption: when a higher-priority item arrives, checkpoint-pause the running lower-priority item (waypoint forward-recovery) and resume it later — DEPENDS ON wiring waypoint into execution + parallel-worktree concurrency; needs a 'paused' status
+### Failed / Cancelled / Duplicate (0)
 
 ### Done (44)
 +[P1][#54] check the reviewer queue is codex and gemini when the author is Claude. When the author is Codex, then the reviewer queue should be claude and gemini
