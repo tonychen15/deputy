@@ -13,6 +13,11 @@ queue pattern. Its distinguishing trait versus blind backlog-drainers is
 **discernment**: it decides *whether* and *how hard* to do each item, escalates the
 genuinely hard calls, and never blocks the queue while it waits on you.
 
+> **v1.2.0** — **autonomous runs are now safe to leave armed**: `deputy` re-execs from an
+> immutable `~/.cache/deputy/` snapshot so a mid-run edit can't truncate it (#50); a headless
+> worker **surfaces its branch for review instead of auto-merging** and `max_items` is bounded
+> (#60); the heartbeat **announces every autonomous spawn** (#59) and **reaps** a worker's
+> leaked subtree (#58); plus stale-orphan warnings (#57) and author-aware xReview (#54).
 > **v1.1.1** — adds a `deputy version` subcommand (`--version`/`-V`). Builds on
 > **v1.1.0**, where the xReview gate became **Codex-default and author-aware**: the
 > reviewer is chosen by `deputy route review` (author-aware: claude-first when codex/gemini
@@ -118,7 +123,7 @@ your existing `BACKLOG.md` or config:
 ./inst_deputy.sh cron           # or: deputy cron --ensure
 ```
 
-**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.1.1`).
+**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.2.0`).
 
 ---
 
@@ -174,7 +179,7 @@ tool keeps grouped into `### ` sub-sections (with live counts), in workflow orde
 
 ### Done (2)
 +[P1][#8] Add caching
-<!-- release v1.1.1 — 2026-06-19 -->
+<!-- release v1.2.0 — 2026-06-21 -->
 +[P0][#5] Initial setup
 ```
 
@@ -276,7 +281,7 @@ templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)
 BACKLOG.md               # Deputy's own task queue
-VERSION                  # 1.1.1
+VERSION                  # 1.2.0
 ```
 
 Run the test suite with `bash tests/run.sh`.

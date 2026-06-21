@@ -1,5 +1,44 @@
 # Changelog
 
+## v1.2.0 — 2026-06-21
+
+Minor release. **Autonomous runs are now safe to leave armed.** A batch of hardening so a
+headless heartbeat worker can't crash, run stale code, silently run away, auto-merge
+unsupervised, or leak processes — plus reviewer-routing, run-mode, and CLI improvements.
+
+### Autonomy safety
+- **Decoupled executable (#50).** `deputy` re-execs at startup from an immutable,
+  content-addressed snapshot under `~/.cache/deputy/`, so editing or merging `bin/deputy.sh`
+  mid-run can no longer truncate a running invocation.
+- **Surface, don't auto-merge (#60).** A spawned (headless) worker no longer merges its
+  branch to the default branch — the guardrail blocks it (unless `auto_merge=1`) and the
+  worker SURFACES the branch for human review (`deputy set <line> surfaced --ready-merge`,
+  excluded from the blocking-surfaced count). `max_items` now defaults to **1** and has no
+  unbounded mode, so a single tick can't drain + merge the whole queue.
+- **Announce every autonomous spawn (#59).** The heartbeat emits a `===SPAWN===` cron.log
+  line + a notification (`notify_on_spawn`, default on) whenever it auto-spawns a worker.
+- **Reap leaked worker subtrees (#58).** A headless worker runs in its own process group;
+  deputy reaps any background children it leaks on completion (never deputy's own group).
+- **Stale-orphan warnings (#57).** On each run deputy WARNS (never kills) about a long-lived
+  bash orphan under an in-repo Claude session (`orphan_warn_mins`, default 30).
+- **Cautious `waiting` back-off (#55).** A session at the (undocumented) `waiting` status
+  must hold it for `waiting_backoff_strikes` ticks (default 3) before the heartbeat proceeds.
+- **Worker-proposed tasks need approval (#53).** A `deputy add` by a running worker lands
+  `surfaced` (a proposal), never auto-runs, until a human approves it.
+
+### Reviewer routing & run modes
+- **Author-aware xReview (#54).** The reviewer is the highest-preference non-author peer
+  (Codex-first when Claude authored; Claude-first when Codex/Gemini did) — never the author.
+- **Headed worker runs (#51).** An interactive `deputy run` streams the worker's output
+  live; cron/no-TTY stays buffered.
+
+### CLI & UX
+- **`deputy set <id> <state>` (#56)** accepts an item id, like `run #N` / `clean N`.
+- **`deputy list --<state>`** filters by state (#48); read-only `status`/`list` no longer
+  solicit an action (#45); state symbols migrated with dual-read back-compat (#46).
+- New config keys: `auto_merge`, `notify_on_spawn`, `orphan_warn_mins`,
+  `waiting_backoff_strikes`, `human_idle_grace_mins`, `heartbeat_mins`.
+
 ## v1.1.1 — 2026-06-19
 
 Patch release. Usability.
