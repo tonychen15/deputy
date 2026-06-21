@@ -240,11 +240,14 @@ delimiter comments.
   proposal never stalls the queue.
 - **Human-session back-off** — `deputy run` detects live interactive Claude sessions in
   the repo (`~/.claude/sessions/`) and steps aside while they are busy or recently idle.
-  Once Claude has been idle longer than `human_idle_grace_mins` (default 5), cron may
-  proceed. It **re-checks on every drain-loop iteration**, so an item you add mid-run is
-  never claimed out from under you. A stale (crashed-session) file instead **surfaces**
-  the top item for you to check. Configurable via `human_backoff=1` in `.deputy/config`
-  (default ON).
+  An `idle` session that's been idle longer than `human_idle_grace_mins` (default 5) lets
+  cron proceed; a `waiting` session (idle-at-prompt, but an *undocumented* status) must
+  hold `waiting` for `waiting_backoff_strikes` consecutive heartbeat ticks (default 3)
+  before cron proceeds — a cautious persistence check, since a transient mid-tool
+  `waiting` can't survive N ticks. It **re-checks on every drain-loop iteration**, so an
+  item you add mid-run is never claimed out from under you. A stale (crashed-session) file
+  instead **surfaces** the top item for you to check. Configurable via `human_backoff=1`
+  in `.deputy/config` (default ON).
 - **Default-branch guard** — `deputy run` refuses to start when the repo is not on its
   default branch, preventing accidental execution on feature branches.
 - **Risky-op guardrail** (`hooks/guardrail.sh`) — a PreToolUse hook scoped to the
