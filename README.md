@@ -228,6 +228,13 @@ delimiter comments.
   is running, the orchestrator **checkpoint-pauses** the running item (`^ paused`, its work
   committed on its `deputy/<slug>` branch), runs the higher-priority one, then **resumes**
   the paused item from its first uncommitted step — no work lost, no queue blocked.
+- **Worker proposals need your approval** — when an autonomous worker calls `deputy add`
+  (to record follow-up work it discovered), the new task is filed as a **proposal**: it
+  lands `surfaced` with a `.deputy/proposed-<id>` marker, notifies you, and is **never
+  auto-run**. Approve it with `deputy set "<line>" waiting` or reject with
+  `deputy set "<line>" cancelled`. Your own `deputy add` is unaffected (it queues and may
+  auto-run). Proposals don't count toward the "one surfaced at a time" guard, so a pending
+  proposal never stalls the queue.
 - **Human-session back-off** — `deputy run` detects live interactive Claude sessions in
   the repo (`~/.claude/sessions/`) and steps aside while they are busy or recently idle.
   Once Claude has been idle longer than `human_idle_grace_mins` (default 5), cron may

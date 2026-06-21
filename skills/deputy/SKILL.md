@@ -101,9 +101,13 @@ If no coder is available, `deputy cron --reschedule "<reset text>"` — never bu
 
 ### 2b. Complex → grill, then spine loop (N steps)
 
-- If another item is already **surfaced** (`deputy status` shows `surfaced: 1`), leave
-  this item untouched and stop — only one surfaced at a time. The runner will move on to
-  lower-priority runnable items.
+- If another item is already surfaced **as a blocked item** (a stuck run awaiting your
+  help — *not* a worker proposal), leave this item untouched and stop — only one such
+  surface at a time. The runner will move on to lower-priority runnable items. (**Worker
+  proposals** — see below — are also `surfaced` but carry a `.deputy/proposed-<id>` marker
+  and do **not** count toward this guard, so a pending proposal never blocks scheduling.
+  Note the raw `deputy status` surfaced count *includes* proposals, so don't gate on that
+  number alone — distinguish by the marker.)
 - Otherwise (no human reachable / headless): draft the clarifying questions + a proposed
   plan + affected files + risk into `.deputy/<slug>.questions.md`, then
   `deputy set "<item-line>" surfaced` and **stop**. Do not block.
@@ -237,6 +241,16 @@ counts against the retry budget in §4).
   is a recorded degraded self-review (only the author up + `auto_mode=1`).
 - **No plan/step/design advances without an APPROVED verdict**, logged to
   `.deputy/<slug>.review.md`.
+- **Worker-proposed tasks need human approval.** When *you* (a headless worker) run
+  `deputy add` while working an item — to record newly-discovered follow-up work — deputy
+  detects the worker context and files it as a **proposal**: the new item lands `surfaced`
+  (not `waiting`), gets a `.deputy/proposed-<id>` marker, fires a notification, and is
+  **never auto-run**. It stays inert until a human **approves** it (`deputy set "<line>"
+  waiting`) or **rejects** it (`deputy set "<line>" cancelled`). **Do not self-approve** —
+  it is policy, not enforced by `deputy set`; only a human flips a proposal to `waiting`.
+  Just `deputy add` the follow-up and keep working your current item — adding a proposal
+  does not interrupt or block your run. (A human's own `deputy add` is unaffected — it
+  queues + auto-runs as before.)
 - Respect `deputy config max_items` (stop after that many per cycle) and `time_cap_mins`.
 - The `<item-line>` you were given is the exact match key for `deputy set`; if you ever
   lose it, re-fetch with `deputy list` and reconstruct the running-form line.
@@ -285,7 +299,7 @@ mass/irreversible rewrites.
 | (none) | `waiting` | Queued, ready to run |
 | `~` | `triaging` | Being classified |
 | `@` | `running` | Actively executing |
-| `?` | `surfaced` | Awaiting human input |
+| `?` | `surfaced` | Awaiting human input — either a *blocked* running item, or a *worker-proposed task* (carries a `.deputy/proposed-<id>` marker; approve with `set waiting`, reject with `set cancelled`) |
 | `+` | `done` | Completed (legacy `#` still read, auto-migrated) |
 | `!` | `failed` | Terminal failure |
 | `%` | `cancelled` | Won't-do, terminal |
