@@ -10,12 +10,12 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
 
 ### Surfaced (0)
 
-### Waiting (1)
-[P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
+### Waiting (0)
 
 ### Paused (0)
 
