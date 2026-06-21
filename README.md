@@ -125,6 +125,8 @@ deputy list [--<state>] # parsed items: state|priority|id|description; optional
                        # --<state> (e.g. --waiting, --running, --deferred) filters to that state
 deputy status          # counts by state
 deputy run [--once]    # work the backlog (triage → do / surface), until empty or session limit
+                       # interactive (TTY): streams the worker's output live; cron/no-TTY: buffered
+deputy run --headless  # force buffered output even interactively (or set headed=0 in .deputy/config)
 deputy run <id>        # targeted run: bypass priority order and run a specific item by id
 deputy reflect         # re-triage report: learnings, untagged items, reprioritization, duplicates
 deputy release [version] # mark a release boundary: insert a dated delimiter at the top of Done
