@@ -207,6 +207,20 @@ _active_run_live() {
   return 0
 }
 
+# True iff this process is an autonomous Deputy *worker* (the headless orchestrator
+# spawned by cmd_run via _spawn_orchestrator), not an interactive human. Requires
+# DEPUTY_GUARDED=1 AND a positive DEPUTY_ACTIVE_RUN_PID AND a LIVE active-run lock
+# whose owning pid matches — so a stale exported env can never gate a human's add.
+# (Compares the lock's pid file, not the owner file, which stores run/targeted.)
+_is_worker_context() {
+  [[ "${DEPUTY_GUARDED:-}" == "1" ]] || return 1
+  local arp="${DEPUTY_ACTIVE_RUN_PID:-}"
+  [[ "$arp" =~ ^[0-9]+$ ]] || return 1
+  _active_run_live || return 1
+  local lock_pid; lock_pid="$(sed -n '1p' "$ACTIVE_RUN_DIR/pid" 2>/dev/null || true)"
+  [[ "$lock_pid" == "$arp" ]]
+}
+
 _active_run_summary() {
   local d="${1:-$ACTIVE_RUN_DIR}" pid owner item started
   pid="$(sed -n '1p' "$d/pid" 2>/dev/null || printf '?')"
@@ -472,6 +486,40 @@ _desc_exists() {
   return 1
 }
 
+# Echo the next free item ID (max existing ID across ALL items + 1). Mirrors the
+# max-scan in _allocate_ids. Callers must hold the queue lock when the value is used
+# to serialize a new item, so it stays unique against concurrent adds.
+_next_id() {
+  [[ -f "$BACKLOG" ]] || { printf '1'; return 0; }
+  local max_id=0 raw parsed _ni_id
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    _ni_id="${parsed#*|}"; _ni_id="${_ni_id#*|}"; _ni_id="${_ni_id%%|*}"
+    [[ "$_ni_id" =~ ^[0-9]+$ && "$_ni_id" -gt "$max_id" ]] && max_id="$_ni_id"
+  done < <(_each_item)
+  printf '%s' "$(( max_id + 1 ))"
+}
+
+# #53: count surfaced items that genuinely BLOCK (a running item that flipped to
+# surfaced because it needs human help) — EXCLUDING worker proposals, which are also
+# 'surfaced' but carry a .deputy/proposed-<id> marker and must never stall scheduling
+# or the cascade guard. A surfaced item with no id is counted as blocking (we cannot
+# prove it is a proposal). Used in place of the raw cmd_status surfaced count.
+_blocking_surfaced_count() {
+  local n=0 raw parsed state _bs_rest _bs_id
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    [[ "$state" == "surfaced" ]] || continue
+    _bs_rest="${parsed#*|}"; _bs_rest="${_bs_rest#*|}"; _bs_id="${_bs_rest%%|*}"
+    if [[ "$_bs_id" =~ ^[0-9]+$ && -f "$STATE_DIR/proposed-$_bs_id" ]]; then
+      continue   # a worker proposal — not a blocking surface
+    fi
+    n=$(( n + 1 ))
+  done < <(_each_item)
+  printf '%s' "$n"
+}
+
 cmd_add() {
   # Priority flags: -ui/-u/-i (urgent+important / urgent / important) are aliases
   # for --p0/--p1/--p2. A `--` marker ends flag parsing so a description may begin
@@ -508,16 +556,58 @@ cmd_add() {
     printf 'deputy: description may not contain a newline\n' >&2
     return 2
   fi
+  # #53: a task added BY a worker (the headless orchestrator) is a *proposal* that
+  # needs human approval — it must never auto-schedule itself. It lands 'surfaced'
+  # (not waiting), drops a .deputy/proposed-<id> marker so it's distinguishable from
+  # a blocked-item surface, skips the autorun, and notifies. Human/CLI adds are
+  # unchanged. A per-invocation handoff file (.proposed_pending.$$) signals "a new
+  # proposal was created" across the _with_lock subshell ($$ is stable across the
+  # subshell) so the notify can fire after the lock — and concurrent adds, each with
+  # a distinct $$, never erase each other's flag.
+  local _worker=0
+  _is_worker_context && _worker=1
+  rm -f "$STATE_DIR/.proposed_pending.$$" 2>/dev/null || true
   _do_add() {
     _allocate_ids
     if _desc_exists "$text"; then
       printf 'deputy: already present: %s\n' "$text"; return 0
+    fi
+    if [[ "$_worker" -eq 1 ]]; then
+      # Eagerly assign the id here (so the marker can name it), so _allocate_ids will
+      # never revisit this line — meaning we must apply the P3 default now, exactly as
+      # _allocate_ids would for an un-prioritized item.
+      local _nid _pprio; _nid="$(_next_id)"; _pprio="${prio:-P3}"
+      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")"
+      mkdir -p "$STATE_DIR" 2>/dev/null || true
+      {
+        printf 'proposed-by-run-pid: %s\n' "${DEPUTY_ACTIVE_RUN_PID:-}"
+        printf 'proposed-at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'item: %s\n' "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")"
+        printf 'approve: deputy set "<line>" waiting\n'
+        printf 'reject:  deputy set "<line>" cancelled\n'
+      } > "$STATE_DIR/proposed-$_nid"
+      printf '%s' "$_nid" > "$STATE_DIR/.proposed_pending.$$"
+      printf 'deputy: proposed (awaiting human approval, #%s): %s\n' "$_nid" "$text"
+      return 0
     fi
     _append_item "$(_serialize_item waiting "$prio" "" "$text")"
     printf 'deputy: added: %s\n' "$text"
   }
   _with_lock _do_add
   _commit_queue "add"
+  if [[ "$_worker" -eq 1 ]]; then
+    # A worker proposal never autoruns. Notify only if a NEW proposal was created
+    # (the handoff file is absent on a duplicate, which returns early above).
+    if [[ -s "$STATE_DIR/.proposed_pending.$$" ]]; then
+      if [[ "${DEPUTY_NOTIFY_SYNC:-0}" == "1" ]]; then
+        _notify proposed "$text" >/dev/null 2>&1 || true
+      else
+        _notify proposed "$text" >/dev/null 2>&1 &
+      fi
+    fi
+    rm -f "$STATE_DIR/.proposed_pending.$$" 2>/dev/null || true
+    return 0
+  fi
   # Trigger execution immediately if nothing is running and work is available.
   # Set DEPUTY_NO_AUTORUN=1 to suppress (used in tests that exercise add in isolation).
   if [[ "${DEPUTY_NO_AUTORUN:-0}" != "1" ]] && ! _live_claim_exists && [[ -n "$(cmd_pick)" ]]; then
@@ -637,6 +727,7 @@ _valid_state() {
 _notify_label() {
   case "$1" in
     surfaced)  printf 'Needs Input' ;;
+    proposed)  printf 'Worker proposed — approve?' ;;
     done)      printf 'Done' ;;
     failed)    printf 'Failed' ;;
     cancelled) printf 'Cancelled' ;;
@@ -680,7 +771,7 @@ _notify_email() {
 # or when no channels are configured.
 _notify() {
   local state="$1" desc="$2"
-  case "$state" in surfaced|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
+  case "$state" in surfaced|proposed|done|failed|cancelled|duplicate) ;; *) return 0 ;; esac
   local channels; channels="$(_config_get notify)"
   [[ -n "$channels" ]] || return 0
   local label; label="$(_notify_label "$state")"
@@ -717,6 +808,13 @@ cmd_set() {
     local _parsed _desc _id_rest2
     _parsed="$(_parse_item "$from")"
     _id_rest2="${_parsed#*|}"; _id_rest2="${_id_rest2#*|}"; _desc="${_id_rest2#*|}"
+    # #53: once a proposal (surfaced) is approved (->waiting), rejected (->cancelled),
+    # or otherwise leaves surfaced, its .deputy/proposed-<id> marker is obsolete. The
+    # rm is a no-op for non-proposal items (no marker). Skip while staying surfaced.
+    if [[ "$newstate" != "surfaced" ]]; then
+      local _ps_id="${_id_rest2%%|*}"
+      [[ "$_ps_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_ps_id" 2>/dev/null || true
+    fi
     # Background by default so slow channels (e.g. push/curl) don't block the CLI.
     # Set DEPUTY_NOTIFY_SYNC=1 to run synchronously (used in tests).
     if [[ "${DEPUTY_NOTIFY_SYNC:-0}" == "1" ]]; then
@@ -1457,8 +1555,10 @@ _human_backoff_gate() {
         "$_isa_stale_pid" >&2
     else
       # Cascade guard: do not surface a second item if one is already surfaced.
+      # #53: count only BLOCKING surfaces — worker proposals (also 'surfaced') must
+      # not suppress surfacing a genuinely-stuck item.
       local _surfaced_count
-      _surfaced_count="$(cmd_status | grep '^surfaced:' | awk '{print $2}')"
+      _surfaced_count="$(_blocking_surfaced_count)"
       if [[ "${_surfaced_count:-0}" -gt 0 ]]; then
         printf 'deputy: stale Claude session file found (PID %s) — an item is already surfaced; skipping cascade surface.\n' \
           "$_isa_stale_pid" >&2
@@ -1831,6 +1931,9 @@ cmd_clean() {
         printf '%s\n' "$line"
       done < "$BACKLOG" > "$tmp"
       mv "$tmp" "$BACKLOG"
+      # #53: drop the proposal marker for the removed id (filter_id is validated
+      # numeric) so a freed/reusable id can't inherit a stale proposed-<id> marker.
+      rm -f "$STATE_DIR/proposed-$filter_id" 2>/dev/null || true
       if [[ "$state" == "done" ]]; then
         _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
       else
@@ -1887,6 +1990,15 @@ cmd_clean() {
       printf '%s\n' "$line"
     done < "$BACKLOG" > "$tmp"
     mv "$tmp" "$BACKLOG"
+    # #53: drop any proposal marker for a removed item, so a freed (and later
+    # reusable) id can never inherit a stale .deputy/proposed-<id> marker that would
+    # hide a genuine surfaced blocker from _blocking_surfaced_count.
+    local _dc_parsed _dc_rest _dc_id
+    for r in "${doomed[@]}"; do
+      _dc_parsed="$(_parse_item "$r")"
+      _dc_rest="${_dc_parsed#*|}"; _dc_rest="${_dc_rest#*|}"; _dc_id="${_dc_rest%%|*}"
+      [[ "$_dc_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_dc_id" 2>/dev/null || true
+    done
     if [[ "$filter_state" == "done" ]]; then
       _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
     else
