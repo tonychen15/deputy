@@ -19,7 +19,7 @@
 [P3][#49] add one scenario for reviewer fallback case. If the coder is Codex, then the fallback order for reviewer should be Claude Code, Gemini
 [P2][#51] Add a headed (visible) worker mode for interactive deputy run: when a TTY is present, run the worker in the FOREGROUND and stream its output live to the terminal (blocking until the item finishes) instead of spawning a detached headless claude -p, so the human can watch progress without inspecting waypoints. Applies to simple AND complex items. Headless stays the only mode for cron/heartbeat runs (no TTY). Additive: headed mode still writes the waypoint ledger, the .deputy/<slug>.review.md trail, and appends cron.log exactly as headless does, so runs stay inspectable after the fact. Decided: stream-in-current-terminal (NOT tmux pane or new window). Confirm at grill: flag/config name (e.g. --headed or headed=1) and whether headed auto-defaults when stdout is a TTY.
 [P2][#52] change human grace period from 5 min to 150 seconds
-[P1] check the reviewer queue is codex and gemini when the author is Claude. When the author is Codex, then the reviewer queue should be claude and gemini
+[P1][#54] check the reviewer queue is codex and gemini when the author is Claude. When the author is Codex, then the reviewer queue should be claude and gemini
 
 ### Paused (0)
 
