@@ -1188,7 +1188,9 @@ commands:
                                   optional --<state> (e.g. --waiting, --running, --deferred)
                                   lists only items in that state
   status                          counts by state
-  run [<id>] [--once]             work the backlog: claim the top item, run the orchestrator
+  run [<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
+                                  (interactive/TTY runs stream output live; --headless or
+                                  headed=0 config forces the buffered/cron behavior)
                                   if <id> given (integer; '#7' also accepted), run that
                                   specific item bypassing priority order (targeted, one item only)
   set "<exact line>" <state>      transition an item's state by exact-line match
@@ -1650,14 +1652,47 @@ _default_branch() {
   printf ''
 }
 
+# #51: headed (live-streaming) vs headless (buffered) run output. Headed when the
+# run is interactive — stdout is a TTY — UNLESS opted out via the --headless flag
+# (_RUN_HEADLESS=1) or `headed=0` in .deputy/config. cron/no-TTY runs are always
+# headless. Called only within cmd_run's call chain (dynamic scope supplies
+# _RUN_HEADLESS).
+_run_is_headed() {
+  [[ "${_RUN_HEADLESS:-0}" == "1" ]] && return 1
+  [[ "$(_config_get headed)" == "0" ]] && return 1
+  [[ -t 1 ]]
+}
+
+# Run the orchestrator for one item, logging to $3. Headed -> stream live via tee
+# (the human watches in real time) while still capturing the log; headless -> buffer
+# to the log, then print it once. $log is ALWAYS written so _detect_outcome/quota
+# parsing is mode-independent. Returns the orchestrator's REAL exit code
+# (PIPESTATUS[0] under tee, not tee's). Saves/restores errexit for callers under set -e.
+_run_orchestrator_logged() {
+  local item="$1" provider="$2" log="$3" rc _had_e=0
+  [[ $- == *e* ]] && _had_e=1
+  set +e
+  if _run_is_headed; then
+    _spawn_orchestrator "$item" "$provider" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+  else
+    _spawn_orchestrator "$item" "$provider" >"$log" 2>&1
+    rc=$?
+    cat "$log"
+  fi
+  [[ "$_had_e" -eq 1 ]] && set -e
+  return "$rc"
+}
+
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
 # If an integer <id> is given (deputy run <id> or deputy run '#<id>'), run that
 # specific item bypassing priority, then return (targeted = one item only).
 cmd_run() {
-  local once=0 target_id=""
+  local once=0 target_id="" _RUN_HEADLESS=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --once) once=1; shift ;;
+      --headless) _RUN_HEADLESS=1; shift ;;
       '#'*) target_id="${1#'#'}"; shift ;;
       *)
         if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -1746,12 +1781,9 @@ cmd_run() {
     # Read item line from line 1 of claim file (claim file now has 2 lines).
     running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
     log="$(mktemp)"
-    set +e
-    _spawn_orchestrator "$running_line" "$decision" >"$log" 2>&1
-    rc=$?
-    set -e
+    rc=0
+    _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
     rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
-    cat "$log"
     outcome="$(_detect_outcome claude "$rc" "$log")"
     if [[ "$outcome" == "quota_exhausted" ]]; then
       reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
@@ -1807,12 +1839,9 @@ cmd_run() {
     fi
 
     log="$(mktemp)"
-    set +e
-    _spawn_orchestrator "$running_line" "$decision" >"$log" 2>&1
-    rc=$?
-    set -e
+    rc=0
+    _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
     rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
-    cat "$log"   # surface the orchestrator's output (headless log / interactive)
     outcome="$(_detect_outcome claude "$rc" "$log")"
     if [[ "$outcome" == "quota_exhausted" ]]; then
       # Pass only the relevant reset/limit line(s) to the rescheduler (bounded;
