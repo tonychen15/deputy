@@ -138,6 +138,34 @@ printf '? raw blocker no id\n' >> "$DEPUTY_ROOT/BACKLOG.md"
 bcount="$(source "$DEPUTY"; _blocking_surfaced_count)"
 assert_eq "$bcount" "1" "surfaced item without an id counts as blocking"
 
+# ── Test 9 (#60): a ready-merge surface is excluded from the blocking count ──────
+setup_repo
+bash "$DEPUTY" add "rm blocker" --p1
+bash "$DEPUTY" add "ready item 60" --p2
+bid="$(bash "$DEPUTY" list | grep -F 'rm blocker' | cut -d'|' -f3)"
+rid="$(bash "$DEPUTY" list | grep -F 'ready item 60' | cut -d'|' -f3)"
+bash "$DEPUTY" set "$bid" surfaced >/dev/null              # genuine blocked surface (no marker)
+bash "$DEPUTY" set "$rid" surfaced --ready-merge >/dev/null
+assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/ready-merge-$rid" && echo yes || echo no)" "yes" \
+  "set surfaced --ready-merge writes the ready-merge-<id> marker"
+bcount="$(source "$DEPUTY"; _blocking_surfaced_count)"
+assert_eq "$bcount" "1" "_blocking_surfaced_count excludes the ready-merge surface (only the blocker counts)"
+bash "$DEPUTY" set "$rid" done >/dev/null
+assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/ready-merge-$rid" && echo yes || echo no)" "no" \
+  "leaving surfaced removes the ready-merge marker"
+
+# ── Test 10 (#60): clean removes a stale ready-merge marker for the freed id ─────
+# (clean-by-id refuses surfaced items, so a leftover marker can only be reaped when the
+# item is cleaned in a terminal state — the defensive net for id reuse.)
+setup_repo
+bash "$DEPUTY" add "done item 60" --p2
+did="$(bash "$DEPUTY" list | grep -F 'done item 60' | cut -d'|' -f3)"
+bash "$DEPUTY" set "$did" done >/dev/null
+touch "$DEPUTY_ROOT/.deputy/ready-merge-$did"      # simulate a stale marker
+bash "$DEPUTY" clean "$did" >/dev/null
+assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/ready-merge-$did" && echo yes || echo no)" "no" \
+  "clean reaps a stale ready-merge marker for the freed id"
+
 # ── Test 9: clean removes a (leaked) proposal marker on both paths ───────────────
 setup_repo
 bash "$DEPUTY" add "to clean by id" --p2

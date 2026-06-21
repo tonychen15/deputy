@@ -560,8 +560,8 @@ _blocking_surfaced_count() {
     state="${parsed%%|*}"
     [[ "$state" == "surfaced" ]] || continue
     _bs_rest="${parsed#*|}"; _bs_rest="${_bs_rest#*|}"; _bs_id="${_bs_rest%%|*}"
-    if [[ "$_bs_id" =~ ^[0-9]+$ && -f "$STATE_DIR/proposed-$_bs_id" ]]; then
-      continue   # a worker proposal — not a blocking surface
+    if [[ "$_bs_id" =~ ^[0-9]+$ && ( -f "$STATE_DIR/proposed-$_bs_id" || -f "$STATE_DIR/ready-merge-$_bs_id" ) ]]; then
+      continue   # a worker proposal (#53) or a ready-to-merge surface (#60) — not a blocking surface
     fi
     n=$(( n + 1 ))
   done < <(_each_item)
@@ -839,6 +839,15 @@ _notify() {
 cmd_set() {
   local from="${1:-}" newstate="${2:-}"
   [[ -n "$from" && -n "$newstate" ]] || { printf 'deputy: set requires "<line>|<id>" <state>\n' >&2; return 2; }
+  # #60: --ready-merge marks a 'surfaced' item as "branch ready for human merge-review"
+  # (distinct from a blocked surface) so it's excluded from the blocking-surfaced count.
+  local _ready_merge=0 _a
+  for _a in "${@:3}"; do          # flags only AFTER <line> <state> — never the line/desc itself
+    case "$_a" in
+      --ready-merge) _ready_merge=1 ;;
+      *) printf 'deputy: set: unknown argument: %s\n' "$_a" >&2; return 2 ;;
+    esac
+  done
   _valid_state "$newstate" || { printf 'deputy: invalid state: %s\n' "$newstate" >&2; return 2; }
   # #56: accept an item id (N or #N) as the <line> arg, for parity with `run #N` /
   # `clean N`. Only when 'from' is NOT already a literal backlog line (whole-line form
@@ -865,6 +874,15 @@ cmd_set() {
     desc="${_id_rest#*|}"
     to="$(_serialize_item "$newstate" "$prio" "$_id" "$desc")"
     _flip_line "$from" "$to"
+    # #60: maintain the ready-merge marker under the SAME lock as the line flip, so scheduling
+    # never sees a 'surfaced' item without its marker (no blocking-count race window).
+    if [[ "$_id" =~ ^[0-9]+$ ]]; then
+      if [[ "$newstate" == "surfaced" && "$_ready_merge" == "1" ]]; then
+        printf 'ready-merge-at: %s\nbranch ready for human merge-review\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
+      elif [[ "$newstate" != "surfaced" ]]; then
+        rm -f "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
+      fi
+    fi
   }
   local _set_rc=0
   _with_lock _do_set || _set_rc=$?
@@ -2191,7 +2209,7 @@ cmd_clean() {
       mv "$tmp" "$BACKLOG"
       # #53: drop the proposal marker for the removed id (filter_id is validated
       # numeric) so a freed/reusable id can't inherit a stale proposed-<id> marker.
-      rm -f "$STATE_DIR/proposed-$filter_id" 2>/dev/null || true
+      rm -f "$STATE_DIR/proposed-$filter_id" "$STATE_DIR/ready-merge-$filter_id" 2>/dev/null || true
       if [[ "$state" == "done" ]]; then
         _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
       else
@@ -2255,7 +2273,7 @@ cmd_clean() {
     for r in "${doomed[@]}"; do
       _dc_parsed="$(_parse_item "$r")"
       _dc_rest="${_dc_parsed#*|}"; _dc_rest="${_dc_rest#*|}"; _dc_id="${_dc_rest%%|*}"
-      [[ "$_dc_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_dc_id" 2>/dev/null || true
+      [[ "$_dc_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_dc_id" "$STATE_DIR/ready-merge-$_dc_id" 2>/dev/null || true
     done
     if [[ "$filter_state" == "done" ]]; then
       _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog

@@ -77,6 +77,8 @@ DEPUTY_NOTIFY_SYNC=1 bash "$DEPUTY" set "\$1" done   # stdout NOT redirected -> 
 EOF
 chmod +x "$ORCH"
 setup_repo
+# #60: this test drains both items in one run — max_items now defaults to 1, so opt in.
+mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=2\n' >> "$DEPUTY_ROOT/.deputy/config"
 bash "$DEPUTY" add "one" --p0
 bash "$DEPUTY" add "two" --p1
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true \
