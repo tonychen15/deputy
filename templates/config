@@ -18,3 +18,7 @@ waiting_backoff_strikes=3
 # longer than this many minutes under an in-repo interactive Claude session — a likely
 # leaked background command that can pin the session busy and stall the heartbeat. Default 30.
 orphan_warn_mins=30
+# auto_merge: allow a spawned (headless) worker to git-merge its branch to the default
+# branch. Default 0 — the guardrail BLOCKS the merge and the worker must SURFACE the branch
+# for a human to review and merge. Set 1 only if you trust autonomous merges.
+auto_merge=0

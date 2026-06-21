@@ -1287,6 +1287,7 @@ config keys (.deputy/config):
   human_idle_grace_mins=N         allow cron to run when Claude has been idle this many minutes (default 5)
   waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
+  auto_merge=1                    allow a spawned (headless) worker to git-merge its branch to the default branch; default 0 = the guardrail blocks the merge and the worker must surface the branch for human review
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
@@ -1817,8 +1818,11 @@ _human_backoff_gate() {
 # build a headless prompt that runs the deputy orchestrator skill on this one item.
 _spawn_orchestrator() {
   local item="$1" provider="$2"
+  # #60: signal autonomous/headless to the worker (SKILL keys off it; the guardrail enforces
+  # surface-not-merge independently). 1 = headless/cron, 0 = headed/interactive.
+  local _headless; _run_is_headed && _headless=0 || _headless=1
   if [[ -n "${DEPUTY_ORCHESTRATOR_CMD:-}" ]]; then
-    "$DEPUTY_ORCHESTRATOR_CMD" "$item" "$provider"
+    DEPUTY_HEADLESS="$_headless" "$DEPUTY_ORCHESTRATOR_CMD" "$item" "$provider"
     return $?
   fi
   local prompt
@@ -1828,7 +1832,7 @@ Item (the exact current BACKLOG.md line — pass it verbatim to 'deputy set'): $
 Provider for coding: $provider
 Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
   local gset; gset="$(_guardrail_settings_path)"
-  DEPUTY_GUARDED=1 DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
+  DEPUTY_GUARDED=1 DEPUTY_HEADLESS="$_headless" DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
     claude -p "$prompt" --model claude-sonnet-4-6 \
       --allowedTools "Bash,Edit,Write,Read,Glob,Grep" \
       --settings "$gset"

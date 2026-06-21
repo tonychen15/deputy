@@ -89,7 +89,7 @@ assert_eq "$(bash_cmd 'ls -la')" "0" "ls allowed"
 assert_eq "$(bash_cmd 'git status')" "0" "git status allowed"
 assert_eq "$(bash_cmd 'git commit -m x')" "0" "git commit allowed"
 assert_eq "$(bash_cmd 'deputy set "x" done')" "0" "deputy set allowed"
-assert_eq "$(bash_cmd 'git checkout master && git merge --no-ff deputy/x')" "0" "done-gate merge allowed"
+assert_eq "$(bash_cmd 'git checkout master && git merge --no-ff deputy/x')" "2" "#60: a guarded worker's done-gate merge is now BLOCKED (auto_merge unset) — it must surface for human review"
 assert_eq "$(bash_cmd "git -C $WT reset --hard HEAD")" "0" "reset --hard inside wt allowed"
 assert_eq "$(bash_cmd "git -C \"$WT\" reset --hard HEAD")" "0" "reset --hard inside wt (quoted path) allowed"
 assert_eq "$(bash_cmd 'git reset --hard HEAD')" "2" "reset --hard outside wt denied"
@@ -182,3 +182,26 @@ assert_contains "$(cat "$gp")" "PreToolUse" "settings has PreToolUse hook"
 assert_contains "$(cat "$gp")" "$REPO/hooks/guardrail.sh" "settings references the hook by abs path"
 
 rm -rf "$ROOT"
+
+# --- #60: a guarded worker's auto-merge is blocked unless auto_merge=1 ---
+# Dedicated root ($ROOT was rm -rf'd just above).
+MR="$(mktemp -d)"; mkdir -p "$MR/.deputy/wt"
+mb() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)" \
+  | DEPUTY_GUARDED=1 DEPUTY_WT="$MR/.deputy/wt" DEPUTY_ROOT="$MR" bash "$HOOK" >/dev/null 2>&1; echo $?; }
+assert_eq "$(mb 'git merge --no-ff deputy/fix-thing-7')" "2" "guarded git merge denied when auto_merge unset"
+printf 'auto_merge=0\n' > "$MR/.deputy/config"
+assert_eq "$(mb 'git merge --no-ff deputy/fix-thing-7')" "2" "guarded git merge denied when auto_merge=0"
+printf 'auto_merge=1\n' > "$MR/.deputy/config"
+assert_eq "$(mb 'git merge --no-ff deputy/fix-thing-7')" "0" "guarded git merge ALLOWED when auto_merge=1"
+assert_eq "$(mb "git -C $MR/.deputy/wt merge deputy/x")" "0" "auto_merge=1 allows the merge (git -C form)"
+rm -f "$MR/.deputy/config"
+assert_eq "$(mb 'echo git merge later')" "0" "'git merge' only as data (echo) is not blocked"
+# wrapped/bypass forms must still be blocked (auto_merge unset)
+assert_eq "$(mb 'time git merge deputy/x')"            "2" "wrapped 'time git merge' blocked"
+assert_eq "$(mb 'if git merge deputy/x; then :; fi')"  "2" "wrapped 'if git merge' blocked"
+assert_eq "$(mb 'GIT_CONFIG=/tmp/x git merge deputy/x')" "2" "env-prefixed 'X=.. git merge' blocked"
+assert_eq "$(mb 'git -C "/path with spaces" merge deputy/x')" "2" "quoted git -C merge blocked"
+assert_eq "$(mb 'cd /tmp && git merge deputy/x')"      "2" "chained 'cd && git merge' blocked"
+assert_eq "$(mb 'time -p git merge deputy/x')"         "2" "wrapper-flag 'time -p git merge' blocked"
+assert_eq "$(mb 'env -i git merge deputy/x')"          "2" "wrapper-flag 'env -i git merge' blocked"
+assert_eq "$(mb 'if ! git merge deputy/x; then :; fi')" "2" "negated 'if ! git merge' blocked"

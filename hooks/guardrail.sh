@@ -224,6 +224,40 @@ _path_outside_wt() {
   return 0                                   # everything else -> deny
 }
 
+# #60: a guarded (spawned) worker must SURFACE its branch for human merge-review — it must
+# NOT auto-merge to the default branch. Block any `git merge` segment unless the repo opts
+# in with `auto_merge=1`. A human (unguarded orchestrator) merging is unaffected (the hook
+# only runs when DEPUTY_GUARDED=1). Catches the standard `git merge ...`, chained `cd && git
+# merge`, env-prefixed, quoted `git -C`, and common leading wrappers (time/if/env/sudo/…,
+# incl. simple flags). Best-effort (like the rest of this tripwire): an exotic wrapper with
+# a separate flag-argument can still pass — the primary mechanism is the SKILL surfacing the
+# branch; this hook is the backstop for the forms a cooperative worker actually emits.
+# Returns 0 = blocked.
+_git_merge_blocked() {
+  local cmd="$1" am seg s
+  am="$(grep -E '^auto_merge=' "${DEPUTY_ROOT:-}/.deputy/config" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+  [[ "$am" == "1" ]] && return 1             # explicitly allowed
+  while IFS= read -r seg; do
+    s="$(_norm "$seg")"; s="${s#"${s%%[![:space:]]*}"}"   # normalize tabs, ltrim
+    # Strip leading shell wrappers and VAR=val assignments so wrapped forms can't slip a
+    # merge past the first-token check (e.g. `if git merge`, `time git merge`, `X=1 git merge`).
+    while :; do
+      case "$s" in
+        if\ *|then\ *|else\ *|elif\ *|do\ *|while\ *|until\ *|time\ *|env\ *|command\ *|builtin\ *|exec\ *|sudo\ *|nice\ *|nohup\ *|stdbuf\ *|ionice\ *) s="${s#* }" ;;
+        '!'\ *)          s="${s#* }" ;;        # negation
+        -*\ *)           s="${s#* }" ;;        # a wrapper flag (e.g. time -p, env -i, nice -n)
+        [A-Za-z_]*=*\ *) s="${s#* }" ;;        # leading env assignment
+        *) break ;;
+      esac
+      s="${s#"${s%%[![:space:]]*}"}"          # ltrim
+    done
+    # Strip a `git -C <path>` prefix (path may be double-quoted with spaces).
+    s="$(printf '%s' "$s" | sed -E 's/^git[[:space:]]+-C[[:space:]]+("[^"]*"|[^[:space:]]+)[[:space:]]+/git /')"
+    printf '%s' "$s" | grep -Eq '^[[:space:]]*git[[:space:]]+merge([[:space:]]|$)' && return 0
+  done < <(printf '%s\n' "$cmd" | tr ';|&()' '\n')
+  return 1
+}
+
 # Fix 2: extract top-level .cwd from the PreToolUse JSON (session working directory).
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty')"
 case "$tool" in
@@ -231,6 +265,7 @@ case "$tool" in
     cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty')"
     [[ -n "$cmd" ]] || deny "Bash call with no command (fail-closed)."
     _bash_risky "$cmd" "$session_cwd" && deny "risky command [$(printf '%s' "$cmd" | head -c 80)]."
+    _git_merge_blocked "$cmd" && deny "auto-merge by a spawned worker is disabled (auto_merge!=1). Do NOT 'git merge' — SURFACE the item for human review instead: 'deputy set \"<line>\" surfaced' and leave the deputy/<slug> branch for a human to merge."
     ;;
   Edit|Write|MultiEdit)
     path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
