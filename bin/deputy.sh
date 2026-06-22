@@ -1984,12 +1984,37 @@ _archive_run_log() {
   return 0
 }
 
+# #66: render a worker's stream-json event stream (stdin) to readable text on stdout. Each
+# line that parses as a JSON object is rendered (assistant text; a [tool: name] marker for
+# tool_use; a "--- <subtype> ---" divider for the final result); any line that is NOT a JSON
+# object (plain-text / mock logs, partial lines) is passed through verbatim, so this is safe
+# over any log. Falls back to a plain `cat` when jq is unavailable (no hard jq dependency).
+# Shared by the headed tee path and `deputy watch`.
+_render_stream() {
+  command -v jq >/dev/null 2>&1 || { cat; return; }
+  jq -Rr --unbuffered '
+    (fromjson? // .) as $e
+    | if ($e|type) == "object" then
+        if $e.type == "assistant" then
+          ( $e.message.content[]?
+            | if .type == "text" then .text
+              elif .type == "tool_use" then "[tool: \(.name)]"
+              else empty end )
+        elif $e.type == "result" then "--- \($e.subtype // "result") ---"
+        else empty end
+      else $e end
+  ' 2>/dev/null
+}
+
 _run_orchestrator_logged() {
   local item="$1" provider="$2" log="$3" rc _had_e=0
   [[ $- == *e* ]] && _had_e=1
   set +e
   if _run_is_headed; then
-    _spawn_orchestrator "$item" "$provider" 2>&1 | tee "$log"
+    # #66: tee writes the RAW stream-json to $log (kept raw for _detect_outcome + archive),
+    # then _render_stream makes the live terminal output readable. rc is still the worker's
+    # (PIPESTATUS[0], unaffected by the added render stage).
+    _spawn_orchestrator "$item" "$provider" 2>&1 | tee "$log" | _render_stream
     rc=${PIPESTATUS[0]}
   else
     # #58: run the headless worker in its OWN process group (set -m) and, when it returns,
@@ -2841,8 +2866,14 @@ cmd_watch() {
   [[ -e "$log" ]] || { printf 'deputy: worker #%s is starting; no output yet.\n' "$id" >&2; return 0; }
   printf 'deputy: watching #%s (pid %s) — Ctrl-C to detach (the run keeps going)...\n' "$id" "$pid" >&2
   # --pid: exit when the run process ends; -f follows the open fd cleanly across the archive mv.
-  tail --pid="$pid" -f "$log"
-  printf 'deputy: run #%s ended — output archived to %s/logs/%s.log\n' "$id" "$STATE_DIR" "$id" >&2
+  # #66: render the stream-json log to readable text. Capture tail's exit (PIPESTATUS[0])
+  # under set +e: only a CLEAN exit (the run actually ended, tail rc 0) prints the archived
+  # line — a Ctrl-C detach (tail killed, non-zero) must NOT falsely claim the run ended.
+  local _had_e=0; [[ $- == *e* ]] && _had_e=1; set +e
+  tail --pid="$pid" -f "$log" | _render_stream
+  local trc=${PIPESTATUS[0]}
+  [[ "$_had_e" -eq 1 ]] && set -e
+  [[ "$trc" -eq 0 ]] && printf 'deputy: run #%s ended — output archived to %s/logs/%s.log\n' "$id" "$STATE_DIR" "$id" >&2
 }
 
 main() {
