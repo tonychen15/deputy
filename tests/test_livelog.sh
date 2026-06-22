@@ -44,3 +44,18 @@ out="$(timeout 8 env DEPUTY_ROOT="$DEPUTY_ROOT" bash "$DEPUTY" watch 2>&1)"
 assert_contains "$out" "STREAM-LINE-63"        "watch streams the running worker's live log"
 assert_contains "$out" "ended — output archived" "watch reports the archived path when the run ends"
 kill "$spid" 2>/dev/null || true
+
+# 5: a HEADED (interactive/PTY) run tees output to the terminal AND writes+archives the
+#    watchable log (auto-attach via tee-to-file; #51 tee preserved, no separate tail).
+if command -v script >/dev/null 2>&1; then
+  setup_repo
+  HORCH="$(mktemp)"; printf '#!/usr/bin/env bash\necho "HEADED-MARKER-63"\nbash "%s" set "$1" done >/dev/null 2>&1\n' "$DEPUTY" > "$HORCH"; chmod +x "$HORCH"
+  bash "$DEPUTY" add "headed livelog" --p0 >/dev/null
+  hid="$(bash "$DEPUTY" list | grep -F 'headed livelog' | cut -d'|' -f3)"
+  pcmd="DEPUTY_ORCHESTRATOR_CMD='$HORCH' DEPUTY_AVAIL='claude' DEPUTY_CRONTAB=/bin/true DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_ROOT='$DEPUTY_ROOT' bash '$DEPUTY' run $hid"
+  pout="$(timeout 25 script -qec "$pcmd" /dev/null 2>&1 || true)"
+  assert_contains "$pout" "HEADED-MARKER-63" "headed run tees worker output live to the terminal (#51)"
+  assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/logs/$hid.log" && echo yes || echo no)" "yes" "headed run also writes+archives the watchable log"
+  assert_contains "$(cat "$DEPUTY_ROOT/.deputy/logs/$hid.log" 2>/dev/null)" "HEADED-MARKER-63" "archived headed log holds the worker output"
+  rm -f "$HORCH"
+fi
