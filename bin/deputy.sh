@@ -1322,9 +1322,18 @@ EOF
 # Classify a CLI invocation outcome: ok|quota_exhausted|auth_error|hard_error.
 # Conservative: an unrecognized non-zero exit is hard_error, never quota_exhausted.
 _detect_outcome() {
-  local cli="$1" rc="$2" log="$3" content=""
-  [[ "$rc" -eq 0 ]] && { printf 'ok\n'; return 0; }
+  local cli="$1" rc="$2" log="$3" content="" rl=""
   [[ -f "$log" ]] && content="$(cat "$log")"
+  # #66: a claude stream-json run can exit rc=0 even on a model-side error — the verdict is
+  # the final 'result' event's is_error, not the exit code. Dual-mode: if the log carries a
+  # stream-json result event, trust is_error (+ rc); otherwise (plain-text / mock / other
+  # CLI) fall back to the original rc check. Either way, classify failures from the log text.
+  rl="$(printf '%s' "$content" | grep -F '"type":"result"' | tail -1 || true)"
+  if [[ -n "$rl" ]]; then
+    [[ "$rc" -eq 0 && "$rl" != *'"is_error":true'* ]] && { printf 'ok\n'; return 0; }
+  else
+    [[ "$rc" -eq 0 ]] && { printf 'ok\n'; return 0; }
+  fi
   local lc="${content,,}"   # lowercase for case-insensitive matching
   case "$cli" in
     claude) [[ "$lc" == *"hit your limit"* || "$lc" == *"usage limit"* || "$lc" == *"rate limit"* ]] \
@@ -1882,6 +1891,7 @@ Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove /
   local gset; gset="$(_guardrail_settings_path)"
   DEPUTY_GUARDED=1 DEPUTY_HEADLESS="$_headless" DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
     _sandbox_worker claude -p "$prompt" --model claude-sonnet-4-6 \
+      --output-format stream-json --verbose \
       --allowedTools "Bash,Edit,Write,Read,Glob,Grep" \
       --settings "$gset"
 }
@@ -1974,12 +1984,37 @@ _archive_run_log() {
   return 0
 }
 
+# #66: render a worker's stream-json event stream (stdin) to readable text on stdout. Each
+# line that parses as a JSON object is rendered (assistant text; a [tool: name] marker for
+# tool_use; a "--- <subtype> ---" divider for the final result); any line that is NOT a JSON
+# object (plain-text / mock logs, partial lines) is passed through verbatim, so this is safe
+# over any log. Falls back to a plain `cat` when jq is unavailable (no hard jq dependency).
+# Shared by the headed tee path and `deputy watch`.
+_render_stream() {
+  command -v jq >/dev/null 2>&1 || { cat; return; }
+  jq -Rr --unbuffered '
+    (fromjson? // .) as $e
+    | if ($e|type) == "object" then
+        if $e.type == "assistant" then
+          ( $e.message.content[]?
+            | if .type == "text" then .text
+              elif .type == "tool_use" then "[tool: \(.name)]"
+              else empty end )
+        elif $e.type == "result" then "--- \($e.subtype // "result") ---"
+        else empty end
+      else $e end
+  ' 2>/dev/null
+}
+
 _run_orchestrator_logged() {
   local item="$1" provider="$2" log="$3" rc _had_e=0
   [[ $- == *e* ]] && _had_e=1
   set +e
   if _run_is_headed; then
-    _spawn_orchestrator "$item" "$provider" 2>&1 | tee "$log"
+    # #66: tee writes the RAW stream-json to $log (kept raw for _detect_outcome + archive),
+    # then _render_stream makes the live terminal output readable. rc is still the worker's
+    # (PIPESTATUS[0], unaffected by the added render stage).
+    _spawn_orchestrator "$item" "$provider" 2>&1 | tee "$log" | _render_stream
     rc=${PIPESTATUS[0]}
   else
     # #58: run the headless worker in its OWN process group (set -m) and, when it returns,
@@ -2831,8 +2866,14 @@ cmd_watch() {
   [[ -e "$log" ]] || { printf 'deputy: worker #%s is starting; no output yet.\n' "$id" >&2; return 0; }
   printf 'deputy: watching #%s (pid %s) — Ctrl-C to detach (the run keeps going)...\n' "$id" "$pid" >&2
   # --pid: exit when the run process ends; -f follows the open fd cleanly across the archive mv.
-  tail --pid="$pid" -f "$log"
-  printf 'deputy: run #%s ended — output archived to %s/logs/%s.log\n' "$id" "$STATE_DIR" "$id" >&2
+  # #66: render the stream-json log to readable text. Capture tail's exit (PIPESTATUS[0])
+  # under set +e: only a CLEAN exit (the run actually ended, tail rc 0) prints the archived
+  # line — a Ctrl-C detach (tail killed, non-zero) must NOT falsely claim the run ended.
+  local _had_e=0; [[ $- == *e* ]] && _had_e=1; set +e
+  tail --pid="$pid" -f "$log" | _render_stream
+  local trc=${PIPESTATUS[0]}
+  [[ "$_had_e" -eq 1 ]] && set -e
+  [[ "$trc" -eq 0 ]] && printf 'deputy: run #%s ended — output archived to %s/logs/%s.log\n' "$id" "$STATE_DIR" "$id" >&2
 }
 
 main() {
