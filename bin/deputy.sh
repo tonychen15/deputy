@@ -1921,6 +1921,31 @@ _fire_spawn_notify() {
   fi
 }
 
+# #63: stable, per-item live log so the worker's output is watchable (deputy watch / the
+# auto-tail) instead of buffered to an anonymous temp. Returns the log path and truncates it
+# (fresh per attempt). Falls back to a mktemp when the item has no file-safe numeric id.
+_run_log_path() {
+  local line="$1" id
+  id="$(_parse_item "$line")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  if [[ "$id" =~ ^[0-9]+$ ]] && : > "$STATE_DIR/run-$id.log" 2>/dev/null; then
+    printf '%s' "$STATE_DIR/run-$id.log"
+  else
+    mktemp
+  fi
+}
+# #63: drop-in for `rm -f "$log"` at run-completion — archive the stable live log to
+# .deputy/logs/<id>.log (latest-wins on a same-id retry); just remove a mktemp fallback.
+_archive_run_log() {
+  local line="$1" log="$2" id
+  id="$(_parse_item "$line")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  if [[ "$id" =~ ^[0-9]+$ && "$log" == "$STATE_DIR/run-$id.log" ]]; then
+    { mkdir -p "$STATE_DIR/logs" 2>/dev/null && mv -f "$log" "$STATE_DIR/logs/$id.log" 2>/dev/null; } || rm -f "$log" 2>/dev/null
+  else
+    rm -f "$log" 2>/dev/null
+  fi
+  return 0
+}
+
 _run_orchestrator_logged() {
   local item="$1" provider="$2" log="$3" rc _had_e=0
   [[ $- == *e* ]] && _had_e=1
@@ -2050,13 +2075,13 @@ cmd_run() {
     fi
     # Read item line from line 1 of claim file (claim file now has 2 lines).
     running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
-    log="$(mktemp)"
+    log="$(_run_log_path "$running_line")"
     rc=0   # #59: NO spawn-notify here — a targeted `deputy run <id>` is a deliberate invocation, not the heartbeat
     _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
     rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
     outcome="$(_detect_outcome claude "$rc" "$log")"
     if [[ "$outcome" == "quota_exhausted" ]]; then
-      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
+      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; _archive_run_log "$running_line" "$log"
       _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
       # Always-on: do NOT reschedule the shared cron line for quota.
       # The fixed */N heartbeat will retry on the next tick; quota is a per-task skip.
@@ -2064,7 +2089,7 @@ cmd_run() {
       _active_run_release
       return 0
     fi
-    rm -f "$log"
+    _archive_run_log "$running_line" "$log"
     _active_run_release
     return 0
   fi
@@ -2108,7 +2133,7 @@ cmd_run() {
       continue
     fi
 
-    log="$(mktemp)"
+    log="$(_run_log_path "$running_line")"
     _fire_spawn_notify "$running_line" "$$"   # #59: announce an autonomous (headless) spawn
     rc=0
     _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
@@ -2117,7 +2142,7 @@ cmd_run() {
     if [[ "$outcome" == "quota_exhausted" ]]; then
       # Pass only the relevant reset/limit line(s) to the rescheduler (bounded;
       # avoids ARG_MAX on a large log). _parse_reset_hour scans for "<N>am/pm".
-      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
+      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; _archive_run_log "$running_line" "$log"
       # The orchestrator didn't finish this item — revert it for the next tick.
       # Always-on: do NOT reschedule the shared cron line for quota.
       _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
@@ -2159,7 +2184,7 @@ cmd_run() {
         [[ -n "$_rb_cur_line" ]] && { _with_lock _do_set_item_failed "$_rb_cur_line" || true; }
       fi
     fi
-    rm -f "$log"
+    _archive_run_log "$running_line" "$log"
     _active_run_release
     processed=$((processed + 1))
     [[ "$once" -eq 1 ]] && break
