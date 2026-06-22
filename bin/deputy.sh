@@ -1272,6 +1272,7 @@ commands:
                                   optional --<state> (e.g. --waiting, --running, --deferred)
                                   lists only items in that state
   status                          counts by state
+  watch                           live-tail the currently-running worker's output (any terminal; Ctrl-C detaches)
   run [<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
                                   (interactive/TTY runs stream output live; --headless or
                                   headed=0 config forces the buffered/cron behavior)
@@ -1921,6 +1922,31 @@ _fire_spawn_notify() {
   fi
 }
 
+# #63: stable, per-item live log so the worker's output is watchable (deputy watch / the
+# auto-tail) instead of buffered to an anonymous temp. Returns the log path and truncates it
+# (fresh per attempt). Falls back to a mktemp when the item has no file-safe numeric id.
+_run_log_path() {
+  local line="$1" id
+  id="$(_parse_item "$line")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  if [[ "$id" =~ ^[0-9]+$ ]] && : > "$STATE_DIR/run-$id.log" 2>/dev/null; then
+    printf '%s' "$STATE_DIR/run-$id.log"
+  else
+    mktemp
+  fi
+}
+# #63: drop-in for `rm -f "$log"` at run-completion — archive the stable live log to
+# .deputy/logs/<id>.log (latest-wins on a same-id retry); just remove a mktemp fallback.
+_archive_run_log() {
+  local line="$1" log="$2" id
+  id="$(_parse_item "$line")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  if [[ "$id" =~ ^[0-9]+$ && "$log" == "$STATE_DIR/run-$id.log" ]]; then
+    { mkdir -p "$STATE_DIR/logs" 2>/dev/null && mv -f "$log" "$STATE_DIR/logs/$id.log" 2>/dev/null; } || rm -f "$log" 2>/dev/null
+  else
+    rm -f "$log" 2>/dev/null
+  fi
+  return 0
+}
+
 _run_orchestrator_logged() {
   local item="$1" provider="$2" log="$3" rc _had_e=0
   [[ $- == *e* ]] && _had_e=1
@@ -2050,13 +2076,13 @@ cmd_run() {
     fi
     # Read item line from line 1 of claim file (claim file now has 2 lines).
     running_line="$(sed -n '1p' "$STATE_DIR/$$.claim" 2>/dev/null || printf '%s' "$found_line")"
-    log="$(mktemp)"
+    log="$(_run_log_path "$running_line")"
     rc=0   # #59: NO spawn-notify here — a targeted `deputy run <id>` is a deliberate invocation, not the heartbeat
     _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
     rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
     outcome="$(_detect_outcome claude "$rc" "$log")"
     if [[ "$outcome" == "quota_exhausted" ]]; then
-      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
+      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; _archive_run_log "$running_line" "$log"
       _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
       # Always-on: do NOT reschedule the shared cron line for quota.
       # The fixed */N heartbeat will retry on the next tick; quota is a per-task skip.
@@ -2064,7 +2090,7 @@ cmd_run() {
       _active_run_release
       return 0
     fi
-    rm -f "$log"
+    _archive_run_log "$running_line" "$log"
     _active_run_release
     return 0
   fi
@@ -2108,7 +2134,7 @@ cmd_run() {
       continue
     fi
 
-    log="$(mktemp)"
+    log="$(_run_log_path "$running_line")"
     _fire_spawn_notify "$running_line" "$$"   # #59: announce an autonomous (headless) spawn
     rc=0
     _run_orchestrator_logged "$running_line" "$decision" "$log" || rc=$?   # headed=live tee / headless=buffer+cat; '|| rc=$?' keeps the non-zero return from tripping set -e
@@ -2117,7 +2143,7 @@ cmd_run() {
     if [[ "$outcome" == "quota_exhausted" ]]; then
       # Pass only the relevant reset/limit line(s) to the rescheduler (bounded;
       # avoids ARG_MAX on a large log). _parse_reset_hour scans for "<N>am/pm".
-      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; rm -f "$log"
+      reset="$(grep -iE 'reset|limit' "$log" | head -3)"; _archive_run_log "$running_line" "$log"
       # The orchestrator didn't finish this item — revert it for the next tick.
       # Always-on: do NOT reschedule the shared cron line for quota.
       _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
@@ -2159,7 +2185,7 @@ cmd_run() {
         [[ -n "$_rb_cur_line" ]] && { _with_lock _do_set_item_failed "$_rb_cur_line" || true; }
       fi
     fi
-    rm -f "$log"
+    _archive_run_log "$running_line" "$log"
     _active_run_release
     processed=$((processed + 1))
     [[ "$once" -eq 1 ]] && break
@@ -2759,6 +2785,29 @@ _do_set_item_failed() {
   _flip_line "$raw" "$to"
 }
 
+# #63: live-tail the currently-running worker's output (the stable per-item log). The
+# watcher brings its own TTY, so this works from ANY terminal — even one that didn't launch
+# the run (the watch-the-headless-worker case). Ctrl-C detaches without affecting the run.
+cmd_watch() {
+  local d="$ACTIVE_RUN_DIR" item pid id log i
+  if [[ ! -d "$d" ]] || ! _active_run_live "$d"; then
+    printf 'deputy: no worker is running. (Past run logs are archived under %s/logs/.)\n' "$STATE_DIR"
+    return 0
+  fi
+  item="$(sed -n '1p' "$d/item" 2>/dev/null || true)"
+  pid="$(sed -n '1p' "$d/pid" 2>/dev/null || true)"
+  id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: a worker is running but its item has no id to watch.\n' >&2; return 1; }
+  log="$STATE_DIR/run-$id.log"
+  # The lock is published just before the log is created — wait briefly for the file.
+  for i in $(seq 1 20); do [[ -e "$log" ]] && break; sleep 0.25; done
+  [[ -e "$log" ]] || { printf 'deputy: worker #%s is starting; no output yet.\n' "$id" >&2; return 0; }
+  printf 'deputy: watching #%s (pid %s) — Ctrl-C to detach (the run keeps going)...\n' "$id" "$pid" >&2
+  # --pid: exit when the run process ends; -f follows the open fd cleanly across the archive mv.
+  tail --pid="$pid" -f "$log"
+  printf 'deputy: run #%s ended — output archived to %s/logs/%s.log\n' "$id" "$STATE_DIR" "$id" >&2
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -2769,6 +2818,7 @@ main() {
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
     status) cmd_status; return 0 ;;
+    watch|tail) cmd_watch; return $? ;;
     pick) cmd_pick; return 0 ;;
     set) shift; cmd_set "$@"; return $? ;;
     claim) shift; cmd_claim "$@"; return $? ;;
