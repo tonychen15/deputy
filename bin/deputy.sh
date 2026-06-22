@@ -1322,9 +1322,18 @@ EOF
 # Classify a CLI invocation outcome: ok|quota_exhausted|auth_error|hard_error.
 # Conservative: an unrecognized non-zero exit is hard_error, never quota_exhausted.
 _detect_outcome() {
-  local cli="$1" rc="$2" log="$3" content=""
-  [[ "$rc" -eq 0 ]] && { printf 'ok\n'; return 0; }
+  local cli="$1" rc="$2" log="$3" content="" rl=""
   [[ -f "$log" ]] && content="$(cat "$log")"
+  # #66: a claude stream-json run can exit rc=0 even on a model-side error — the verdict is
+  # the final 'result' event's is_error, not the exit code. Dual-mode: if the log carries a
+  # stream-json result event, trust is_error (+ rc); otherwise (plain-text / mock / other
+  # CLI) fall back to the original rc check. Either way, classify failures from the log text.
+  rl="$(printf '%s' "$content" | grep -F '"type":"result"' | tail -1 || true)"
+  if [[ -n "$rl" ]]; then
+    [[ "$rc" -eq 0 && "$rl" != *'"is_error":true'* ]] && { printf 'ok\n'; return 0; }
+  else
+    [[ "$rc" -eq 0 ]] && { printf 'ok\n'; return 0; }
+  fi
   local lc="${content,,}"   # lowercase for case-insensitive matching
   case "$cli" in
     claude) [[ "$lc" == *"hit your limit"* || "$lc" == *"usage limit"* || "$lc" == *"rate limit"* ]] \
@@ -1882,6 +1891,7 @@ Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove /
   local gset; gset="$(_guardrail_settings_path)"
   DEPUTY_GUARDED=1 DEPUTY_HEADLESS="$_headless" DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
     _sandbox_worker claude -p "$prompt" --model claude-sonnet-4-6 \
+      --output-format stream-json --verbose \
       --allowedTools "Bash,Edit,Write,Read,Glob,Grep" \
       --settings "$gset"
 }
