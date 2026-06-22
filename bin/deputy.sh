@@ -1309,6 +1309,7 @@ config keys (.deputy/config):
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
   auto_merge=1                    allow a spawned (headless) worker to git-merge its branch to the default branch; default 0 = the guardrail blocks the merge and the worker must surface the branch for human review
   notify_on_spawn=0               silence the notification + cron.log '===SPAWN===' line emitted when the heartbeat autonomously spawns a worker; default 1 = announce every autonomous pickup (never silent)
+  sandbox=0                       disable the bwrap read-only sandbox around the headless worker (default 1 = repo code is OS-read-only to the worker, only .deputy/+BACKLOG.md+worktree writable); 0 falls back to cwd-pinning only
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
@@ -1835,6 +1836,32 @@ _human_backoff_gate() {
 }
 
 # Spawn the orchestrator for a claimed item. If DEPUTY_ORCHESTRATOR_CMD is set
+# #64: run the worker command inside a read-only sandbox so it CANNOT write to the repo's
+# CODE — only .deputy/ (queue state + the .deputy/wt worktree) and BACKLOG.md are writable;
+# the rest of the filesystem (HOME, network, codex/gemini configs) is normal so the worker
+# still functions. cwd is pinned to the worktree, which is the root cause: cron's cwd is the
+# repo root, so a worker's relative-path Bash writes (cat>tests/x, sed -i bin/y) escaped into
+# the main tree. When bwrap is absent or config sandbox=0, fall back to cwd-pinning only
+# (the root-cause fix still applies) with a one-line warning.
+_sandbox_worker() {
+  local wt sb; wt="$(_wt_path)"; sb="$(_config_get sandbox)"; sb="${sb:-1}"
+  if [[ "$sb" != "0" ]] && command -v bwrap >/dev/null 2>&1; then
+    # --unshare-pid: new PID namespace so the worker can't see (and escape via
+    # /proc/<host-pid>/root/) processes outside the sandbox. Reaping is unaffected — #58
+    # kills the host-side process group from outside the sandbox.
+    local -a b=( --unshare-pid --bind / / --dev-bind /dev /dev --proc /proc
+                 --ro-bind "$ROOT" "$ROOT"
+                 --bind "$ROOT/.git" "$ROOT/.git"
+                 --bind "$ROOT/.deputy" "$ROOT/.deputy" )
+    [[ -e "$ROOT/BACKLOG.md" ]] && b+=( --bind "$ROOT/BACKLOG.md" "$ROOT/BACKLOG.md" )
+    b+=( --chdir "$wt" )
+    bwrap "${b[@]}" "$@"
+    return $?
+  fi
+  [[ "$sb" == "0" ]] || printf 'deputy: bwrap unavailable — worker cwd-pinned to the worktree but NOT OS read-only sandboxed (#64).\n' >&2
+  ( cd "$wt" && "$@" )
+}
+
 # (tests / custom drivers), call it as `<cmd> <item-line> <provider>`. Otherwise
 # build a headless prompt that runs the deputy orchestrator skill on this one item.
 _spawn_orchestrator() {
@@ -1854,7 +1881,7 @@ Provider for coding: $provider
 Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
   local gset; gset="$(_guardrail_settings_path)"
   DEPUTY_GUARDED=1 DEPUTY_HEADLESS="$_headless" DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
-    claude -p "$prompt" --model claude-sonnet-4-6 \
+    _sandbox_worker claude -p "$prompt" --model claude-sonnet-4-6 \
       --allowedTools "Bash,Edit,Write,Read,Glob,Grep" \
       --settings "$gset"
 }
