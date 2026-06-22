@@ -289,12 +289,13 @@ _commit_queue() {
 # Caller holds the lock. Used by upcoming set/claim commands.
 _flip_line() {
   local from="$1" to="$2" tmp line
-  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")" || return 1
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" == "$from" ]]; then printf '%s\n' "$to"; else printf '%s\n' "$line"; fi
   done < "$BACKLOG" > "$tmp"
-  mv "$tmp" "$BACKLOG"
+  [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$BACKLOG" || return 1
   _regroup_backlog
 }
 
@@ -319,7 +320,7 @@ _regroup_backlog() {
   local -a running=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
   local done_count=0
 
-  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")" || return 1
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
 
   # Single raw pass: copy the legend/header verbatim up to '## Items', then scan
@@ -395,7 +396,8 @@ _regroup_backlog() {
   printf '\n### Done (%d)\n' "$done_count" >> "$tmp"
   [[ ${#done_stream[@]} -gt 0 ]] && printf '%s\n' "${done_stream[@]}" >> "$tmp"
 
-  mv "$tmp" "$BACKLOG"
+  [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$BACKLOG" || return 1
 }
 
 # Assign sequential [#N] IDs to any item that lacks one. Lock-held, idempotent,
@@ -415,7 +417,7 @@ _allocate_ids() {
   # Pass 2: rewrite only items lacking an ID. Track whether anything changed.
   local changed=0 next_id=$(( max_id + 1 ))
   local tmp
-  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")" || return 1
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
 
   # Rewrite the whole file, replacing un-id'd item lines in-place.
@@ -467,7 +469,8 @@ _allocate_ids() {
   done < "$BACKLOG"
 
   if [[ "$changed" -eq 1 ]]; then
-    mv "$tmp" "$BACKLOG"
+    [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$BACKLOG" || return 1
     _regroup_backlog
   else
     rm -f "$tmp"
@@ -593,7 +596,8 @@ cmd_add() {
     _append_item "$(_serialize_item waiting "$prio" "" "$text")"
     printf 'deputy: added: %s\n' "$text"
   }
-  _with_lock _do_add
+  local _add_rc=0
+  _with_lock _do_add || _add_rc=$?
   _commit_queue "add"
   if [[ "$_worker" -eq 1 ]]; then
     # A worker proposal never autoruns. Notify only if a NEW proposal was created
@@ -606,8 +610,9 @@ cmd_add() {
       fi
     fi
     rm -f "$STATE_DIR/.proposed_pending.$$" 2>/dev/null || true
-    return 0
+    return "$_add_rc"
   fi
+  [[ "$_add_rc" -ne 0 ]] && return "$_add_rc"
   # Trigger execution immediately if nothing is running and work is available.
   # Set DEPUTY_NO_AUTORUN=1 to suppress (used in tests that exercise add in isolation).
   if [[ "${DEPUTY_NO_AUTORUN:-0}" != "1" ]] && ! _live_claim_exists && [[ -n "$(cmd_pick)" ]]; then
@@ -2112,7 +2117,8 @@ cmd_clean() {
 
   if [[ -n "$filter_id" ]]; then
     # ID-targeted clean: find and remove exactly one item by its numeric ID.
-    _with_lock _allocate_ids
+    local _cid_alloc_rc=0; _with_lock _allocate_ids || _cid_alloc_rc=$?
+    [[ "$_cid_alloc_rc" -ne 0 ]] && return "$_cid_alloc_rc"
     local raw parsed state item_id
     local -a doomed=()
     while IFS= read -r raw; do
@@ -2141,7 +2147,7 @@ cmd_clean() {
     fi
     _do_clean_id() {
       local tmp line d r prev_blank=0
-      tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+      tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")" || return 1
       chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
       while IFS= read -r line || [[ -n "$line" ]]; do
         d=0
@@ -2155,7 +2161,8 @@ cmd_clean() {
         fi
         printf '%s\n' "$line"
       done < "$BACKLOG" > "$tmp"
-      mv "$tmp" "$BACKLOG"
+      [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
+      mv "$tmp" "$BACKLOG" || return 1
       # #53: drop the proposal marker for the removed id (filter_id is validated
       # numeric) so a freed/reusable id can't inherit a stale proposed-<id> marker.
       rm -f "$STATE_DIR/proposed-$filter_id" 2>/dev/null || true
@@ -2165,10 +2172,10 @@ cmd_clean() {
         _regroup_backlog
       fi
     }
-    _with_lock _do_clean_id
+    local _cid_rc=0; _with_lock _do_clean_id || _cid_rc=$?
     _commit_queue "clean"
-    printf 'deputy: cleaned item #%s\n' "$filter_id"
-    return 0
+    [[ "$_cid_rc" -eq 0 ]] && printf 'deputy: cleaned item #%s\n' "$filter_id"
+    return "$_cid_rc"
   fi
 
   # Safety: refuse to clean active/checkpointed/awaiting states.
@@ -2200,7 +2207,7 @@ cmd_clean() {
   fi
   _do_clean() {
     local tmp line d r prev_blank=0
-    tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+    tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")" || return 1
     chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
     while IFS= read -r line || [[ -n "$line" ]]; do
       d=0
@@ -2214,7 +2221,8 @@ cmd_clean() {
       fi
       printf '%s\n' "$line"
     done < "$BACKLOG" > "$tmp"
-    mv "$tmp" "$BACKLOG"
+    [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$BACKLOG" || return 1
     # #53: drop any proposal marker for a removed item, so a freed (and later
     # reusable) id can never inherit a stale .deputy/proposed-<id> marker that would
     # hide a genuine surfaced blocker from _blocking_surfaced_count.
@@ -2230,9 +2238,10 @@ cmd_clean() {
       _regroup_backlog
     fi
   }
-  _with_lock _do_clean
+  local _clean_rc=0; _with_lock _do_clean || _clean_rc=$?
   _commit_queue "clean"
-  printf 'deputy: cleaned %d %s item(s)\n' "${#doomed[@]}" "$filter_state"
+  [[ "$_clean_rc" -eq 0 ]] && printf 'deputy: cleaned %d %s item(s)\n' "${#doomed[@]}" "$filter_state"
+  return "$_clean_rc"
 }
 
 # Find all duplicate candidate pairs from a list of descriptions (one per stdin line).
