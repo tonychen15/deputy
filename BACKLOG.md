@@ -14,9 +14,10 @@
 
 ### Surfaced (0)
 
-### Waiting (2)
+### Waiting (3)
 [P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
 [P3][#62] Change the task item line format from '<state>[<priority>][<#id>] <description>' to '<state>[<#id>][<priority>] <description>' — i.e. swap the priority and id tag order. SCOPE/GRILL (bigger than it looks, back-compat sensitive): touches _parse_item + _serialize_item + every grep/sed/regex that matches the current tag order (e.g. '\[P[0-9]\]\[#N\]'), the id-allocation + symbol/state migration paths, and all of deputy list/status/clean output. Needs a DUAL-READ back-compat path so existing BACKLOG.md files written in the OLD order still parse (like the #46 symbol migration), re-serializing to the new order on next write. Many tests to update. Confirm it's worth the churn before doing it.
+[P3] Make autonomous (headless) worker output LIVE-WATCHABLE, not invisible — replaces the earlier 'echo spawn line to TTY' framing (motivated by #47 sitting as a black box, hung with a 0-byte buffered log). A cron worker has NO controlling TTY so it can't be 'headed' (live-tee to a terminal), but its output CAN be made watchable: (1) STREAM the worker's output to a STABLE, known, incrementally-written log (e.g. .deputy/run.log, or under active-run.lock/) instead of buffering to a /tmp temp and only dumping to cron.log at the END (today's gap); (2) add 'deputy watch' (and/or 'deputy tail') that live-tails the CURRENTLY-running worker's log — find active-run.lock -> tail -f its log; friendly message when nothing is running; (3) optionally echo key milestone lines to a live in-repo interactive session's terminal (the original idea; NEVER a foreign terminal). Builds on #59 (spawn notify tells you WHEN to attach) and complements #51 (headed mode, for human-launched runs). GRILL: stable log path + rotation/cleanup; what 'deputy watch' shows when idle; whether to also hard-timeout a no-output run (see the time_cap gap).
 
 ### Paused (0)
 
