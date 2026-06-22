@@ -15,8 +15,9 @@
 
 ### Surfaced (0)
 
-### Waiting (1)
+### Waiting (2)
 [P3][#61] Echo the autonomous-spawn announcement to a live TTY too (follow-up to #59). Today when a task is picked up, _fire_spawn_notify writes 'deputy: ===SPAWN=== pid=N item=#X — autonomous worker started: ...' to cron.log + fires notify. The user wants to ALSO see it directly on their terminal. DESIGN NOTE/GRILL: the cron/headless spawn has NO controlling TTY of its own, so 'the tty here' means surfacing the line to an interactive Claude/shell session that IS in the repo — e.g. write the ===SPAWN=== line to that live in-repo session's controlling terminal (/proc/<pid>/fd/...), or add a notify=tty channel, or have the interactive session display pending spawn lines on next prompt. Must not write to an arbitrary/foreign terminal. Reuse _fire_spawn_notify in bin/deputy.sh.
+[P3] Change the task item line format from '<state>[<priority>][<#id>] <description>' to '<state>[<#id>][<priority>] <description>' — i.e. swap the priority and id tag order. SCOPE/GRILL (bigger than it looks, back-compat sensitive): touches _parse_item + _serialize_item + every grep/sed/regex that matches the current tag order (e.g. '\[P[0-9]\]\[#N\]'), the id-allocation + symbol/state migration paths, and all of deputy list/status/clean output. Needs a DUAL-READ back-compat path so existing BACKLOG.md files written in the OLD order still parse (like the #46 symbol migration), re-serializing to the new order on next write. Many tests to update. Confirm it's worth the churn before doing it.
 
 ### Paused (0)
 
