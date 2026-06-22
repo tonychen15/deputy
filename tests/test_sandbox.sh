@@ -38,4 +38,22 @@ out="$(sb_run)"
 assert_contains "$out" "code:writable"    "sandbox=0: OS sandbox disabled (code writable)"
 assert_contains "$out" "/.deputy/wt"      "sandbox=0: worker still cwd-pinned to the worktree"
 
+# A repo WITHOUT .deputy/wt — the cold-start shape (the worker creates the worktree later).
+mkrepo_cold() { R="$(mktemp -d)"; ( cd "$R" && git init -q && mkdir -p bin .deputy && echo code > bin/foo && echo '# Backlog' > BACKLOG.md ); }
+
+# 3: COLD START (#68) — .deputy/wt ABSENT at spawn: the worker must still START (no bwrap
+#    --chdir abort), repo code stays RO, and cwd falls back to .deputy (not the missing wt).
+mkrepo_cold
+out="$(sb_run)"
+assert_contains "$out" "code:ro" "cold-start: worker ran + repo code still read-only (no .deputy/wt)"
+assert_contains "$out" "cwd:"    "cold-start: sandboxed worker actually ran (did not abort at --chdir)"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'cwd:.*/\.deputy/wt')" "0" "cold-start: cwd is NOT the absent worktree"
+
+# 4: COLD START + sandbox=0 — the non-bwrap fallback ( cd _cd ) must also not crash on a
+#    missing worktree (it falls back to .deputy too).
+mkrepo_cold; printf 'sandbox=0\n' > "$R/.deputy/config"
+out="$(sb_run)"
+assert_contains "$out" "code:writable" "cold-start sandbox=0: fallback ran (no crash on missing wt)"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'cwd:.*/\.deputy/wt')" "0" "cold-start sandbox=0: cwd is NOT the absent worktree"
+
 rm -f "$PROBE"

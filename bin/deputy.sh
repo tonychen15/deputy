@@ -1853,7 +1853,13 @@ _human_backoff_gate() {
 # the main tree. When bwrap is absent or config sandbox=0, fall back to cwd-pinning only
 # (the root-cause fix still applies) with a one-line warning.
 _sandbox_worker() {
-  local wt sb; wt="$(_wt_path)"; sb="$(_config_get sandbox)"; sb="${sb:-1}"
+  local wt sb _cd; wt="$(_wt_path)"; sb="$(_config_get sandbox)"; sb="${sb:-1}"
+  # #68: the worktree may not exist yet at COLD-START spawn (the worker creates it via
+  # wt-create during its run), and bwrap --chdir / cd to a missing dir aborts the worker
+  # before it can start. Pin to the worktree when it exists (full cwd-pin), else fall back
+  # to .deputy — rw-bound, always present (STATE_DIR), and CONTAINED (not the repo code
+  # tree, which stays --ro-bind), so the #64 breach stays closed either way.
+  _cd="$ROOT/.deputy"; [[ -d "$wt" ]] && _cd="$wt"
   if [[ "$sb" != "0" ]] && command -v bwrap >/dev/null 2>&1; then
     # --unshare-pid: new PID namespace so the worker can't see (and escape via
     # /proc/<host-pid>/root/) processes outside the sandbox. Reaping is unaffected — #58
@@ -1863,12 +1869,12 @@ _sandbox_worker() {
                  --bind "$ROOT/.git" "$ROOT/.git"
                  --bind "$ROOT/.deputy" "$ROOT/.deputy" )
     [[ -e "$ROOT/BACKLOG.md" ]] && b+=( --bind "$ROOT/BACKLOG.md" "$ROOT/BACKLOG.md" )
-    b+=( --chdir "$wt" )
+    b+=( --chdir "$_cd" )
     bwrap "${b[@]}" "$@"
     return $?
   fi
   [[ "$sb" == "0" ]] || printf 'deputy: bwrap unavailable — worker cwd-pinned to the worktree but NOT OS read-only sandboxed (#64).\n' >&2
-  ( cd "$wt" && "$@" )
+  ( cd "$_cd" && "$@" )
 }
 
 # (tests / custom drivers), call it as `<cmd> <item-line> <provider>`. Otherwise
