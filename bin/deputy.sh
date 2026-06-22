@@ -1272,6 +1272,7 @@ commands:
                                   optional --<state> (e.g. --waiting, --running, --deferred)
                                   lists only items in that state
   status                          counts by state
+  watch                           live-tail the currently-running worker's output (any terminal; Ctrl-C detaches)
   run [<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
                                   (interactive/TTY runs stream output live; --headless or
                                   headed=0 config forces the buffered/cron behavior)
@@ -2784,6 +2785,29 @@ _do_set_item_failed() {
   _flip_line "$raw" "$to"
 }
 
+# #63: live-tail the currently-running worker's output (the stable per-item log). The
+# watcher brings its own TTY, so this works from ANY terminal — even one that didn't launch
+# the run (the watch-the-headless-worker case). Ctrl-C detaches without affecting the run.
+cmd_watch() {
+  local d="$ACTIVE_RUN_DIR" item pid id log i
+  if [[ ! -d "$d" ]] || ! _active_run_live "$d"; then
+    printf 'deputy: no worker is running. (Past run logs are archived under %s/logs/.)\n' "$STATE_DIR"
+    return 0
+  fi
+  item="$(sed -n '1p' "$d/item" 2>/dev/null || true)"
+  pid="$(sed -n '1p' "$d/pid" 2>/dev/null || true)"
+  id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: a worker is running but its item has no id to watch.\n' >&2; return 1; }
+  log="$STATE_DIR/run-$id.log"
+  # The lock is published just before the log is created — wait briefly for the file.
+  for i in $(seq 1 20); do [[ -e "$log" ]] && break; sleep 0.25; done
+  [[ -e "$log" ]] || { printf 'deputy: worker #%s is starting; no output yet.\n' "$id" >&2; return 0; }
+  printf 'deputy: watching #%s (pid %s) — Ctrl-C to detach (the run keeps going)...\n' "$id" "$pid" >&2
+  # --pid: exit when the run process ends; -f follows the open fd cleanly across the archive mv.
+  tail --pid="$pid" -f "$log"
+  printf 'deputy: run #%s ended — output archived to %s/logs/%s.log\n' "$id" "$STATE_DIR" "$id" >&2
+}
+
 main() {
   local cmd="${1:-help}"
   case "$cmd" in
@@ -2794,6 +2818,7 @@ main() {
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
     status) cmd_status; return 0 ;;
+    watch|tail) cmd_watch; return $? ;;
     pick) cmd_pick; return 0 ;;
     set) shift; cmd_set "$@"; return $? ;;
     claim) shift; cmd_claim "$@"; return $? ;;

@@ -25,3 +25,22 @@ assert_eq "$(test -e "$DEPUTY_ROOT/.deputy/run-$qid.log" && echo present || echo
 rm -f "$QORCH"
 
 rm -f "$ORCH"
+
+# 3: 'deputy watch' with no active run -> friendly message + exit 0
+setup_repo
+out="$(DEPUTY_ROOT="$DEPUTY_ROOT" bash "$DEPUTY" watch 2>&1; echo "rc=$?")"
+assert_contains "$out" "no worker is running" "watch (idle) prints a friendly message"
+assert_contains "$out" "rc=0" "watch (idle) exits 0"
+
+# 4: 'deputy watch' streams the running worker's log, then exits when the run pid ends
+setup_repo
+sleep 3 & spid=$!
+mkdir -p "$DEPUTY_ROOT/.deputy/active-run.lock"
+printf '%s\n' "$spid" > "$DEPUTY_ROOT/.deputy/active-run.lock/pid"
+printf 'run\n'        > "$DEPUTY_ROOT/.deputy/active-run.lock/owner"
+printf '@[P0][#77] watch target\n' > "$DEPUTY_ROOT/.deputy/active-run.lock/item"   # no start_time -> liveness = kill -0
+printf 'STREAM-LINE-63\n' > "$DEPUTY_ROOT/.deputy/run-77.log"
+out="$(timeout 8 env DEPUTY_ROOT="$DEPUTY_ROOT" bash "$DEPUTY" watch 2>&1)"
+assert_contains "$out" "STREAM-LINE-63"        "watch streams the running worker's live log"
+assert_contains "$out" "ended — output archived" "watch reports the archived path when the run ends"
+kill "$spid" 2>/dev/null || true
