@@ -10,8 +10,7 @@
 
 ## Items
 
-### Running (1)
-@[P1][#66] Worker must STREAM its output so #63's live log is actually live. OBSERVED (2026-06-21 e2e on #64): #63's plumbing works (stable .deputy/run-<id>.log + archive to logs/<id>.log + deputy watch + auto-attach), BUT _spawn_orchestrator spawns 'claude -p "$prompt" --model claude-sonnet-4-6 ...' with NO streaming output flag, so claude -p buffers everything and emits its result only at COMPLETION — run-<id>.log stayed 0 bytes for the entire 13+ min run, then fills all at once and is immediately archived. So deputy watch tails an empty file the whole run; the 'live' goal is not delivered (only the final archived output is). FIX: add a streaming output format to the worker invocation in _spawn_orchestrator (bin/deputy.sh ~line 1857), e.g. claude -p ... --verbose --output-format stream-json (render the stream-json events into the log) or --verbose text, so run-<id>.log fills incrementally and deputy watch / the auto-tail show real progress. GRILL: stream-json (structured, needs rendering) vs --verbose (human-readable) for the log; ensure the run-outcome + quota detection (_detect_outcome reading the log) still work with the streaming format; streamed-log size. Completes #63 — without it #63 only delivers the archived final output, not live watching.
+### Running (0)
 
 ### Surfaced (0)
 
@@ -22,7 +21,8 @@
 
 ### Paused (0)
 
-### Deferred (4)
+### Deferred (5)
+;[P1][#66] Worker must STREAM its output so #63's live log is actually live. OBSERVED (2026-06-21 e2e on #64): #63's plumbing works (stable .deputy/run-<id>.log + archive to logs/<id>.log + deputy watch + auto-attach), BUT _spawn_orchestrator spawns 'claude -p "$prompt" --model claude-sonnet-4-6 ...' with NO streaming output flag, so claude -p buffers everything and emits its result only at COMPLETION — run-<id>.log stayed 0 bytes for the entire 13+ min run, then fills all at once and is immediately archived. So deputy watch tails an empty file the whole run; the 'live' goal is not delivered (only the final archived output is). FIX: add a streaming output format to the worker invocation in _spawn_orchestrator (bin/deputy.sh ~line 1857), e.g. claude -p ... --verbose --output-format stream-json (render the stream-json events into the log) or --verbose text, so run-<id>.log fills incrementally and deputy watch / the auto-tail show real progress. GRILL: stream-json (structured, needs rendering) vs --verbose (human-readable) for the log; ensure the run-outcome + quota detection (_detect_outcome reading the log) still work with the streaming format; streamed-log size. Completes #63 — without it #63 only delivers the archived final output, not live watching.
 ;[P3][#4] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 ;[P3][#3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 ;[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
