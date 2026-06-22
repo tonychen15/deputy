@@ -295,7 +295,7 @@ _flip_line() {
     if [[ "$line" == "$from" ]]; then printf '%s\n' "$to"; else printf '%s\n' "$line"; fi
   done < "$BACKLOG" > "$tmp"
   [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
-  mv "$tmp" "$BACKLOG" || return 1
+  mv "$tmp" "$BACKLOG" || { rm -f "$tmp"; return 1; }
   _regroup_backlog
 }
 
@@ -397,7 +397,7 @@ _regroup_backlog() {
   [[ ${#done_stream[@]} -gt 0 ]] && printf '%s\n' "${done_stream[@]}" >> "$tmp"
 
   [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
-  mv "$tmp" "$BACKLOG" || return 1
+  mv "$tmp" "$BACKLOG" || { rm -f "$tmp"; return 1; }
 }
 
 # Assign sequential [#N] IDs to any item that lacks one. Lock-held, idempotent,
@@ -470,7 +470,7 @@ _allocate_ids() {
 
   if [[ "$changed" -eq 1 ]]; then
     [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
-    mv "$tmp" "$BACKLOG" || return 1
+    mv "$tmp" "$BACKLOG" || { rm -f "$tmp"; return 1; }
     _regroup_backlog
   else
     rm -f "$tmp"
@@ -2162,7 +2162,7 @@ cmd_clean() {
         printf '%s\n' "$line"
       done < "$BACKLOG" > "$tmp"
       [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
-      mv "$tmp" "$BACKLOG" || return 1
+      mv "$tmp" "$BACKLOG" || { rm -f "$tmp"; return 1; }
       # #53: drop the proposal marker for the removed id (filter_id is validated
       # numeric) so a freed/reusable id can't inherit a stale proposed-<id> marker.
       rm -f "$STATE_DIR/proposed-$filter_id" 2>/dev/null || true
@@ -2222,7 +2222,7 @@ cmd_clean() {
       printf '%s\n' "$line"
     done < "$BACKLOG" > "$tmp"
     [[ -s "$tmp" ]] || { rm -f "$tmp"; return 1; }
-    mv "$tmp" "$BACKLOG" || return 1
+    mv "$tmp" "$BACKLOG" || { rm -f "$tmp"; return 1; }
     # #53: drop any proposal marker for a removed item, so a freed (and later
     # reusable) id can never inherit a stale .deputy/proposed-<id> marker that would
     # hide a genuine surfaced blocker from _blocking_surfaced_count.
