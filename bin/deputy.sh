@@ -1071,6 +1071,33 @@ _revert_to_waiting() {
   _flip_line "$raw" "$to"
 }
 
+# #65: Detect stray uncommitted changes in the main working tree after a worker dies.
+# Only tracks modifications and untracked files; ignored files are explicitly out of scope.
+# context_pid ($1): the dead worker's PID for correlation messages; empty for doctor mode.
+# In recover mode (pid given): only prints when dirty (silent when clean — no spam on clean runs).
+# In doctor mode (no pid): always prints status (dirty list or "main tree is clean").
+_check_main_tree_dirty() {
+  local context_pid="${1:-}" dirty="" git_rc=0
+  # Silently skip when not in a git repo (test environments, non-git deputy roots).
+  git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  # Use || to prevent errexit from triggering if git status fails for another reason.
+  dirty="$(git -C "$ROOT" status --porcelain -- '.' ':(exclude)BACKLOG.md' ':(exclude).deputy' 2>/dev/null)" || git_rc=$?
+  if [[ "$git_rc" -ne 0 ]]; then
+    printf 'deputy: git status failed (rc=%d); skipping dirty-tree check\n' "$git_rc" >&2
+    return 0
+  fi
+  if [[ -n "$dirty" ]]; then
+    if [[ -n "$context_pid" ]]; then
+      printf 'deputy recover: WARNING — main tree has uncommitted changes (may be leftovers from hung worker pid %s):\n%s\n' "$context_pid" "$dirty" >&2
+      _notify warn "main tree has uncommitted changes; may be leftovers from hung worker pid $context_pid" >/dev/null 2>&1 || true
+    else
+      printf 'deputy doctor: WARNING — main tree has uncommitted changes:\n%s\n' "$dirty"
+    fi
+  else
+    [[ -z "$context_pid" ]] && printf 'deputy doctor: main tree is clean\n'
+  fi
+}
+
 cmd_recover() {
   _do_recover() {
     local f pid line recorded_start actual_start
@@ -1094,6 +1121,7 @@ cmd_recover() {
         # Read item line from line 1 of claim file.
         line="$(sed -n '1p' "$f" 2>/dev/null || true)"
         [[ -n "$line" ]] && _revert_to_waiting "$line" || true
+        _check_main_tree_dirty "$pid"  # #65: warn about stray leftovers from hung worker
         rm -f "$f"
       fi
     done
@@ -1127,6 +1155,13 @@ cmd_recover() {
 }
 
 cmd_review() { cmd_reflect "$@"; }
+
+# #65: Manual diagnostic: check if the main working tree has uncommitted changes outside
+# BACKLOG.md and .deputy. Always prints status (clean or dirty). For automated recovery
+# warnings, see _check_main_tree_dirty called from cmd_recover on dead-claim detection.
+cmd_doctor() {
+  _check_main_tree_dirty
+}
 
 # Print the installed deputy version (the VERSION file shipped alongside the script).
 # Resolves relative to the real script location (SRC_DIR), so it is correct even when
@@ -2897,6 +2932,7 @@ main() {
     set) shift; cmd_set "$@"; return $? ;;
     claim) shift; cmd_claim "$@"; return $? ;;
     recover) cmd_recover; return 0 ;;
+    doctor) cmd_doctor; return 0 ;;
     review) cmd_review; return 0 ;;
     clean) shift; cmd_clean "$@"; return $? ;;
     reflect) shift; cmd_reflect "$@"; return $? ;;
