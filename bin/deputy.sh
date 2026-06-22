@@ -333,16 +333,62 @@ _commit_queue() {
     || true   # fail soft: never propagate a git error to the caller
 }
 
+# Create a temp file for a BACKLOG.md write.
+# If the BACKLOG directory is writable, use it (same filesystem → mv is atomic).
+# If not writable (bind-mount sandbox where only BACKLOG.md itself is rw), fall
+# back to STATE_DIR — other failures (ENOSPC, quota) propagate as hard errors.
+_backlog_mktemp() {
+  local d; d="$(dirname "$BACKLOG")"
+  if [[ -w "$d" ]]; then
+    mktemp "$d/.backlog.tmp.XXXXXX"
+  else
+    mktemp "$STATE_DIR/.backlog.tmp.XXXXXX"
+  fi
+}
+
+# Commit $1 (a temp file) into BACKLOG.md.
+# When the BACKLOG directory is writable: mv is an atomic same-dir rename.
+# When the directory is read-only (bind-mount sandbox where BACKLOG.md is rw):
+#   fall back to an in-place truncating write, safe under _with_lock (flock).
+#   A .bak copy is required before the write so a crash can be diagnosed.
+_backlog_commit() {
+  local tmp="$1"
+  # Guard: tmp must be a non-empty (-s) regular file — prevents replacing
+  # BACKLOG.md with truncated/empty output on I/O failure.
+  [[ -n "$tmp" && -s "$tmp" && -f "$tmp" ]] || { rm -f "$tmp" 2>/dev/null; return 1; }
+  local d; d="$(dirname "$BACKLOG")"
+  if [[ -w "$d" ]]; then
+    # Directory writable: atomic rename (always same filesystem, no partial copy risk).
+    mv "$tmp" "$BACKLOG" 2>/dev/null && return 0
+    rm -f "$tmp" 2>/dev/null || true; return 1
+  fi
+  # Directory not writable (bind-mount sandbox): use in-place write when BACKLOG.md
+  # itself is writable; fail loudly for any other failure cause (ENOSPC etc.).
+  if [[ -w "$BACKLOG" ]]; then
+    local bak="${tmp}.bak"
+    cp "$BACKLOG" "$bak" || { rm -f "$tmp"; return 1; }  # backup must succeed
+    if cat "$tmp" > "$BACKLOG"; then
+      rm -f "$tmp" "$bak" 2>/dev/null || true
+      return 0
+    fi
+    [[ -s "$bak" ]] && cat "$bak" > "$BACKLOG" 2>/dev/null || true
+    rm -f "$tmp" "$bak" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
 # Exact whole-line replacement (research.sh flip_line). Atomic via tmpfile+mv.
 # Caller holds the lock. Used by upcoming set/claim commands.
 _flip_line() {
   local from="$1" to="$2" tmp line
-  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  tmp="$(_backlog_mktemp)" || return 1
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" == "$from" ]]; then printf '%s\n' "$to"; else printf '%s\n' "$line"; fi
   done < "$BACKLOG" > "$tmp"
-  mv "$tmp" "$BACKLOG"
+  _backlog_commit "$tmp" || return 1
   _regroup_backlog
 }
 
@@ -367,7 +413,7 @@ _regroup_backlog() {
   local -a running=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
   local done_count=0
 
-  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  tmp="$(_backlog_mktemp)" || return 1
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
 
   # Single raw pass: copy the legend/header verbatim up to '## Items', then scan
@@ -443,7 +489,7 @@ _regroup_backlog() {
   printf '\n### Done (%d)\n' "$done_count" >> "$tmp"
   [[ ${#done_stream[@]} -gt 0 ]] && printf '%s\n' "${done_stream[@]}" >> "$tmp"
 
-  mv "$tmp" "$BACKLOG"
+  _backlog_commit "$tmp"
 }
 
 # Assign sequential [#N] IDs to any item that lacks one. Lock-held, idempotent,
@@ -463,7 +509,7 @@ _allocate_ids() {
   # Pass 2: rewrite only items lacking an ID. Track whether anything changed.
   local changed=0 next_id=$(( max_id + 1 ))
   local tmp
-  tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+  tmp="$(_backlog_mktemp)" || return 1
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
 
   # Rewrite the whole file, replacing un-id'd item lines in-place.
@@ -515,7 +561,7 @@ _allocate_ids() {
   done < "$BACKLOG"
 
   if [[ "$changed" -eq 1 ]]; then
-    mv "$tmp" "$BACKLOG"
+    _backlog_commit "$tmp" || return 1
     _regroup_backlog
   else
     rm -f "$tmp"
@@ -1171,15 +1217,15 @@ cmd_release() {
   _do_release() {
     _regroup_backlog                 # ensure the sectioned layout / '### Done' header exists
     grep -qxF -- "$delim" "$BACKLOG" 2>/dev/null && return 3   # already present
-    local tmp; tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")" || return 1
+    local tmp; tmp="$(_backlog_mktemp)" || return 1
     chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
     # Insert the delimiter immediately after the '### Done (N)' header line.
     # Explicitly check the write path: _with_lock invokes us under '|| rrc=$?',
-    # which suppresses set -e here, so an unchecked awk/mv failure could replace
+    # which suppresses set -e here, so an unchecked awk/commit failure could replace
     # the backlog with partial/empty output and still report success.
     awk -v d="$delim" '{ print } /^### Done / && !seen { print d; seen=1 }' "$BACKLOG" > "$tmp" \
       || { rm -f "$tmp"; return 1; }
-    mv "$tmp" "$BACKLOG" || { rm -f "$tmp"; return 1; }
+    _backlog_commit "$tmp" || return 1
     _regroup_backlog                 # normalize; regroup preserves the delimiter at top of Done
   }
   local rrc=0; _with_lock _do_release || rrc=$?
@@ -2320,7 +2366,7 @@ cmd_clean() {
     fi
     _do_clean_id() {
       local tmp line d r prev_blank=0
-      tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+      tmp="$(_backlog_mktemp)" || return 1
       chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
       while IFS= read -r line || [[ -n "$line" ]]; do
         d=0
@@ -2334,7 +2380,7 @@ cmd_clean() {
         fi
         printf '%s\n' "$line"
       done < "$BACKLOG" > "$tmp"
-      mv "$tmp" "$BACKLOG"
+      _backlog_commit "$tmp" || return 1
       # #53: drop the proposal marker for the removed id (filter_id is validated
       # numeric) so a freed/reusable id can't inherit a stale proposed-<id> marker.
       rm -f "$STATE_DIR/proposed-$filter_id" "$STATE_DIR/ready-merge-$filter_id" 2>/dev/null || true
@@ -2379,7 +2425,7 @@ cmd_clean() {
   fi
   _do_clean() {
     local tmp line d r prev_blank=0
-    tmp="$(mktemp "$(dirname "$BACKLOG")/.backlog.tmp.XXXXXX")"
+    tmp="$(_backlog_mktemp)" || return 1
     chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
     while IFS= read -r line || [[ -n "$line" ]]; do
       d=0
@@ -2393,7 +2439,7 @@ cmd_clean() {
       fi
       printf '%s\n' "$line"
     done < "$BACKLOG" > "$tmp"
-    mv "$tmp" "$BACKLOG"
+    _backlog_commit "$tmp" || return 1
     # #53: drop any proposal marker for a removed item, so a freed (and later
     # reusable) id can never inherit a stale .deputy/proposed-<id> marker that would
     # hide a genuine surfaced blocker from _blocking_surfaced_count.
