@@ -10,10 +10,10 @@
 
 ## Items
 
-### Running (1)
-@[P3][#74] test write
+### Running (0)
 
-### Surfaced (8)
+### Surfaced (9)
+?[P3][#74] test write
 ?[P3][#73] test write to backlog
 ?[P3][#72] Add per-command help: 'deputy <cmd> --help' (e.g. deputy list --help, deputy set --help, deputy add --help) prints help/tips scoped to THAT command only. Today only the top-level 'deputy help' / 'deputy --help' exists; a subcommand --help either errors or shows nothing focused (e.g. 'deputy set --help' currently just prints the usage-error line). SCOPE: detect --help/-h as an arg to a subcommand and print a focused usage + options + examples block for that command, then exit 0; cover the public commands add/list/status/run/cron/set/clean/reflect; reuse/extract the relevant slice of the existing help text per command so they stay in sync; keep existing positional parsing intact. Update help text + tests. GRILL: per-command help source (hand-written blocks vs slicing the monolithic help vs a small table); whether internal/plumbing verbs get help too; the -h alias; keep it consistent with deputy help formatting.
 ?[P3][#70] Organize .deputy/ runtime trails into subfolders to declutter the top level. deputy generates per-item runtime files at runtime — the xReview audit trail (<slug>.review.md), surfaced-questions (<slug>.questions.md), and failure context (<slug>.fail.md); today they litter .deputy/ flat (29 review + 6 questions accumulated while dogfooding). Write them under .deputy/reviews/<slug>.md, .deputy/questions/<slug>.md, .deputy/fails/<slug>.md instead. They STAY gitignored runtime output (correct for every user) — this is purely tidiness, NOT moving them to docs/ (they are not authored docs; the design specs already live in docs/). SCOPE: update the hard-coded paths (bin/deputy.sh ~1253 review-log target, ~1825 surfaced .questions.md, ~2195/2225/2248 .fail.md; SKILL.md references); extend the guardrail write-allowlist (hooks/guardrail.sh permits Edit/Write to .deputy/<slug>.questions.md + .fail.md — add the new subfolder paths; .review.md stays append-only via deputy review-log); mkdir -p the subfolders before writing; DUAL-READ/migrate so existing flat .deputy/<slug>.*.md still resolve (read old path if the new one is absent, or move-on-next-touch); fix any glob/scan (deputy clean, status). Update README/SKILL + tests. GRILL: migrate existing flat files (one-shot move vs lazy dual-read); subfolder names (reviews/questions/fails); confirm the #64 bwrap binds still cover them (.deputy is rw-bound, so nested dirs are fine).
