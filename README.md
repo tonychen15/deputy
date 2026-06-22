@@ -43,7 +43,11 @@ genuinely hard calls, and never blocks the queue while it waits on you.
 - **🔒 Safe by construction.** Every item runs on its own `deputy/<slug>` branch in an
   isolated git worktree; **Deputy never auto-pushes** (publishing is always your call);
   cross-LLM review (xReview) gates design, plan, and *every commit*; and a risky-op
-  guardrail constrains the headless agent.
+  guardrail constrains the headless agent. When [`bwrap`](https://github.com/containers/bubblewrap)
+  is available, the headless worker also runs in an **OS-enforced read-only sandbox**: the
+  repo's *code* is physically unwritable to it — only `.deputy/` (its worktree + state),
+  `.git`, and `BACKLOG.md` are writable — so a stray write can't escape into the main tree.
+  Disable with `sandbox=0` (falls back to pinning the worker's cwd to the worktree).
 - **🔁 Resumable.** A checkpoint spine commits each step and **forward-recovers** after any
   interruption — it continues from the first uncommitted step, never re-doing finished work.
 

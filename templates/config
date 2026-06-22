@@ -26,3 +26,7 @@ auto_merge=0
 # every time the heartbeat autonomously spawns a worker, so an unattended pickup is never
 # silent. Default 1 (on). Set 0 to silence. Interactive runs never fire it.
 notify_on_spawn=1
+# sandbox: wrap the headless worker in a bwrap read-only sandbox so it cannot write to
+# the repo CODE (only .deputy/, BACKLOG.md, and the .deputy/wt worktree are writable; the
+# rest of the filesystem is normal). Default 1 (on; requires bwrap). 0 = cwd-pin only.
+sandbox=1
