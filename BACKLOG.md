@@ -12,8 +12,7 @@
 
 ### Running (0)
 
-### Surfaced (7)
-?[P3][#74] test write
+### Surfaced (6)
 ?[P3][#72] Add per-command help: 'deputy <cmd> --help' (e.g. deputy list --help, deputy set --help, deputy add --help) prints help/tips scoped to THAT command only. Today only the top-level 'deputy help' / 'deputy --help' exists; a subcommand --help either errors or shows nothing focused (e.g. 'deputy set --help' currently just prints the usage-error line). SCOPE: detect --help/-h as an arg to a subcommand and print a focused usage + options + examples block for that command, then exit 0; cover the public commands add/list/status/run/cron/set/clean/reflect; reuse/extract the relevant slice of the existing help text per command so they stay in sync; keep existing positional parsing intact. Update help text + tests. GRILL: per-command help source (hand-written blocks vs slicing the monolithic help vs a small table); whether internal/plumbing verbs get help too; the -h alias; keep it consistent with deputy help formatting.
 ?[P3][#70] Organize .deputy/ runtime trails into subfolders to declutter the top level. deputy generates per-item runtime files at runtime — the xReview audit trail (<slug>.review.md), surfaced-questions (<slug>.questions.md), and failure context (<slug>.fail.md); today they litter .deputy/ flat (29 review + 6 questions accumulated while dogfooding). Write them under .deputy/reviews/<slug>.md, .deputy/questions/<slug>.md, .deputy/fails/<slug>.md instead. They STAY gitignored runtime output (correct for every user) — this is purely tidiness, NOT moving them to docs/ (they are not authored docs; the design specs already live in docs/). SCOPE: update the hard-coded paths (bin/deputy.sh ~1253 review-log target, ~1825 surfaced .questions.md, ~2195/2225/2248 .fail.md; SKILL.md references); extend the guardrail write-allowlist (hooks/guardrail.sh permits Edit/Write to .deputy/<slug>.questions.md + .fail.md — add the new subfolder paths; .review.md stays append-only via deputy review-log); mkdir -p the subfolders before writing; DUAL-READ/migrate so existing flat .deputy/<slug>.*.md still resolve (read old path if the new one is absent, or move-on-next-touch); fix any glob/scan (deputy clean, status). Update README/SKILL + tests. GRILL: migrate existing flat files (one-shot move vs lazy dual-read); subfolder names (reviews/questions/fails); confirm the #64 bwrap binds still cover them (.deputy is rw-bound, so nested dirs are fine).
 ?[P3][#62] Change the task item line format from '<state>[<priority>][<#id>] <description>' to '<state>[<#id>][<priority>] <description>' — i.e. swap the priority and id tag order. SCOPE/GRILL (bigger than it looks, back-compat sensitive): touches _parse_item + _serialize_item + every grep/sed/regex that matches the current tag order (e.g. '\[P[0-9]\]\[#N\]'), the id-allocation + symbol/state migration paths, and all of deputy list/status/clean output. Needs a DUAL-READ back-compat path so existing BACKLOG.md files written in the OLD order still parse (like the #46 symbol migration), re-serializing to the new order on next write. Many tests to update. Confirm it's worth the churn before doing it.
@@ -31,7 +30,8 @@
 ;[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 ;[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
-### Failed / Cancelled / Duplicate (0)
+### Failed / Cancelled / Duplicate (1)
+%[P3][#74] test write
 
 ### Done (59)
 +[P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
