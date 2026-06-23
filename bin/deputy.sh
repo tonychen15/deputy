@@ -382,21 +382,31 @@ _backlog_commit() {
 # Exact whole-line replacement (research.sh flip_line). Atomic via tmpfile+mv.
 # Caller holds the lock. Used by upcoming set/claim commands.
 _flip_line() {
-  local from="$1" to="$2" tmp line
+  local from="$1" to="$2" tmp line _werr=0
   tmp="$(_backlog_mktemp)" || return 1
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" == "$from" ]]; then printf '%s\n' "$to"; else printf '%s\n' "$line"; fi
-  done < "$BACKLOG" > "$tmp"
-  _backlog_commit "$tmp" || return 1
-  _regroup_backlog
+    if [[ "$line" == "$from" ]]; then printf '%s\n' "$to" || _werr=1; else printf '%s\n' "$line" || _werr=1; fi
+  done < "$BACKLOG" > "$tmp" || _werr=1
+  # A partial/ENOSPC write leaves a truncated-but-non-empty tmp that would pass
+  # _backlog_commit's -s guard; fail the flip instead of committing it (#47).
+  [[ "$_werr" -ne 0 ]] && { rm -f "$tmp" 2>/dev/null; return 1; }
+  # One transaction: regroup sorts + commits the flipped temp to BACKLOG atomically.
+  _regroup_backlog "$tmp"
 }
 
 # Append a raw line preceded by a blank line so items stay blank-separated.
-# Caller holds the lock.
+# Append atomically through the same temp+commit path as every other write site:
+# a raw '>> $BACKLOG' could leave a torn file on a partial write, and bypasses the
+# read-only-dir handling (#73 sandbox: repo dir ro, BACKLOG rw). Caller holds the lock.
 _append_item() {
-  printf '\n%s\n' "$1" >> "$BACKLOG"
-  _regroup_backlog
+  local tmp
+  tmp="$(_backlog_mktemp)" || return 1
+  chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+  { cat "$BACKLOG" && printf '\n%s\n' "$1"; } > "$tmp" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  # One transaction: regroup sorts the staged (backlog + new line) temp and commits
+  # it to BACKLOG once — no separate pre-commit, so no committed-but-unsorted window.
+  _regroup_backlog "$tmp"
 }
 
 # Rewrite BACKLOG.md with items grouped by state: waiting first, active
@@ -405,7 +415,18 @@ _append_item() {
 # within a group are consecutive. No-ops if no '## Items' heading is found.
 # Caller holds the lock.
 _regroup_backlog() {
-  grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null || return 0
+  # Read items from $1 (a mutator's staged temp) when given, else from BACKLOG in
+  # place; always commit the regrouped result to BACKLOG in ONE commit. Routing a
+  # mutation's staged temp through here makes "apply change + normalize" a single
+  # transaction: the fully-sorted file lands or BACKLOG is untouched — never a
+  # committed-but-unsorted middle state.
+  local _src="${1:-$BACKLOG}"
+  if ! grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$_src" 2>/dev/null; then
+    # No '## Items' header to bucket under. In place: nothing to do. Given a staged
+    # temp (legacy-format file), persist it verbatim so the mutation is never dropped.
+    [[ "$_src" != "$BACKLOG" ]] && { _backlog_commit "$_src"; return $?; }
+    return 0
+  fi
   local tmp phase=header raw trimmed parsed state prio id desc rest norm
   # Seven buckets in display order; done_stream interleaves done items AND
   # release-delimiter lines (preserving their relative order). done_count tracks
@@ -413,7 +434,7 @@ _regroup_backlog() {
   local -a running=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
   local done_count=0
 
-  tmp="$(_backlog_mktemp)" || return 1
+  tmp="$(_backlog_mktemp)" || { [[ "$_src" != "$BACKLOG" ]] && rm -f "$_src" 2>/dev/null; return 1; }
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
 
   # Single raw pass: copy the legend/header verbatim up to '## Items', then scan
@@ -423,7 +444,7 @@ _regroup_backlog() {
   # the old Done block, so it is encountered first → lands at the TOP of Done.
   while IFS= read -r raw || [[ -n "$raw" ]]; do
     if [[ "$phase" == header ]]; then
-      printf '%s\n' "$raw" >> "$tmp"
+      printf '%s\n' "$raw" >> "$tmp" || { rm -f "$tmp" 2>/dev/null; [[ "$_src" != "$BACKLOG" ]] && rm -f "$_src" 2>/dev/null; return 1; }
       [[ "$raw" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]] && phase=items
       continue
     fi
@@ -449,7 +470,7 @@ _regroup_backlog() {
       failed|cancelled|duplicate) failcanc+=("$norm") ;;
       done)                       done_stream+=("$norm"); done_count=$((done_count + 1)) ;;
     esac
-  done < "$BACKLOG"
+  done < "$_src"
 
   # When called from cmd_clean for done items, strip release delimiters that are
   # orphaned: no items appear between the delimiter and the next delimiter (or end).
@@ -474,22 +495,34 @@ _regroup_backlog() {
 
   # Always emit all seven '### Section (N)' headers, in order, for a stable
   # skeleton — even when a section is empty. Done is last (bottom of file).
-  printf '\n### Running (%d)\n' "${#running[@]}" >> "$tmp"
-  [[ ${#running[@]} -gt 0 ]] && printf '%s\n' "${running[@]}" >> "$tmp"
-  printf '\n### Surfaced (%d)\n' "${#surfaced[@]}" >> "$tmp"
-  [[ ${#surfaced[@]} -gt 0 ]] && printf '%s\n' "${surfaced[@]}" >> "$tmp"
-  printf '\n### Waiting (%d)\n' "${#waiting[@]}" >> "$tmp"
-  [[ ${#waiting[@]} -gt 0 ]] && printf '%s\n' "${waiting[@]}" >> "$tmp"
-  printf '\n### Paused (%d)\n' "${#paused[@]}" >> "$tmp"
-  [[ ${#paused[@]} -gt 0 ]] && printf '%s\n' "${paused[@]}" >> "$tmp"
-  printf '\n### Deferred (%d)\n' "${#deferred[@]}" >> "$tmp"
-  [[ ${#deferred[@]} -gt 0 ]] && printf '%s\n' "${deferred[@]}" >> "$tmp"
-  printf '\n### Failed / Cancelled / Duplicate (%d)\n' "${#failcanc[@]}" >> "$tmp"
-  [[ ${#failcanc[@]} -gt 0 ]] && printf '%s\n' "${failcanc[@]}" >> "$tmp"
-  printf '\n### Done (%d)\n' "$done_count" >> "$tmp"
-  [[ ${#done_stream[@]} -gt 0 ]] && printf '%s\n' "${done_stream[@]}" >> "$tmp"
+  # Emit every section through ONE redirection and capture any partial-write
+  # failure (e.g. ENOSPC). An unchecked printf here could leave a non-empty but
+  # TRUNCATED tmp that still passes _backlog_commit's -s guard and then overwrites
+  # BACKLOG.md with truncated content — the exact masked-truncation #47 targets.
+  local _werr=0
+  {
+    printf '\n### Running (%d)\n' "${#running[@]}" || _werr=1
+    (( ${#running[@]} )) && { printf '%s\n' "${running[@]}" || _werr=1; }
+    printf '\n### Surfaced (%d)\n' "${#surfaced[@]}" || _werr=1
+    (( ${#surfaced[@]} )) && { printf '%s\n' "${surfaced[@]}" || _werr=1; }
+    printf '\n### Waiting (%d)\n' "${#waiting[@]}" || _werr=1
+    (( ${#waiting[@]} )) && { printf '%s\n' "${waiting[@]}" || _werr=1; }
+    printf '\n### Paused (%d)\n' "${#paused[@]}" || _werr=1
+    (( ${#paused[@]} )) && { printf '%s\n' "${paused[@]}" || _werr=1; }
+    printf '\n### Deferred (%d)\n' "${#deferred[@]}" || _werr=1
+    (( ${#deferred[@]} )) && { printf '%s\n' "${deferred[@]}" || _werr=1; }
+    printf '\n### Failed / Cancelled / Duplicate (%d)\n' "${#failcanc[@]}" || _werr=1
+    (( ${#failcanc[@]} )) && { printf '%s\n' "${failcanc[@]}" || _werr=1; }
+    printf '\n### Done (%d)\n' "$done_count" || _werr=1
+    (( ${#done_stream[@]} )) && { printf '%s\n' "${done_stream[@]}" || _werr=1; }
+    true   # keep the group's exit status tied to the redirect (open failure), not
+           # to the trailing '(( count ))' test which is non-zero for an empty section
+  } >> "$tmp" || _werr=1
+  [[ "$_werr" -ne 0 ]] && { rm -f "$tmp" 2>/dev/null; [[ "$_src" != "$BACKLOG" ]] && rm -f "$_src" 2>/dev/null; return 1; }
 
-  _backlog_commit "$tmp"
+  _backlog_commit "$tmp"; local _rc=$?
+  [[ "$_src" != "$BACKLOG" ]] && rm -f "$_src" 2>/dev/null
+  return "$_rc"
 }
 
 # Assign sequential [#N] IDs to any item that lacks one. Lock-held, idempotent,
@@ -513,14 +546,14 @@ _allocate_ids() {
   chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
 
   # Rewrite the whole file, replacing un-id'd item lines in-place.
-  local _ai_line _ai_seen=0 _ai_mode=none
+  local _ai_line _ai_seen=0 _ai_mode=none _werr=0
   if grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null; then _ai_mode=items
   elif grep -q -- '-->' "$BACKLOG" 2>/dev/null; then _ai_mode=comment
   fi
   while IFS= read -r _ai_line || [[ -n "$_ai_line" ]]; do
     # Copy header lines verbatim until the items section starts
     if [[ "$_ai_seen" -eq 0 && "$_ai_mode" != "none" ]]; then
-      printf '%s\n' "$_ai_line" >> "$tmp"
+      printf '%s\n' "$_ai_line" >> "$tmp" || _werr=1
       if [[ "$_ai_mode" == "items" && "$_ai_line" =~ ^[[:space:]]*##[[:space:]]+Items[[:space:]]*$ ]]; then _ai_seen=1; fi
       [[ "$_ai_mode" == "comment" && "$_ai_line" == *'-->'* ]] && _ai_seen=1
       continue
@@ -528,7 +561,7 @@ _allocate_ids() {
     # Preserve non-item lines verbatim (blanks, '###' section headers, release
     # delimiters) — they must never receive an ID or a priority tag.
     if ! _is_item_line "$_ai_line"; then
-      printf '%s\n' "$_ai_line" >> "$tmp"; continue
+      printf '%s\n' "$_ai_line" >> "$tmp" || _werr=1; continue
     fi
     # Check if this item line needs an ID or a default priority
     parsed="$(_parse_item "$_ai_line")"
@@ -541,7 +574,7 @@ _allocate_ids() {
       [[ -z "$_ai_prio" ]] && _ai_prio="P3"
       local _ai_new_line
       _ai_new_line="$(_serialize_item "$_ai_state" "$_ai_prio" "$next_id" "$_ai_desc_rest")"
-      printf '%s\n' "$_ai_new_line" >> "$tmp"
+      printf '%s\n' "$_ai_new_line" >> "$tmp" || _werr=1
       next_id=$(( next_id + 1 ))
       changed=1
     else
@@ -552,17 +585,20 @@ _allocate_ids() {
       if [[ -z "$_ai_prio" ]]; then
         local _ai_new_line
         _ai_new_line="$(_serialize_item "$_ai_state" "P3" "$_ai_id" "$_ai_desc_rest")"
-        printf '%s\n' "$_ai_new_line" >> "$tmp"
+        printf '%s\n' "$_ai_new_line" >> "$tmp" || _werr=1
         changed=1
       else
-        printf '%s\n' "$_ai_line" >> "$tmp"
+        printf '%s\n' "$_ai_line" >> "$tmp" || _werr=1
       fi
     fi
   done < "$BACKLOG"
 
+  # A partial/ENOSPC write leaves a truncated-but-non-empty tmp that passes
+  # _backlog_commit's -s guard; bail before committing it (#47).
+  [[ "$_werr" -ne 0 ]] && { rm -f "$tmp" 2>/dev/null; return 1; }
   if [[ "$changed" -eq 1 ]]; then
-    _backlog_commit "$tmp" || return 1
-    _regroup_backlog
+    # One transaction: regroup sorts + commits the id-allocated temp to BACKLOG.
+    _regroup_backlog "$tmp"
   else
     rm -f "$tmp"
   fi
@@ -662,7 +698,7 @@ cmd_add() {
   _is_worker_context && _worker=1
   rm -f "$STATE_DIR/.proposed_pending.$$" 2>/dev/null || true
   _do_add() {
-    _allocate_ids
+    _allocate_ids || return 1
     if _desc_exists "$text"; then
       printf 'deputy: already present: %s\n' "$text"; return 0
     fi
@@ -671,7 +707,7 @@ cmd_add() {
       # never revisit this line — meaning we must apply the P3 default now, exactly as
       # _allocate_ids would for an un-prioritized item.
       local _nid _pprio; _nid="$(_next_id)"; _pprio="${prio:-P3}"
-      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")"
+      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")" || return 1
       mkdir -p "$STATE_DIR" 2>/dev/null || true
       {
         printf 'proposed-by-run-pid: %s\n' "${DEPUTY_ACTIVE_RUN_PID:-}"
@@ -684,10 +720,17 @@ cmd_add() {
       printf 'deputy: proposed (awaiting human approval, #%s): %s\n' "$_nid" "$text"
       return 0
     fi
-    _append_item "$(_serialize_item waiting "$prio" "" "$text")"
+    _append_item "$(_serialize_item waiting "$prio" "" "$text")" || return 1
     printf 'deputy: added: %s\n' "$text"
   }
-  _with_lock _do_add
+  local _add_rc=0
+  _with_lock _do_add || _add_rc=$?
+  # On a failed write, skip the commit + worker notify (no real change happened) and
+  # report the failure; a dangling handoff marker is cleaned so it can't leak.
+  if [[ "$_add_rc" -ne 0 ]]; then
+    rm -f "$STATE_DIR/.proposed_pending.$$" 2>/dev/null || true
+    return "$_add_rc"
+  fi
   _commit_queue "add"
   if [[ "$_worker" -eq 1 ]]; then
     # A worker proposal never autoruns. Notify only if a NEW proposal was created
@@ -700,8 +743,9 @@ cmd_add() {
       fi
     fi
     rm -f "$STATE_DIR/.proposed_pending.$$" 2>/dev/null || true
-    return 0
+    return "$_add_rc"
   fi
+  [[ "$_add_rc" -ne 0 ]] && return "$_add_rc"
   # Trigger execution immediately if nothing is running and work is available.
   # Set DEPUTY_NO_AUTORUN=1 to suppress (used in tests that exercise add in isolation).
   if [[ "${DEPUTY_NO_AUTORUN:-0}" != "1" ]] && ! _live_claim_exists && [[ -n "$(cmd_pick)" ]]; then
@@ -920,7 +964,9 @@ cmd_set() {
     _id_rest="${parsed#*|}"; _id_rest="${_id_rest#*|}"; _id="${_id_rest%%|*}"
     desc="${_id_rest#*|}"
     to="$(_serialize_item "$newstate" "$prio" "$_id" "$desc")"
-    _flip_line "$from" "$to"
+    # Propagate a write failure: a swallowed rc here would let the trailing #60 marker
+    # block (which returns 0) mask a failed line flip, so 'set' would falsely report success.
+    _flip_line "$from" "$to" || return 1
     # #60: maintain the ready-merge marker under the SAME lock as the line flip, so scheduling
     # never sees a 'surfaced' item without its marker (no blocking-count race window).
     if [[ "$_id" =~ ^[0-9]+$ ]]; then
@@ -1097,13 +1143,23 @@ cmd_claim() {
     _cid_rest="${parsed#*|}"; _cid_rest="${_cid_rest#*|}"; _cid="${_cid_rest%%|*}"
     desc="${_cid_rest#*|}"
     to="$(_serialize_item running "$prio" "$_cid" "$desc")"
-    _flip_line "$from" "$to"
+    # Abort before writing the claim file if the BACKLOG transition failed, so a
+    # failed write can't leave a live claim pointing at a never-transitioned line.
+    _flip_line "$from" "$to" || return 1
     # Write claim file: line 1 = running item line; line 2 = PID start-time for liveness validation.
     local _claim_start; _claim_start="$(_pid_start_time "$pid")"
-    printf '%s\n%s\n' "$to" "$_claim_start" > "$STATE_DIR/$pid.claim"
+    if ! printf '%s\n%s\n' "$to" "$_claim_start" > "$STATE_DIR/$pid.claim"; then
+      # Claim-file write failed after the flip: roll the line back to waiting so we
+      # don't leave a claimless 'running' item (best-effort; orphan recovery is the
+      # backstop if this rollback write also fails).
+      _revert_to_waiting "$to" || true
+      rm -f "$STATE_DIR/$pid.claim" 2>/dev/null || true
+      return 1
+    fi
   }
-  _with_lock _do_claim
-  _commit_queue "claim running"
+  local _claim_rc=0; _with_lock _do_claim || _claim_rc=$?
+  [[ "$_claim_rc" -eq 0 ]] && _commit_queue "claim running"
+  return "$_claim_rc"
 }
 
 # Revert a running/triaging line back to waiting (strip the prefix). Caller holds lock.
@@ -1139,7 +1195,10 @@ cmd_recover() {
       if [[ "$_claim_dead" -eq 1 ]]; then
         # Read item line from line 1 of claim file.
         line="$(sed -n '1p' "$f" 2>/dev/null || true)"
-        [[ -n "$line" ]] && _revert_to_waiting "$line" || true
+        # Revert the stale claim's line to waiting BEFORE dropping the claim file; if
+        # that write fails, keep the claim file so recovery can retry rather than
+        # orphaning a 'running' line with no claim record.
+        [[ -n "$line" ]] && { _revert_to_waiting "$line" || return 1; }
         rm -f "$f"
       fi
     done
@@ -1165,11 +1224,12 @@ cmd_recover() {
       [[ "$state" == "running" || "$state" == "triaging" ]] || continue
       found=0
       for c in "${claimed[@]:-}"; do [[ "$c" == "$raw" ]] && { found=1; break; }; done
-      [[ "$found" -eq 0 ]] && _revert_to_waiting "$raw"
+      [[ "$found" -eq 0 ]] && { _revert_to_waiting "$raw" || return 1; }
     done < <(_each_item)
   }
-  _with_lock _do_recover
-  _commit_queue "recover"
+  local _rec_rc=0; _with_lock _do_recover || _rec_rc=$?
+  [[ "$_rec_rc" -eq 0 ]] && _commit_queue "recover"
+  return "$_rec_rc"
 }
 
 cmd_review() { cmd_reflect "$@"; }
@@ -1225,8 +1285,9 @@ cmd_release() {
     # the backlog with partial/empty output and still report success.
     awk -v d="$delim" '{ print } /^### Done / && !seen { print d; seen=1 }' "$BACKLOG" > "$tmp" \
       || { rm -f "$tmp"; return 1; }
-    _backlog_commit "$tmp" || return 1
-    _regroup_backlog                 # normalize; regroup preserves the delimiter at top of Done
+    # One transaction: regroup sorts + commits the delimiter-inserted temp to BACKLOG
+    # (it preserves the release delimiter at the top of Done).
+    _regroup_backlog "$tmp" || return 1
   }
   local rrc=0; _with_lock _do_release || rrc=$?
   if [[ "$rrc" -eq 3 ]]; then
@@ -2337,7 +2398,8 @@ cmd_clean() {
 
   if [[ -n "$filter_id" ]]; then
     # ID-targeted clean: find and remove exactly one item by its numeric ID.
-    _with_lock _allocate_ids
+    local _cid_alloc_rc=0; _with_lock _allocate_ids || _cid_alloc_rc=$?
+    [[ "$_cid_alloc_rc" -ne 0 ]] && return "$_cid_alloc_rc"
     local raw parsed state item_id
     local -a doomed=()
     while IFS= read -r raw; do
@@ -2365,7 +2427,7 @@ cmd_clean() {
       return 0
     fi
     _do_clean_id() {
-      local tmp line d r prev_blank=0
+      local tmp line d r prev_blank=0 _werr=0
       tmp="$(_backlog_mktemp)" || return 1
       chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
       while IFS= read -r line || [[ -n "$line" ]]; do
@@ -2378,22 +2440,26 @@ cmd_clean() {
         else
           prev_blank=0
         fi
-        printf '%s\n' "$line"
-      done < "$BACKLOG" > "$tmp"
-      _backlog_commit "$tmp" || return 1
-      # #53: drop the proposal marker for the removed id (filter_id is validated
-      # numeric) so a freed/reusable id can't inherit a stale proposed-<id> marker.
-      rm -f "$STATE_DIR/proposed-$filter_id" "$STATE_DIR/ready-merge-$filter_id" 2>/dev/null || true
+        printf '%s\n' "$line" || _werr=1
+      done < "$BACKLOG" > "$tmp" || _werr=1
+      # Don't commit a truncated tmp from a partial/ENOSPC write (passes -s guard) (#47).
+      [[ "$_werr" -ne 0 ]] && { rm -f "$tmp" 2>/dev/null; return 1; }
+      # One transaction: regroup sorts + commits the cleaned temp to BACKLOG (for done
+      # items it also strips orphaned release delimiters in the same pass).
       if [[ "$state" == "done" ]]; then
-        _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
+        _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog "$tmp" || return 1
       else
-        _regroup_backlog
+        _regroup_backlog "$tmp" || return 1
       fi
+      # #53: drop the proposal marker for the removed id (filter_id is validated
+      # numeric), only AFTER the removal is persisted, so a freed/reusable id can't
+      # inherit a stale proposed-<id> marker.
+      rm -f "$STATE_DIR/proposed-$filter_id" "$STATE_DIR/ready-merge-$filter_id" 2>/dev/null || true
     }
-    _with_lock _do_clean_id
-    _commit_queue "clean"
-    printf 'deputy: cleaned item #%s\n' "$filter_id"
-    return 0
+    local _cid_rc=0; _with_lock _do_clean_id || _cid_rc=$?
+    [[ "$_cid_rc" -eq 0 ]] && _commit_queue "clean"
+    [[ "$_cid_rc" -eq 0 ]] && printf 'deputy: cleaned item #%s\n' "$filter_id"
+    return "$_cid_rc"
   fi
 
   # Safety: refuse to clean active/checkpointed/awaiting states.
@@ -2424,7 +2490,7 @@ cmd_clean() {
     return 0
   fi
   _do_clean() {
-    local tmp line d r prev_blank=0
+    local tmp line d r prev_blank=0 _werr=0
     tmp="$(_backlog_mktemp)" || return 1
     chmod --reference="$BACKLOG" "$tmp" 2>/dev/null || chmod 644 "$tmp"
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -2437,27 +2503,31 @@ cmd_clean() {
       else
         prev_blank=0
       fi
-      printf '%s\n' "$line"
-    done < "$BACKLOG" > "$tmp"
-    _backlog_commit "$tmp" || return 1
-    # #53: drop any proposal marker for a removed item, so a freed (and later
-    # reusable) id can never inherit a stale .deputy/proposed-<id> marker that would
-    # hide a genuine surfaced blocker from _blocking_surfaced_count.
+      printf '%s\n' "$line" || _werr=1
+    done < "$BACKLOG" > "$tmp" || _werr=1
+    # Don't commit a truncated tmp from a partial/ENOSPC write (passes -s guard) (#47).
+    [[ "$_werr" -ne 0 ]] && { rm -f "$tmp" 2>/dev/null; return 1; }
+    # One transaction: regroup sorts + commits the cleaned temp to BACKLOG (for done
+    # items it also strips orphaned release delimiters in the same pass).
+    if [[ "$filter_state" == "done" ]]; then
+      _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog "$tmp" || return 1
+    else
+      _regroup_backlog "$tmp" || return 1
+    fi
+    # #53: drop any proposal marker for a removed item, only AFTER the removal is
+    # persisted, so a freed (and later reusable) id can never inherit a stale
+    # .deputy/proposed-<id> marker that would hide a genuine surfaced blocker.
     local _dc_parsed _dc_rest _dc_id
     for r in "${doomed[@]}"; do
       _dc_parsed="$(_parse_item "$r")"
       _dc_rest="${_dc_parsed#*|}"; _dc_rest="${_dc_rest#*|}"; _dc_id="${_dc_rest%%|*}"
       [[ "$_dc_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_dc_id" "$STATE_DIR/ready-merge-$_dc_id" 2>/dev/null || true
     done
-    if [[ "$filter_state" == "done" ]]; then
-      _REGROUP_STRIP_ORPHANED_DELIMS=1 _regroup_backlog
-    else
-      _regroup_backlog
-    fi
   }
-  _with_lock _do_clean
-  _commit_queue "clean"
-  printf 'deputy: cleaned %d %s item(s)\n' "${#doomed[@]}" "$filter_state"
+  local _clean_rc=0; _with_lock _do_clean || _clean_rc=$?
+  [[ "$_clean_rc" -eq 0 ]] && _commit_queue "clean"
+  [[ "$_clean_rc" -eq 0 ]] && printf 'deputy: cleaned %d %s item(s)\n' "${#doomed[@]}" "$filter_state"
+  return "$_clean_rc"
 }
 
 # Find all duplicate candidate pairs from a list of descriptions (one per stdin line).
