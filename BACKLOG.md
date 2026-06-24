@@ -12,8 +12,7 @@
 
 ### Running (0)
 
-### Surfaced (1)
-?[#75][P3] Document the upgrade story (global vs per-project) in README: the deputy command, orchestrator skill, and guardrail hook are GLOBAL symlinks into the single deputy repo (+ content-addressed re-exec), so 'git pull' in the deputy repo auto-updates deputy for ALL customer projects with ZERO per-project re-install. Only per-project COPIED seed files (.deputy/config, .deputy/protected, BACKLOG legend) are static-by-design; clarify that new config keys auto-apply via call-site defaults (post-upgrade init is OPTIONAL, only materializes/edits keys). Add an explicit 'Upgrading' subsection. Motivated by repeated user confusion about whether customers must re-run install/init on a release upgrade.
+### Surfaced (0)
 
 ### Waiting (0)
 
@@ -27,7 +26,8 @@
 
 ### Failed / Cancelled / Duplicate (0)
 
-### Done (67)
+### Done (68)
++[#75][P3] Document the upgrade story (global vs per-project) in README: the deputy command, orchestrator skill, and guardrail hook are GLOBAL symlinks into the single deputy repo (+ content-addressed re-exec), so 'git pull' in the deputy repo auto-updates deputy for ALL customer projects with ZERO per-project re-install. Only per-project COPIED seed files (.deputy/config, .deputy/protected, BACKLOG legend) are static-by-design; clarify that new config keys auto-apply via call-site defaults (post-upgrade init is OPTIONAL, only materializes/edits keys). Add an explicit 'Upgrading' subsection. Motivated by repeated user confusion about whether customers must re-run install/init on a release upgrade.
 +[#76][P3] Eliminate the post-upgrade 'optional init' for customer projects: make deputy self-heal per-project seed files so users never need to re-run init after a deputy release. FINDING: config keys already auto-fall-back to built-in defaults at each _config_get call site, so new keys FUNCTION without re-init (init only materializes keys in .deputy/config for editing). Remaining gaps where init still matters: (a) new default 'protected' globs added in a release don't reach existing projects (.deputy/protected is COPIED at init, not layered/symlinked); (b) a missing .deputy/config or .deputy/protected isn't auto-created on run. PROPOSED: on startup or first queue op, idempotently (1) auto-seed missing .deputy/config + .deputy/protected from SRC_DIR/templates (never overwrite existing), and (2) layer the SRC_DIR template 'protected' defaults UNDER the per-project file (read both) so new release globs always apply. GRILL: trigger point (every run vs first op); protected layering vs append-on-seed; whether to also append NEW default config keys (commented) to an existing .deputy/config without changing user values; back-compat + the #64 sandbox/read-only-repo constraint; never touch BACKLOG content.
 <!-- release v1.3.1 — 2026-06-24 -->
 +[#74][P3] line format in BACKLOG's legend is out of date
