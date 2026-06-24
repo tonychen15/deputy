@@ -3,3 +3,6 @@
 
 # Local staging area for files pending deletion (never committed).
 to-be-deleted/
+
+# IDE / editor project files (local, per-developer).
+.idea/
