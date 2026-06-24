@@ -219,7 +219,12 @@ _path_outside_wt() {
   local slug="${rp#"$root"/.deputy/}"
   case "$slug" in
     *.questions.md|*.fail.md)
-      [[ "$slug" != */* ]] && return 1 ;;
+      [[ "$slug" != */* ]] && return 1 ;;          # legacy flat: single component, no slash
+    questions/*.md|fails/*.md)
+      # #70: new subfolder layout — exactly one level deep (no deeper nesting).
+      # reviews/ is intentionally NOT permitted: the xReview trail stays append-only
+      # via `deputy review-log`, same as the old .review.md.
+      [[ "$slug" != */*/* ]] && return 1 ;;
   esac
   return 0                                   # everything else -> deny
 }

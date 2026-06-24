@@ -324,8 +324,8 @@ list_out="$(bash "$DEPUTY" list)"
 assert_contains "$list_out" "failed|P0|" \
   "retry budget: item marked failed after 3 no-progress resumes"
 # Fail file should exist
-assert_eq "$(ls "$ROOT_G/.deputy/"*.fail.md 2>/dev/null | wc -l | tr -d ' ')" "1" \
-  "retry budget: .fail.md written"
+assert_eq "$(ls "$ROOT_G/.deputy/fails/"*.md 2>/dev/null | wc -l | tr -d ' ')" "1" \
+  "retry budget: fails/<slug>.md written (#70)"
 
 rm -f "$ORCH_G"
 
