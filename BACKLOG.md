@@ -14,8 +14,7 @@
 
 ### Surfaced (0)
 
-### Waiting (1)
-[#74][P3] line format in BACKLOG's legend is out of date
+### Waiting (0)
 
 ### Paused (0)
 
@@ -27,7 +26,8 @@
 
 ### Failed / Cancelled / Duplicate (0)
 
-### Done (65)
+### Done (66)
++[#74][P3] line format in BACKLOG's legend is out of date
 <!-- release v1.3.0 — 2026-06-24 -->
 +[#67][P1] Heartbeat races interactive agent work and the config-pause is ineffective: make the AGENT conform to the worker claim protocol. OBSERVED 2026-06-21: the cron spawned 15 autonomous #66 workers WHILE the interactive agent was working #66, racing on the shared .deputy/wt. ROOT CAUSE: the agent drives spine verbs (wt-create/plan/commit) directly and NEVER acquires the active-run claim that deputy run / a worker takes, so the cron guard _live_claim_exists could not see the agent; the ~/.claude/sessions scan also silently failed to detect the session; so the grace=999 config-pause was useless (it depends on that detection). DESIGN (agreed with human): make the agent CONFORM to the worker procedure — acquire the active-run claim for the item it works, so the EXISTING guard covers all three working parties (human/agent/cron) uniformly. Prefer this ONE protocol over parallel busy-signals. The agent is not one long-lived process, so its claim needs agent-shaped liveness: refresh-while-active plus auto-EXPIRE (stale after ~2x heartbeat_mins) so it never stall-locks the queue. Cron reads guard+claim ATOMICALLY (flock) before picking a NEW item. PREEMPTION stays HUMAN-ONLY and EXEMPT from the guard: with one .deputy/wt it is a cooperative single-slot hand-off (occupant checkpoint-pauses and frees the worktree, the P0 runs, then resume) NOT a barge-in; the agent never preempts without human authorization; the cron never preempts or starts while the slot is occupied. .deputy/wt existence and session-detection are BACKSTOPS, not the primary mechanism. A stale claim or stale .deputy/wt (no live owner) must RECOVER (pairs with #65), never spawn-on-top (do not reintroduce remove-on-run stall-on-death). ALSO add a startup-crash circuit-breaker: a worker that dies at spawn before claiming a spine retry currently respawns every tick. TESTS: agent claim makes cron back off; claim auto-expires so no stall; human add/run preempts PAST the guard; stale worktree recovers not spawns. Ref: actor-model race policy + cron design spec REVISION 2026-06-09.
 +[#70][P3] Organize .deputy/ runtime trails into subfolders to declutter the top level. deputy generates per-item runtime files at runtime — the xReview audit trail (<slug>.review.md), surfaced-questions (<slug>.questions.md), and failure context (<slug>.fail.md); today they litter .deputy/ flat (29 review + 6 questions accumulated while dogfooding). Write them under .deputy/reviews/<slug>.md, .deputy/questions/<slug>.md, .deputy/fails/<slug>.md instead. They STAY gitignored runtime output (correct for every user) — this is purely tidiness, NOT moving them to docs/ (they are not authored docs; the design specs already live in docs/). SCOPE: update the hard-coded paths (bin/deputy.sh ~1253 review-log target, ~1825 surfaced .questions.md, ~2195/2225/2248 .fail.md; SKILL.md references); extend the guardrail write-allowlist (hooks/guardrail.sh permits Edit/Write to .deputy/<slug>.questions.md + .fail.md — add the new subfolder paths; .review.md stays append-only via deputy review-log); mkdir -p the subfolders before writing; DUAL-READ/migrate so existing flat .deputy/<slug>.*.md still resolve (read old path if the new one is absent, or move-on-next-touch); fix any glob/scan (deputy clean, status). Update README/SKILL + tests. GRILL: migrate existing flat files (one-shot move vs lazy dual-read); subfolder names (reviews/questions/fails); confirm the #64 bwrap binds still cover them (.deputy is rw-bound, so nested dirs are fine).
