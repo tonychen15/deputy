@@ -10,12 +10,12 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[#75][P3] Document the upgrade story (global vs per-project) in README: the deputy command, orchestrator skill, and guardrail hook are GLOBAL symlinks into the single deputy repo (+ content-addressed re-exec), so 'git pull' in the deputy repo auto-updates deputy for ALL customer projects with ZERO per-project re-install. Only per-project COPIED seed files (.deputy/config, .deputy/protected, BACKLOG legend) are static-by-design; clarify that new config keys auto-apply via call-site defaults (post-upgrade init is OPTIONAL, only materializes/edits keys). Add an explicit 'Upgrading' subsection. Motivated by repeated user confusion about whether customers must re-run install/init on a release upgrade.
 
 ### Surfaced (0)
 
-### Waiting (1)
-[#75][P3] Document the upgrade story (global vs per-project) in README: the deputy command, orchestrator skill, and guardrail hook are GLOBAL symlinks into the single deputy repo (+ content-addressed re-exec), so 'git pull' in the deputy repo auto-updates deputy for ALL customer projects with ZERO per-project re-install. Only per-project COPIED seed files (.deputy/config, .deputy/protected, BACKLOG legend) are static-by-design; clarify that new config keys auto-apply via call-site defaults (post-upgrade init is OPTIONAL, only materializes/edits keys). Add an explicit 'Upgrading' subsection. Motivated by repeated user confusion about whether customers must re-run install/init on a release upgrade.
+### Waiting (0)
 
 ### Paused (0)
 
