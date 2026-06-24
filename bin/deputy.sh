@@ -242,10 +242,24 @@ _epoch_ms() {
 }
 
 _active_run_live() {
-  local d="${1:-$ACTIVE_RUN_DIR}" pid recorded_start actual_start
+  local d="${1:-$ACTIVE_RUN_DIR}" pid recorded_start actual_start owner last_hb hb ttl_sec now
   [[ -d "$d" ]] || return 1
   pid="$(sed -n '1p' "$d/pid" 2>/dev/null || true)"
+  owner="$(sed -n '1p' "$d/owner" 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  # #67: agent-shaped liveness. An agent's active run may have a dead PID between
+  # conversational turns, but stays LIVE while its heartbeat is fresh (< 2x
+  # heartbeat_mins). A missing/stale heartbeat falls through to PID liveness so the
+  # claim still auto-EXPIRES and never stall-locks the queue.
+  if [[ "$owner" == "agent" ]]; then
+    last_hb="$(sed -n '1p' "$d/heartbeat" 2>/dev/null || true)"
+    if [[ "$last_hb" =~ ^[0-9]+$ ]]; then
+      hb="$(_config_get heartbeat_mins)"; hb="${hb:-10}"; _valid_positive_int "$hb" || hb=10
+      ttl_sec=$(( hb * 60 * 2 )); now="$(date +%s)"
+      [[ "$last_hb" -le "$now" && $(( now - last_hb )) -lt "$ttl_sec" ]] && return 0  # reject future ts
+    fi
+    return 1   # agent liveness is heartbeat-only; stale/missing → EXPIRED (no PID fallthrough)
+  fi
   kill -0 "$pid" 2>/dev/null || return 1
   recorded_start="$(sed -n '1p' "$d/start_time" 2>/dev/null || true)"
   if [[ -n "$recorded_start" ]]; then
@@ -278,40 +292,79 @@ _active_run_summary() {
   printf 'owner=%s pid=%s started=%s item=%s' "$owner" "$pid" "$started" "$item"
 }
 
-_active_run_acquire() {
-  local item="${1:-}" owner="${2:-run}"
-  _do_active_run_acquire() {
-    if [[ -e "$ACTIVE_RUN_DIR" ]]; then
-      if _active_run_live "$ACTIVE_RUN_DIR"; then
-        printf 'deputy: active run exists (%s) — skipping this tick.\n' "$(_active_run_summary "$ACTIVE_RUN_DIR")" >&2
-        return 3
-      fi
-      rm -rf "$ACTIVE_RUN_DIR"
+# Acquire the active-run lock. Split out (vs a nested fn) so a caller already
+# holding _with_lock (e.g. cmd_claim's _do_claim) can acquire without re-locking.
+# acq_pid is the OWNING process: the long-lived worker ($$) for run/targeted, or
+# the orchestrator/agent ($PPID, passed by cmd_claim --agent) so the agent's
+# heartbeat refresh — keyed on $PPID — matches the stored pid. Caller holds the lock.
+_do_active_run_acquire() {
+  local item="${1:-}" owner="${2:-run}" acq_pid="${3:-$$}"
+  if [[ -e "$ACTIVE_RUN_DIR" ]]; then
+    if _active_run_live "$ACTIVE_RUN_DIR"; then
+      printf 'deputy: active run exists (%s) — skipping this tick.\n' "$(_active_run_summary "$ACTIVE_RUN_DIR")" >&2
+      return 3
     fi
-    mkdir "$ACTIVE_RUN_DIR" || return 1
-    printf '%s\n' "$$" > "$ACTIVE_RUN_DIR/pid"
-    printf '%s\n' "$(_pid_start_time "$$")" > "$ACTIVE_RUN_DIR/start_time"
-    printf '%s\n' "$owner" > "$ACTIVE_RUN_DIR/owner"
-    printf '%s\n' "$item" > "$ACTIVE_RUN_DIR/item"
-    date -u +%Y-%m-%dT%H:%M:%SZ > "$ACTIVE_RUN_DIR/started_at"
-  }
-  _with_lock _do_active_run_acquire
+    rm -rf "$ACTIVE_RUN_DIR"
+  fi
+  mkdir "$ACTIVE_RUN_DIR" || return 1
+  printf '%s\n' "$acq_pid" > "$ACTIVE_RUN_DIR/pid"
+  printf '%s\n' "$(_pid_start_time "$acq_pid")" > "$ACTIVE_RUN_DIR/start_time"
+  printf '%s\n' "$owner" > "$ACTIVE_RUN_DIR/owner"
+  printf '%s\n' "$item" > "$ACTIVE_RUN_DIR/item"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$ACTIVE_RUN_DIR/started_at"
+  date +%s > "$ACTIVE_RUN_DIR/heartbeat"
+}
+
+_active_run_acquire() {
+  _with_lock _do_active_run_acquire "$@"
 }
 
 _active_run_release() {
   _do_active_run_release() {
     [[ -d "$ACTIVE_RUN_DIR" ]] || return 0
-    local pid recorded_start actual_start
+    local pid owner recorded_start actual_start
     pid="$(sed -n '1p' "$ACTIVE_RUN_DIR/pid" 2>/dev/null || true)"
-    [[ "$pid" == "$$" ]] || return 0
+    owner="$(sed -n '1p' "$ACTIVE_RUN_DIR/owner" 2>/dev/null || true)"
+    # #67: an agent run is owned by the orchestrator ($PPID); the deputy CLI ($$) is
+    # its child. Match on $PPID (with start-time validation) so we release only our own.
+    local self="$$"
+    [[ "$owner" == "agent" ]] && self="$PPID"
+    [[ "$pid" == "$self" ]] || return 0
     recorded_start="$(sed -n '1p' "$ACTIVE_RUN_DIR/start_time" 2>/dev/null || true)"
     if [[ -n "$recorded_start" ]]; then
-      actual_start="$(_pid_start_time "$$")"
+      actual_start="$(_pid_start_time "$self")"
       [[ "$actual_start" == "$recorded_start" ]] || return 0
     fi
     rm -rf "$ACTIVE_RUN_DIR"
   }
   _with_lock _do_active_run_release
+}
+
+# #67: refresh the heartbeat of THIS orchestrator's agent active-run + claim so the
+# agent claim stays live while it actively drives spine verbs. No-op unless an
+# agent-owned run/claim exists for our $PPID. Called by the spine verbs.
+_active_run_refresh() {
+  local now; now="$(date +%s)"
+  # active-run heartbeat — write a temp then atomically rename so a concurrent reader
+  # never sees a truncated/empty heartbeat (and momentarily mis-expire live work).
+  if [[ -d "$ACTIVE_RUN_DIR" \
+        && "$(sed -n '1p' "$ACTIVE_RUN_DIR/owner" 2>/dev/null || true)" == "agent" \
+        && "$(sed -n '1p' "$ACTIVE_RUN_DIR/pid" 2>/dev/null || true)" == "$PPID" ]]; then
+    if printf '%s\n' "$now" > "$ACTIVE_RUN_DIR/.hb.$$" 2>/dev/null; then
+      mv -f "$ACTIVE_RUN_DIR/.hb.$$" "$ACTIVE_RUN_DIR/heartbeat" 2>/dev/null || rm -f "$ACTIVE_RUN_DIR/.hb.$$" 2>/dev/null || true
+    fi
+  fi
+  # claim-file heartbeat (line 4), preserving lines 1-3 — temp + atomic rename so a
+  # concurrent recover never observes a partial claim and wrongly expires live work.
+  local f="$STATE_DIR/$PPID.claim" l1 l2 l3
+  if [[ -e "$f" && "$(sed -n '3p' "$f" 2>/dev/null || true)" == "agent" ]]; then
+    l1="$(sed -n '1p' "$f" 2>/dev/null || true)"
+    l2="$(sed -n '2p' "$f" 2>/dev/null || true)"
+    l3="$(sed -n '3p' "$f" 2>/dev/null || true)"
+    if [[ -n "$l1" ]] && printf '%s\n%s\n%s\n%s\n' "$l1" "$l2" "$l3" "$now" > "$f.tmp.$$" 2>/dev/null; then
+      mv -f "$f.tmp.$$" "$f" 2>/dev/null || rm -f "$f.tmp.$$" 2>/dev/null || true
+    fi
+  fi
 }
 
 # Commit BACKLOG.md to git with a short reason message.
@@ -1000,6 +1053,21 @@ cmd_set() {
         rm -f "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
       fi
     fi
+    # #67: if THIS transition moves the agent's own claimed item out of 'running',
+    # release the agent claim + active-run now (under the same lock) so the slot frees
+    # immediately rather than waiting out the heartbeat TTL. Match only our own agent
+    # claim ($PPID.claim, owner=agent) whose claimed line is the one we just flipped.
+    if [[ "$curr_state" == "running" && "$_eff_state" != "running" ]]; then
+      local _ac="$STATE_DIR/$PPID.claim"
+      if [[ -e "$_ac" && "$(sed -n '3p' "$_ac" 2>/dev/null || true)" == "agent" \
+            && "$(sed -n '1p' "$_ac" 2>/dev/null || true)" == "$from" ]]; then
+        rm -f "$_ac" 2>/dev/null || true
+        if [[ "$(sed -n '1p' "$ACTIVE_RUN_DIR/owner" 2>/dev/null || true)" == "agent" \
+              && "$(sed -n '1p' "$ACTIVE_RUN_DIR/pid" 2>/dev/null || true)" == "$PPID" ]]; then
+          rm -rf "$ACTIVE_RUN_DIR" 2>/dev/null || true
+        fi
+      fi
+    fi
   }
   local _set_rc=0
   _with_lock _do_set || _set_rc=$?
@@ -1046,26 +1114,45 @@ _pid_start_time() {
   ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//' || true
 }
 
-# True if any .deputy/<pid>.claim is owned by a LIVE process with matching start-time.
-# Claim file format:
-#   Line 1: the running item line
-#   Line 2: the PID start-time (optional; if present, must match to count as live)
-# A claim is live only if: pid exists (kill -0) AND (no start-time recorded OR start-time matches).
+# True (0) if the single claim file $1 is LIVE. The one place the liveness rule lives,
+# reused by _live_claim_exists and cmd_recover. Claim file format:
+#   Line 1: running item line   Line 2: PID start-time (optional)
+#   Line 3: owner (run|targeted|agent)   Line 4: heartbeat epoch (agent only)
+# Rule: an #67 agent claim (line3=agent) is live while its line-4 heartbeat is fresh
+# (< 2x heartbeat_mins) even with a dead PID; otherwise (and for non-agent claims) it
+# is live only if the pid exists (kill -0) AND the start-time matches — so it auto-EXPIRES.
+_claim_live() {
+  local f="$1" cpid owner last_hb hb ttl_sec now recorded_start actual_start
+  cpid="${f##*/}"; cpid="${cpid%.claim}"
+  [[ "$cpid" =~ ^[0-9]+$ ]] || return 1
+  owner="$(sed -n '3p' "$f" 2>/dev/null || true)"
+  if [[ "$owner" == "agent" ]]; then
+    # Agent liveness is heartbeat-ONLY: the agent is not one long-lived process, so
+    # there is no meaningful PID to kill -0. Fresh heartbeat → live; stale/missing →
+    # EXPIRED (return, never fall through to a PID check that could read a reused pid).
+    last_hb="$(sed -n '4p' "$f" 2>/dev/null || true)"
+    if [[ "$last_hb" =~ ^[0-9]+$ ]]; then
+      hb="$(_config_get heartbeat_mins)"; hb="${hb:-10}"; _valid_positive_int "$hb" || hb=10
+      ttl_sec=$(( hb * 60 * 2 )); now="$(date +%s)"
+      [[ "$last_hb" -le "$now" && $(( now - last_hb )) -lt "$ttl_sec" ]] && return 0  # reject future ts
+    fi
+    return 1
+  fi
+  kill -0 "$cpid" 2>/dev/null || return 1
+  recorded_start="$(sed -n '2p' "$f" 2>/dev/null || true)"
+  if [[ -n "$recorded_start" ]]; then
+    actual_start="$(_pid_start_time "$cpid")"
+    [[ "$actual_start" == "$recorded_start" ]] || return 1
+  fi
+  return 0
+}
+
+# True if ANY .deputy/<pid>.claim is live (see _claim_live).
 _live_claim_exists() {
-  local f pid
+  local f
   for f in "$STATE_DIR"/*.claim; do
     [[ -e "$f" ]] || continue
-    pid="${f##*/}"; pid="${pid%.claim}"
-    [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    kill -0 "$pid" 2>/dev/null || continue
-    # PID is alive; validate start-time if recorded in claim.
-    local recorded_start actual_start
-    recorded_start="$(sed -n '2p' "$f" 2>/dev/null || true)"
-    if [[ -n "$recorded_start" ]]; then
-      actual_start="$(_pid_start_time "$pid")"
-      [[ "$actual_start" == "$recorded_start" ]] || continue  # start-time mismatch → stale
-    fi
-    return 0
+    _claim_live "$f" && return 0
   done
   return 1
 }
@@ -1153,14 +1240,18 @@ _interactive_session_active() {
 }
 
 cmd_claim() {
-  local from="" pid="$PPID"
+  local from="" pid="$PPID" owner="run"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --pid) [[ $# -gt 1 ]] || { printf 'deputy: --pid requires an argument\n' >&2; return 2; }; pid="$2"; shift 2 ;;
+      --agent) owner="agent"; shift ;;   # #67: agent-shaped claim (heartbeat-TTL liveness)
       *) [[ -z "$from" ]] && { from="$1"; shift; } || { printf 'deputy: unexpected arg: %s\n' "$1" >&2; return 2; } ;;
     esac
   done
   [[ -n "$from" ]] || { printf 'deputy: claim requires "<line>"\n' >&2; return 2; }
+  # #67: an agent claim is ALWAYS keyed on the orchestrator ($PPID) so the spine-verb
+  # heartbeat refresh (also keyed on $PPID) matches it; a stray --pid would desync them.
+  [[ "$owner" == "agent" ]] && pid="$PPID"
   [[ "$pid" =~ ^[0-9]+$ ]] || { printf 'deputy: invalid pid: %s\n' "$pid" >&2; return 2; }
   _do_claim() {
     _live_claim_exists && { printf 'deputy: busy (a live claim exists)\n' >&2; return 3; }
@@ -1173,17 +1264,30 @@ cmd_claim() {
     _cid_rest="${parsed#*|}"; _cid_rest="${_cid_rest#*|}"; _cid="${_cid_rest%%|*}"
     desc="${_cid_rest#*|}"
     to="$(_serialize_item running "$prio" "$_cid" "$desc")"
-    # Abort before writing the claim file if the BACKLOG transition failed, so a
-    # failed write can't leave a live claim pointing at a never-transitioned line.
-    _flip_line "$from" "$to" || return 1
-    # Write claim file: line 1 = running item line; line 2 = PID start-time for liveness validation.
-    local _claim_start; _claim_start="$(_pid_start_time "$pid")"
-    if ! printf '%s\n%s\n' "$to" "$_claim_start" > "$STATE_DIR/$pid.claim"; then
-      # Claim-file write failed after the flip: roll the line back to waiting so we
-      # don't leave a claimless 'running' item (best-effort; orphan recovery is the
-      # backstop if this rollback write also fails).
+    # #67: an AGENT claim must also hold the active-run lock so the cron guard sees all
+    # three working parties uniformly. The worker path (cmd_run) already acquired the
+    # active run before calling cmd_claim, so only --agent acquires here (no double-
+    # acquire). We hold _with_lock, so call the lock-free _do_active_run_acquire.
+    local _agent_acq=0
+    if [[ "$owner" == "agent" ]]; then
+      _do_active_run_acquire "$to" "$owner" "$pid" || return $?
+      _agent_acq=1
+    fi
+    # Abort (undoing any agent active-run) if the BACKLOG transition fails, so a failed
+    # write can't leave a live claim/run pointing at a never-transitioned line (#47).
+    if ! _flip_line "$from" "$to"; then
+      [[ "$_agent_acq" -eq 1 ]] && rm -rf "$ACTIVE_RUN_DIR" 2>/dev/null || true
+      return 1
+    fi
+    # Claim file: line1=running item, line2=PID start-time, line3=owner, line4=heartbeat.
+    # Old 2-line readers still work; line3/4 enable #67 agent-TTL liveness.
+    local _claim_start _now; _claim_start="$(_pid_start_time "$pid")"; _now="$(date +%s)"
+    if ! printf '%s\n%s\n%s\n%s\n' "$to" "$_claim_start" "$owner" "$_now" > "$STATE_DIR/$pid.claim"; then
+      # Roll back the flip + agent run so we don't leave a claimless 'running' item
+      # (best-effort; orphan/TTL recovery is the backstop if this also fails).
       _revert_to_waiting "$to" || true
       rm -f "$STATE_DIR/$pid.claim" 2>/dev/null || true
+      [[ "$_agent_acq" -eq 1 ]] && rm -rf "$ACTIVE_RUN_DIR" 2>/dev/null || true
       return 1
     fi
   }
@@ -1232,47 +1336,29 @@ _check_main_tree_dirty() {
 
 cmd_recover() {
   _do_recover() {
-    local f pid line recorded_start actual_start
-    # (1) Dead-claim recovery: a claim is dead if the pid is gone OR start-time mismatches.
+    local f pid line
+    # (1) Dead-claim recovery: reap any claim that is NOT live. _claim_live is #67
+    # agent-TTL aware, so a fresh-heartbeat agent claim (dead PID, fresh line-4) is
+    # left alone; only an expired/dead claim is reverted+removed.
     for f in "$STATE_DIR"/*.claim; do
       [[ -e "$f" ]] || continue
       pid="${f##*/}"; pid="${pid%.claim}"
       [[ "$pid" =~ ^[0-9]+$ ]] || continue
-      local _claim_dead=0
-      if ! kill -0 "$pid" 2>/dev/null; then
-        _claim_dead=1
-      else
-        # PID alive — check start-time (line 2 of claim file).
-        recorded_start="$(sed -n '2p' "$f" 2>/dev/null || true)"
-        if [[ -n "$recorded_start" ]]; then
-          actual_start="$(_pid_start_time "$pid")"
-          [[ "$actual_start" != "$recorded_start" ]] && _claim_dead=1
-        fi
-      fi
-      if [[ "$_claim_dead" -eq 1 ]]; then
-        # Read item line from line 1 of claim file.
-        line="$(sed -n '1p' "$f" 2>/dev/null || true)"
-        # Revert the stale claim's line to waiting BEFORE dropping the claim file; if
-        # that write fails, keep the claim file so recovery can retry rather than
-        # orphaning a 'running' line with no claim record (#47).
-        [[ -n "$line" ]] && { _revert_to_waiting "$line" || return 1; }
-        _check_main_tree_dirty "$pid"  # #65: warn about stray leftovers from hung worker
-        rm -f "$f"
-      fi
+      _claim_live "$f" && continue
+      # Read item line from line 1 of claim file.
+      line="$(sed -n '1p' "$f" 2>/dev/null || true)"
+      # Revert the stale claim's line to waiting BEFORE dropping the claim file; if
+      # that write fails, keep the claim file so recovery can retry rather than
+      # orphaning a 'running' line with no claim record (#47).
+      [[ -n "$line" ]] && { _revert_to_waiting "$line" || return 1; }
+      _check_main_tree_dirty "$pid"  # #65: warn about stray leftovers from hung worker
+      rm -f "$f"
     done
-    # Collect item lines still claimed by LIVE pids (with matching start-time).
+    # Collect item lines still held by a LIVE claim (agent-TTL aware via _claim_live).
     local -a claimed=()
     for f in "$STATE_DIR"/*.claim; do
       [[ -e "$f" ]] || continue
-      pid="${f##*/}"; pid="${pid%.claim}"
-      [[ "$pid" =~ ^[0-9]+$ ]] || continue
-      kill -0 "$pid" 2>/dev/null || continue
-      recorded_start="$(sed -n '2p' "$f" 2>/dev/null || true)"
-      if [[ -n "$recorded_start" ]]; then
-        actual_start="$(_pid_start_time "$pid")"
-        [[ "$actual_start" == "$recorded_start" ]] || continue
-      fi
-      # Claim is live; record item line (line 1 of claim file).
+      _claim_live "$f" || continue
       claimed+=("$(sed -n '1p' "$f" 2>/dev/null || true)")
     done
     # (2) Orphan recovery: any @/~ item not in a live claim.
@@ -3068,6 +3154,12 @@ cmd_watch() {
 
 main() {
   local cmd="${1:-help}"
+  # #67: keep the agent's claim heartbeat fresh whenever the orchestrator drives a
+  # spine verb (no-op unless an agent-owned claim/run for this $PPID exists), so its
+  # claim stays live while actively working and auto-EXPIRES once it stops.
+  case "$cmd" in
+    wt-create|wt-remove|start|done|plan|steps|set-step|resume|commit) _active_run_refresh ;;
+  esac
   case "$cmd" in
     help|-h|--help) usage; return 0 ;;
     version|--version|-V) cmd_version; return $? ;;
