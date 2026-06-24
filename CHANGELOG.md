@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.1 — 2026-06-24
+
+Patch — docs & process.
+
+- **BACKLOG legend refresh (#74).** The live `BACKLOG.md` legend had drifted: it showed the
+  pre-#62 line format `<status?>[Px][#N]` and the pre-#46 status symbols (`#` done / `>`
+  deferred). Updated to the id-first `<status?>[#N][Px]` order and the current `+`/`;`
+  symbols (with the legacy-read note); aligned `templates/BACKLOG.md` to match.
+- **Release-process rule.** Added `CLAUDE.md`: a version bump must update `CHANGELOG.md`
+  **and** insert a new `BACKLOG.md` release-marker delimiter (`deputy release X.Y.Z`)
+  together — the lockstep the v1.2.0 release missed.
+
 ## v1.3.0 — 2026-06-24
 
 Minor release. Clears the backlog to zero open items — write-path safety, the agent-claim
