@@ -23,7 +23,7 @@ genuinely hard calls, and never blocks the queue while it waits on you.
 > reviewer is chosen by `deputy route review` (author-aware: claude-first when codex/gemini
 > authored, codex-first when claude authored), so a dead or rate-limited reviewer no longer deadlocks the spine, plus a
 > per-project `auto_mode` no-peer degradation policy and an append-only
-> `.deputy/<slug>.review.md` audit trail (`deputy review-log`). The repo's own
+> `.deputy/reviews/<slug>.md` audit trail (`deputy review-log`). The repo's own
 > `BACKLOG.md` is the project's task queue — Deputy dogfoods itself.
 
 ---
@@ -227,7 +227,7 @@ delimiter comments.
   `.deputy/wt` git worktree; your main working tree is never touched.
 - **xReview** — cross-LLM review (**Codex-default, author-aware**) gates **design, plan,
   and each commit**; author ≠ reviewer; nothing advances without an APPROVED verdict.
-  Every iteration is logged to a deputy-owned `.deputy/<slug>.review.md` trail (deputy's
+  Every iteration is logged to a deputy-owned `.deputy/reviews/<slug>.md` trail (deputy's
   equivalent of xReview's `.review/REVIEW.md`).
 - **Routing** — `claude` orchestrates and executes steps. The reviewer is chosen by
   `deputy route review` (author-aware, author-excluded): claude authored → **codex** then

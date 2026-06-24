@@ -160,6 +160,12 @@ assert_eq "$(wr Write "$ROOT/.deputy/fix-x.fail.md")" "0" "fail file allowed"
 assert_eq "$(wr Write "$ROOT/.deputy/fix-x.review.md")" "2" "direct Write to review trail denied (append-only via CLI)"
 assert_eq "$(wr Edit "$ROOT/.deputy/fix-x.review.md")" "2" "direct Edit to review trail denied (append-only via CLI)"
 assert_eq "$(wr Write "$ROOT/.deputy/nested/evil.questions.md")" "2" "nested .deputy path denied"
+# #70: the new subfolder trail layout (.deputy/{questions,fails}/<slug>.md) is allowed;
+# reviews/ stays denied (append-only via review-log); deeper nesting denied.
+assert_eq "$(wr Write "$ROOT/.deputy/questions/fix-x.md")"  "0" "#70 questions/ subfolder write allowed"
+assert_eq "$(wr Write "$ROOT/.deputy/fails/fix-x.md")"      "0" "#70 fails/ subfolder write allowed"
+assert_eq "$(wr Write "$ROOT/.deputy/reviews/fix-x.md")"    "2" "#70 reviews/ direct write denied (append-only via CLI)"
+assert_eq "$(wr Write "$ROOT/.deputy/questions/deep/x.md")" "2" "#70 deeper-nested subfolder path denied"
 # fail-closed: DEPUTY_WT unset + risky write must be denied
 assert_eq "$(printf '{"tool_name":"Write","tool_input":{"file_path":"/etc/passwd"}}' | DEPUTY_GUARDED=1 DEPUTY_ROOT="$ROOT" bash "$HOOK" >/dev/null 2>&1; echo $?)" "2" "write /etc/passwd with DEPUTY_WT unset denied"
 # fail-closed: DEPUTY_WT set to non-canonicalizable path + risky write must be denied

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/lib.sh"
 setup_repo
-F="$DEPUTY_ROOT/.deputy/fix-thing.review.md"
+F="$DEPUTY_ROOT/.deputy/reviews/fix-thing.md"   # #70: trails live in subfolders
 
 # missing slug -> usage error
 bash "$DEPUTY" review-log </dev/null >/dev/null 2>&1

@@ -210,6 +210,45 @@ _canon_line() {
   _serialize_item "$s" "$pr" "$i" "$d"
 }
 
+# #70: per-item runtime trails live in type subfolders to keep .deputy/ tidy:
+#   reviews/<slug>.md  questions/<slug>.md  fails/<slug>.md
+# Returns the path for <type> (reviews|questions|fails) + <slug>, creating the subfolder.
+_trail_path() {
+  mkdir -p "$STATE_DIR/$1" 2>/dev/null || true
+  printf '%s/%s/%s.md' "$STATE_DIR" "$1" "$2"
+}
+
+# Move a flat trail into its subfolder. On collision (a stale flat write — e.g. from a
+# SKILL that still writes flat — over an already-migrated subfolder trail), keep the NEWER
+# content and drop the other, so there's never a duplicate left behind (which would make
+# reflect show it twice) nor a lingering flat file.
+_move_trail() {
+  local src="$1" dest="$2"
+  if [[ -e "$dest" ]]; then
+    if [[ "$src" -nt "$dest" ]]; then mv -f "$src" "$dest" 2>/dev/null || rm -f "$src" 2>/dev/null || true
+    else rm -f "$src" 2>/dev/null || true; fi
+  else
+    mv "$src" "$dest" 2>/dev/null || true
+  fi
+}
+
+# #70: one-shot migration — move pre-existing FLAT trails (.deputy/<slug>.{review,questions,
+# fail}.md) into their subfolders. Idempotent + cheap: only acts when a flat trail exists
+# (after migration the globs are empty).
+_migrate_trails() {
+  [[ -d "$STATE_DIR" ]] || return 0
+  shopt -s nullglob
+  local f base found=""
+  for f in "$STATE_DIR"/*.review.md "$STATE_DIR"/*.questions.md "$STATE_DIR"/*.fail.md; do found=1; break; done
+  if [[ -n "$found" ]]; then
+    mkdir -p "$STATE_DIR/reviews" "$STATE_DIR/questions" "$STATE_DIR/fails" 2>/dev/null || true
+    for f in "$STATE_DIR"/*.review.md;    do base="${f##*/}"; _move_trail "$f" "$STATE_DIR/reviews/${base%.review.md}.md"; done
+    for f in "$STATE_DIR"/*.questions.md; do base="${f##*/}"; _move_trail "$f" "$STATE_DIR/questions/${base%.questions.md}.md"; done
+    for f in "$STATE_DIR"/*.fail.md;      do base="${f##*/}"; _move_trail "$f" "$STATE_DIR/fails/${base%.fail.md}.md"; done
+  fi
+  shopt -u nullglob
+}
+
 cmd_list() {
   # Optional state filter: 'deputy list --<state>' (e.g. --waiting, --running,
   # --deferred) lists only items in that state. Bare 'deputy list' lists all.
@@ -1531,7 +1570,7 @@ cmd_review_log() {
     */*|..|.) printf 'deputy: review-log: invalid slug %s%s%s (no slashes)\n' "'" "$slug" "'" >&2; return 2 ;;
   esac
   mkdir -p "$STATE_DIR" 2>/dev/null || true
-  local f="$STATE_DIR/$slug.review.md"
+  local f; f="$(_trail_path reviews "$slug")"   # #70: .deputy/reviews/<slug>.md
   # Seed a header the first time so the file is self-describing.
   [[ -s "$f" ]] || printf '# xReview trail — %s\n' "$slug" >> "$f"
   printf '\n' >> "$f"
@@ -2132,7 +2171,7 @@ _human_backoff_gate() {
       _surf_prio_rest="${_surf_parsed#*|}"; _surf_prio="${_surf_prio_rest%%|*}"
       _surf_id_rest="${_surf_prio_rest#*|}"; _surf_id="${_surf_id_rest%%|*}"; _surf_desc="${_surf_id_rest#*|}"
       _surf_slug="$(_wp_slug "$_surf_id" "$_surf_desc")"
-      _surf_qf="$STATE_DIR/${_surf_slug}.questions.md"
+      _surf_qf="$(_trail_path questions "$_surf_slug")"   # #70: .deputy/questions/<slug>.md
       _surf_set_rc=0
       cmd_set "$_stale_item" surfaced || _surf_set_rc=$?
       if [[ "$_surf_set_rc" -eq 0 ]]; then
@@ -2502,7 +2541,7 @@ cmd_run() {
       local _rb_desc; _rb_desc="${_rb_id_rest#*|}"
       local _rb_slug; _rb_slug="$(_wp_slug "$_rb_id" "$_rb_desc")"
       local _fail_reason="cron resume budget exhausted (3 attempts, no step progress)"
-      printf '%s\n' "$_fail_reason" > "$STATE_DIR/$_rb_slug.fail.md"
+      printf '%s\n' "$_fail_reason" > "$(_trail_path fails "$_rb_slug")"   # #70: .deputy/fails/<slug>.md
       _with_lock _do_set_item_failed "$running_line" || true
       rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
       _active_run_release
@@ -2532,7 +2571,7 @@ cmd_run() {
           local _qrb_desc; _qrb_desc="${_rb_id_rest#*|}"
           local _qrb_slug; _qrb_slug="$(_wp_slug "$_rb_id" "$_qrb_desc")"
           printf '%s\n' "cron resume budget exhausted (3 attempts, no step progress)" \
-            > "$STATE_DIR/$_qrb_slug.fail.md"
+            > "$(_trail_path fails "$_qrb_slug")"
           local _qrb_cur_line
           _qrb_cur_line="$(grep -F "[#$_rb_id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
           if [[ -n "$_qrb_cur_line" ]]; then
@@ -2555,7 +2594,7 @@ cmd_run() {
         local _rb_desc2; _rb_desc2="${_rb_id_rest#*|}"
         local _rb_slug2; _rb_slug2="$(_wp_slug "$_rb_id" "$_rb_desc2")"
         printf '%s\n' "cron resume budget exhausted (3 attempts, no step progress)" \
-          > "$STATE_DIR/$_rb_slug2.fail.md"
+          > "$(_trail_path fails "$_rb_slug2")"
         # Look up the current BACKLOG line for this item (running_line may still be in BACKLOG
         # if the orchestrator didn't mark the item terminal; search by id tag [#N]).
         local _rb_cur_line
@@ -2839,7 +2878,8 @@ cmd_reflect() {
   fi
   shopt -s nullglob
   local qf
-  for qf in "$STATE_DIR"/*.questions.md; do
+  # #70: new subfolder layout first, then any not-yet-migrated flat files (dual-read).
+  for qf in "$STATE_DIR"/questions/*.md "$STATE_DIR"/*.questions.md; do
     printf '\n  --- %s ---\n' "$(basename "$qf")"
     sed 's/^/  /' "$qf"
   done
@@ -3215,6 +3255,7 @@ main() {
         case "$_ha" in -h|--help) _cmd_help "$cmd"; return 0 ;; esac
       done ;;
   esac
+  _migrate_trails   # #70: one-shot sweep of any flat runtime trails into subfolders (no-op once done)
   # #67: keep the agent's claim heartbeat fresh whenever the orchestrator drives a
   # spine verb (no-op unless an agent-owned claim/run for this $PPID exists), so its
   # claim stays live while actively working and auto-EXPIRES once it stops.
