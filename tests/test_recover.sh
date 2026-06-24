@@ -41,3 +41,29 @@ assert_contains "$out" "paused|P0|"    "recover leaves paused P0 intact"
 assert_contains "$out" "paused midway" "recover leaves paused P0 description intact"
 assert_contains "$out" "paused|P3|"    "recover leaves paused untagged (P3 default) intact"
 assert_contains "$out" "plain paused"  "recover leaves paused untagged description intact"
+
+# #62 interaction: a stale claim stored an OLD-order line (`@[P0][#1] x`) but BACKLOG has
+# since migrated to the new canonical order (`@[#1][P0] x`). The exact-line revert no-ops,
+# but the orphan-recovery backstop (revert any running item not held by a live claim, by
+# its CURRENT line) must still recover it within the same `deputy recover`.
+setup_repo
+printf '%s\n' '@[#1][P0] migrated running' >> "$DEPUTY_ROOT/BACKLOG.md"
+printf '%s\n%s\n%s\n' '@[P0][#1] migrated running' 'Mon Jan 1 00:00:00 2020' 'run' > "$DEPUTY_ROOT/.deputy/99998.claim"
+bash "$DEPUTY" recover >/dev/null 2>&1
+out="$(bash "$DEPUTY" list)"
+assert_contains "$out" "waiting|P0|1|migrated running" "#62: old-order stale claim recovered via orphan backstop"
+[[ -f "$DEPUTY_ROOT/.deputy/99998.claim" ]] && r=yes || r=no
+assert_eq "$r" "no" "#62: old-order stale claim file removed"
+
+# #62 + live claim: a LIVE claim stored an OLD-order line (`@[P0][#1] x`) while BACKLOG has
+# migrated to new order (`@[#1][P0] x`). The orphan guard must match by CANONICAL identity,
+# not raw text — otherwise the live-claimed running item is wrongly reverted to waiting.
+setup_repo
+printf '%s\n' '@[#1][P0] live migrated' >> "$DEPUTY_ROOT/BACKLOG.md"
+# live agent claim (fresh heartbeat → live regardless of pid), line 1 = OLD order
+printf '%s\n%s\n%s\n%s\n' '@[P0][#1] live migrated' 'start' 'agent' "$(date +%s)" > "$DEPUTY_ROOT/.deputy/99997.claim"
+bash "$DEPUTY" recover >/dev/null 2>&1
+out="$(bash "$DEPUTY" list)"
+assert_contains "$out" "running|P0|1|live migrated" "#62: live old-order claim NOT reverted (canonical match)"
+[[ -f "$DEPUTY_ROOT/.deputy/99997.claim" ]] && r=yes || r=no
+assert_eq "$r" "yes" "#62: live claim kept across order migration"

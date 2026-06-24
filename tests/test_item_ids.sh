@@ -27,20 +27,23 @@ assert_eq "$(parse 'fix [#5] crash')"          "waiting|||fix [#5] crash"   "leg
 assert_eq "$(parse '[#100] big id')"           "waiting||100|big id"        "large id"
 # id=0 edge case
 assert_eq "$(parse '[#0] zero id')"            "waiting||0|zero id"         "id=0 parses"
+# #62 content-driven tags: priority by 'P', id by '#'; either order parses the same
+assert_eq "$(parse '[#7][P1] new order')"      "waiting|P1|7|new order"   "parse new canonical order [#N][Pn]"
+assert_eq "$(parse '[7] not an id')"           "waiting|||[7] not an id"  "bare [N] (no #) is NOT an id — stays in desc"
 
-# ── Serialize: canonical order status[Pn][#N] description ────────────────────
+# ── Serialize: canonical order status[#N][Pn] description (#62: id first) ─────
 ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3" "$4"; }
-assert_eq "$(ser waiting P1 7 'fix the bug')"  "[P1][#7] fix the bug"    "serialize waiting P1+id"
-assert_eq "$(ser running P0 12 'run me')"      "@[P0][#12] run me"       "serialize running P0+id"
+assert_eq "$(ser waiting P1 7 'fix the bug')"  "[#7][P1] fix the bug"    "serialize waiting P1+id"
+assert_eq "$(ser running P0 12 'run me')"      "@[#12][P0] run me"       "serialize running P0+id"
 assert_eq "$(ser done '' 9 'done one')"        "+[#9] done one"          "serialize done+id"
 assert_eq "$(ser waiting '' 3 'plain')"        "[#3] plain"              "serialize waiting no prio+id"
 assert_eq "$(ser waiting P2 '' 'no id')"       "[P2] no id"              "serialize waiting P2 no id"
 assert_eq "$(ser waiting '' '' 'bare')"        "bare"                    "serialize bare no prio no id"
-assert_eq "$(ser paused P1 4 'paused')"        "^[P1][#4] paused"        "serialize paused P1+id"
+assert_eq "$(ser paused P1 4 'paused')"        "^[#4][P1] paused"        "serialize paused P1+id"
 
 # ── Parse/serialize round-trip ────────────────────────────────────────────────
-# Parse then re-serialize must yield canonical form
-line="[P0][#7] do a thing"
+# Parse then re-serialize must yield canonical form (#62: id-first [#N][Pn])
+line="[#7][P0] do a thing"
 parsed="$(parse "$line")"
 state="${parsed%%|*}"; rest="${parsed#*|}"
 prio="${rest%%|*}"; rest="${rest#*|}"
@@ -48,14 +51,14 @@ id="${rest%%|*}"; desc="${rest#*|}"
 reser="$(ser "$state" "$prio" "$id" "$desc")"
 assert_eq "$reser" "$line" "round-trip canonical form"
 
-# Reversed order normalizes on round-trip
-line_rev="[#7][P0] do a thing"
+# Old (reversed) order normalizes to canonical on round-trip
+line_rev="[P0][#7] do a thing"
 parsed2="$(parse "$line_rev")"
 state2="${parsed2%%|*}"; rest2="${parsed2#*|}"
 prio2="${rest2%%|*}"; rest2="${rest2#*|}"
 id2="${rest2%%|*}"; desc2="${rest2#*|}"
 reser2="$(ser "$state2" "$prio2" "$id2" "$desc2")"
-assert_eq "$reser2" "[P0][#7] do a thing" "reversed order normalizes to canonical on round-trip"
+assert_eq "$reser2" "[#7][P0] do a thing" "old order normalizes to canonical [#N][Pn] on round-trip"
 
 # ── _allocate_ids: sequential, idempotent, append-only ───────────────────────
 setup_repo
