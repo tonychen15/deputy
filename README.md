@@ -96,13 +96,16 @@ spine); and the agent CLIs (`claude` required; `codex` and/or `gemini` for xRevi
 
 ## Upgrading
 
-The `deputy` CLI and the `/deputy` orchestrator skill are **symlinks** into the deputy
-repo (`~/.local/bin/deputy → <repo>/bin/deputy.sh` and
-`~/.claude/skills/deputy → <repo>/skills/deputy`), so upgrading is just:
+The `deputy` CLI, the `/deputy` orchestrator skill, and the guardrail hook are **global** —
+one shared install (symlinks into the deputy repo: `~/.local/bin/deputy → <repo>/bin/deputy.sh`,
+`~/.claude/skills/deputy → <repo>/skills/deputy`, and the hook referenced at `<repo>/hooks/`)
+that *every* project using Deputy shares. There is **no copy of the deputy code inside a
+customer project** — so one upgrade in the deputy repo updates Deputy for **all** projects at
+once:
 
 ```bash
 cd <deputy-repo>
-git pull          # command + skill auto-update — symlinks resolve to the live files
+git pull          # updates Deputy for ALL projects: command + skill via their symlinks, hook via its absolute <repo>/hooks reference
 ```
 
 **`git pull` is safe even while a `deputy run` is executing.** On startup `deputy` re-execs
@@ -120,12 +123,19 @@ changed:
 ./inst_deputy.sh link   # idempotent — safe to re-run
 ```
 
-**Per-repo seed files are copied, not symlinked.** After a deputy upgrade, optionally
-re-run `init` to pick up newly-seeded config keys or templates — it never overwrites
-your existing `BACKLOG.md` or config:
+**Customer projects need no re-init on upgrade — they self-heal.** The only per-project
+files *copied* from the templates are `.deputy/config`, `.deputy/protected`, and your
+`BACKLOG.md` (everything else under `.deputy/` is generated runtime state — locks, the
+worktree, logs, and trails). The `.deputy/config`/`.deputy/protected` pair auto-reconciles on the next `deputy` run (your `BACKLOG.md` is never touched): a missing `.deputy/config` or
+`.deputy/protected` is re-seeded from the templates; new default **protected** globs shipped
+in a release are layered on automatically (the per-project file is read *over* the release
+defaults, so you never lose a new safety glob); and new **config keys** fall back to their
+built-in defaults. So a release upgrade needs **zero** per-project action. Re-running `init`
+is **optional** — only to *materialize* new config keys into `.deputy/config` for editing;
+it never overwrites your `BACKLOG.md` or existing config:
 
 ```bash
-./inst_deputy.sh init /path/to/your/repo
+./inst_deputy.sh init /path/to/your/repo   # optional — surfaces new config keys for editing
 ```
 
 **Cron schedule:** if the heartbeat interval or cron format changed, refresh it:
