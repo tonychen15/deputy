@@ -80,6 +80,18 @@ STATE_DIR="$ROOT/.deputy"
 LOCK_FILE="$STATE_DIR/lock"
 ACTIVE_RUN_DIR="$STATE_DIR/active-run.lock"
 mkdir -p "$STATE_DIR"
+# #76: self-heal — auto-seed missing per-project default files from the release templates
+# so a customer never has to re-run `init` after a deputy upgrade merely to materialize
+# defaults. Idempotent (only when absent) and best-effort (read-only repo / sandbox safe).
+# This is purely for visibility/editability: missing config keys already fall back to
+# call-site defaults, and protected globs are layered from the template at read time
+# (_protected_violation), so behaviour is unchanged whether or not these files exist.
+for _seed in config protected; do
+  if [[ ! -e "$STATE_DIR/$_seed" && -f "$SRC_DIR/templates/$_seed" ]]; then
+    cp "$SRC_DIR/templates/$_seed" "$STATE_DIR/$_seed" 2>/dev/null || true
+  fi
+done
+unset _seed
 [[ -f "$LOCK_FILE" ]] || : > "$LOCK_FILE"
 
 # True (0) only for real item lines. Excludes blank lines, markdown section
@@ -1894,7 +1906,11 @@ cmd_cron() {
 
 # Read a single key from .deputy/config (KEY=VALUE). Echoes the value or empty.
 _config_get() {
-  local key="$1" cfg="$STATE_DIR/config" line k v
+  # #76: LAST-wins on duplicate keys (later lines override earlier — standard config
+  # semantics). This makes an appended override win even when an earlier line (e.g. a key
+  # materialized by the template auto-seed) already set the key, instead of silently
+  # returning the stale first value.
+  local key="$1" cfg="$STATE_DIR/config" line k v val="" seen=0
   [[ -f "$cfg" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -1902,21 +1918,30 @@ _config_get() {
     k="${line%%=*}"; v="${line#*=}"
     k="${k#"${k%%[![:space:]]*}"}"; k="${k%"${k##*[![:space:]]}"}"
     v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
-    if [[ "$k" == "$key" ]]; then printf '%s\n' "$v"; return 0; fi
+    if [[ "$k" == "$key" ]]; then val="$v"; seen=1; fi
   done < "$cfg"
+  (( seen )) && printf '%s\n' "$val"
+  return 0
 }
 
 # True (0) if any path (newline-separated, from $1) matches a glob in
 # .deputy/protected. Deterministic; used as the pre-commit gate.
 _protected_violation() {
-  local input="$1" prot="$STATE_DIR/protected" path glob
-  [[ -f "$prot" ]] || return 1
+  local input="$1" path glob src
+  # #76: layer the per-project .deputy/protected OVER the release template defaults
+  # ($SRC_DIR/templates/protected), checking BOTH at read time. New default protected
+  # globs shipped in a deputy upgrade therefore apply to every existing project WITHOUT
+  # re-running init, and a project with no .deputy/protected still gets the safe baseline.
+  local -a srcs=( "$STATE_DIR/protected" "$SRC_DIR/templates/protected" )
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
-    while IFS= read -r glob || [[ -n "$glob" ]]; do
-      [[ -n "$glob" && "$glob" != \#* ]] || continue
-      case "$path" in $glob) return 0 ;; esac
-    done < "$prot"
+    for src in "${srcs[@]}"; do
+      [[ -f "$src" ]] || continue
+      while IFS= read -r glob || [[ -n "$glob" ]]; do
+        [[ -n "$glob" && "$glob" != \#* ]] || continue
+        case "$path" in $glob) return 0 ;; esac
+      done < "$src"
+    done
   done <<< "$input"
   return 1
 }
