@@ -135,8 +135,11 @@ _each_item() {
 
 # Parse one raw line -> "state|priority|id|description". Lenient: accepts an optional
 # space after the status prefix (so both `#[P0] x` and `# [P0] x` parse the same).
-# [#N] is recognized ONLY in the tag zone (immediately after status + optional [Pn]),
-# never inside the description body. Either order [Pn][#N] or [#N][Pn] is accepted.
+# Tags are recognized ONLY in the tag zone (immediately after the status prefix), never
+# inside the description body. The parser is CONTENT-driven, not position-driven: a tag is
+# a PRIORITY if it starts with 'P' ([P0]..[P4]), or an ID if it is '[#N]'. So either order
+# ([#N][Pn] or [Pn][#N]) parses the same — old files keep working and re-serialize to the
+# canonical [#N][Pn] (#62).
 _parse_item() {
   local line="$1" state="waiting" prio="" id="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
@@ -153,13 +156,16 @@ _parse_item() {
     esac
     line="${BASH_REMATCH[2]}"
   fi
-  # Tag zone: consume [Pn] and [#N] in either order (both optional, at most one each).
+  # Tag zone: consume a priority tag ([Pn]) and an id tag ([#N] or bare [N]) in either
+  # order (both optional, at most one each) — keyed on the tag's CONTENT, not its position.
   local consumed=1
   while [[ "$consumed" -eq 1 ]]; do
     consumed=0
     if [[ -z "$prio" && "$line" =~ ^\[(P[0-4])\][[:space:]]*(.*) ]]; then
       prio="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[2]}"; consumed=1
     fi
+    # id tag: requires the '#' marker — a bare [N] is NOT an id, so a hand-edited
+    # '[2024] roadmap'-style description is never misread as an id.
     if [[ -z "$id" && "$line" =~ ^\[#([0-9]+)\][[:space:]]*(.*) ]]; then
       id="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[2]}"; consumed=1
     fi
@@ -169,8 +175,10 @@ _parse_item() {
 }
 
 # Build a canonical line from (state, priority, id, description).
-# Canonical order: <status>[Pn][#N] description
-# The status symbol directly abuts what follows (no space): `#[P0][#3] x`, `[#7] x`, `Plain`.
+# Canonical order (#62): <status>[#N][Pn] description — id first, then priority.
+# The status symbol directly abuts what follows (no space): `@[#3][P0] x`, `[#7] x`, `Plain`.
+# Reads are order-agnostic (see _parse_item), so old `[Pn][#N]` lines migrate on the
+# next re-serialize.
 _serialize_item() {
   local state="$1" prio="$2" id="$3" desc="$4" prefix="" body=""
   case "$state" in
@@ -181,14 +189,25 @@ _serialize_item() {
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
   body=""
-  [[ -n "$prio" ]] && body="${body}[${prio}]"
   [[ -n "$id"   ]] && body="${body}[#${id}]"
+  [[ -n "$prio" ]] && body="${body}[${prio}]"
   if [[ -n "$body" ]]; then
     [[ -n "$desc" ]] && body="${body} ${desc}"
   else
     body="$desc"
   fi
   printf '%s%s' "$prefix" "$body"
+}
+
+# Canonical identity of an item line: parse then re-serialize, so two lines for the SAME
+# item match regardless of tag order ([Pn][#N] vs [#N][Pn], #62), id '#'-form, or legacy
+# status symbols. Used by cmd_recover to match a claim's stored line against the current
+# (possibly migrated) BACKLOG line — a raw string compare would miss a migrated line.
+_canon_line() {
+  local p s pr i d
+  p="$(_parse_item "$1")"
+  s="${p%%|*}"; p="${p#*|}"; pr="${p%%|*}"; p="${p#*|}"; i="${p%%|*}"; d="${p#*|}"
+  _serialize_item "$s" "$pr" "$i" "$d"
 }
 
 cmd_list() {
@@ -731,8 +750,8 @@ cmd_add() {
   # silently re-bucketed/rewritten on regroup.
   if [[ "$_pfx" == '~' || "$_pfx" == '@' || "$_pfx" == '?' || "$_pfx" == '+' || \
         "$_pfx" == '!' || "$_pfx" == '%' || "$_pfx" == '=' || "$_pfx" == '^' || \
-        "$_pfx" == ';' || "$_pfx" == '#' || "$_pfx" == '>' ]] || [[ "$text" =~ ^\[P[0-4]\] ]]; then
-    printf 'deputy: description may not begin with a status prefix (~@?+!%%=^; legacy #>) or a [Px] tag: %s\n' "$text" >&2
+        "$_pfx" == ';' || "$_pfx" == '#' || "$_pfx" == '>' ]] || [[ "$text" =~ ^\[(P[0-4]|#[0-9]+)\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?+!%%=^; legacy #>) or a tag ([Px] or [#N]): %s\n' "$text" >&2
     return 2
   fi
   if [[ "$text" == *$'\n'* ]]; then
@@ -1354,20 +1373,24 @@ cmd_recover() {
       _check_main_tree_dirty "$pid"  # #65: warn about stray leftovers from hung worker
       rm -f "$f"
     done
-    # Collect item lines still held by a LIVE claim (agent-TTL aware via _claim_live).
+    # Collect item lines still held by a LIVE claim (agent-TTL aware via _claim_live),
+    # CANONICALIZED so a claim's stored line still matches the current BACKLOG line after
+    # a #62 order migration (or # / legacy-symbol normalization).
     local -a claimed=()
     for f in "$STATE_DIR"/*.claim; do
       [[ -e "$f" ]] || continue
       _claim_live "$f" || continue
-      claimed+=("$(sed -n '1p' "$f" 2>/dev/null || true)")
+      claimed+=("$(_canon_line "$(sed -n '1p' "$f" 2>/dev/null || true)")")
     done
-    # (2) Orphan recovery: any @/~ item not in a live claim.
-    local raw parsed state c found
+    # (2) Orphan recovery: any @/~ item not held by a live claim (compare by canonical
+    # identity, not raw text, so a migrated line isn't seen as orphaned and reverted).
+    local raw rawc parsed state c found
     while IFS= read -r raw; do
       parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
       [[ "$state" == "running" || "$state" == "triaging" ]] || continue
+      rawc="$(_canon_line "$raw")"
       found=0
-      for c in "${claimed[@]:-}"; do [[ "$c" == "$raw" ]] && { found=1; break; }; done
+      for c in "${claimed[@]:-}"; do [[ "$c" == "$rawc" ]] && { found=1; break; }; done
       [[ "$found" -eq 0 ]] && { _revert_to_waiting "$raw" || return 1; }
     done < <(_each_item)
   }

@@ -167,13 +167,13 @@ tool keeps grouped into `### ` sub-sections (with live counts), in workflow orde
 ## Items
 
 ### Running (1)
-@[P1][#3] Wire up the importer
+@[#3][P1] Wire up the importer
 
 ### Surfaced (0)
 
 ### Waiting (2)
-[P0][#7] Fix the login redirect loop
-[P2][#9] Refactor the data layer
+[#7][P0] Fix the login redirect loop
+[#9][P2] Refactor the data layer
 
 ### Paused (0)
 
@@ -182,9 +182,9 @@ tool keeps grouped into `### ` sub-sections (with live counts), in workflow orde
 ### Failed / Cancelled / Duplicate (0)
 
 ### Done (2)
-+[P1][#8] Add caching
++[#8][P1] Add caching
 <!-- release v1.2.0 — 2026-06-21 -->
-+[P0][#5] Initial setup
++[#5][P0] Initial setup
 ```
 
 All seven sections are **always present** (even when empty). The tool regroups on every

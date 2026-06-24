@@ -108,8 +108,10 @@ assert_contains "$out" "done|P0|1|legacy done"         "dual-read: old '#' parse
 assert_contains "$out" "deferred|P3|2|legacy deferred" "dual-read: old '>' parses as deferred"
 # trigger a regroup, then assert the file now uses the NEW symbols
 bash "$DEPUTY" set "$(grep -F 'plain waiting' "$DEPUTY_ROOT/BACKLOG.md" | head -1)" running >/dev/null
-assert_eq "$(grep -c '^+\[P0\]\[#1\] legacy done$' "$DEPUTY_ROOT/BACKLOG.md")"      "1" "migrated: done now '+'"
-assert_eq "$(grep -c '^;\[P3\]\[#2\] legacy deferred$' "$DEPUTY_ROOT/BACKLOG.md")"  "1" "migrated: deferred now ';'"
-assert_eq "$(grep -c '^!\[P1\]\[#3\] legacy failed$' "$DEPUTY_ROOT/BACKLOG.md")"     "1" "failed stays '!'"
+# #62: legacy lines were written old-order ([Pn][#N]); on migrate-regroup they re-serialize
+# to the new canonical id-first order ([#N][Pn]).
+assert_eq "$(grep -c '^+\[#1\]\[P0\] legacy done$' "$DEPUTY_ROOT/BACKLOG.md")"      "1" "migrated: done now '+' (id-first)"
+assert_eq "$(grep -c '^;\[#2\]\[P3\] legacy deferred$' "$DEPUTY_ROOT/BACKLOG.md")"  "1" "migrated: deferred now ';' (id-first)"
+assert_eq "$(grep -c '^!\[#3\]\[P1\] legacy failed$' "$DEPUTY_ROOT/BACKLOG.md")"     "1" "failed stays '!' (id-first)"
 assert_eq "$(grep -c '^#\[' "$DEPUTY_ROOT/BACKLOG.md")" "0" "no old '#' item prefixes remain"
 assert_eq "$(grep -c '^>\[' "$DEPUTY_ROOT/BACKLOG.md")" "0" "no old '>' item prefixes remain"

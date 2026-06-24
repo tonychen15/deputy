@@ -17,7 +17,7 @@ assert_contains "$(bash "$DEPUTY" list)" "first"       "claimed item description
 [[ -f "$DEPUTY_ROOT/.deputy/$LIVE.claim" ]] && r=yes || r=no
 assert_eq "$r" "yes" "claim file written"
 running_form="$(cat "$DEPUTY_ROOT/.deputy/$LIVE.claim")"
-assert_contains "$running_form" "@[P0]" "claim file holds running line"
+assert_contains "$running_form" "@[#1][P0]" "claim file holds running line"
 assert_contains "$running_form" "first" "claim file has description"
 
 # Second claim refused while a live claim exists (serial).
