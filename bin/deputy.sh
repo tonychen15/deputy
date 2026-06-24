@@ -1629,6 +1629,7 @@ config keys (.deputy/config):
   human_backoff=1                 back off when an interactive Claude session is busy/recent in this repo (default 1; set 0 to disable)
   human_idle_grace_mins=N         allow cron to run when Claude has been idle this many minutes (default 5)
   waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
+  startup_fail_strikes=N          consecutive spawns that die before any waypoint progress before the startup-crash circuit-breaker SURFACES the item (default 3)
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
   auto_merge=1                    allow a spawned (headless) worker to git-merge its branch to the default branch; default 0 = the guardrail blocks the merge and the worker must surface the branch for human review
   notify_on_spawn=0               silence the notification + cron.log '===SPAWN===' line emitted when the heartbeat autonomously spawns a worker; default 1 = announce every autonomous pickup (never silent)
@@ -2585,6 +2586,42 @@ cmd_run() {
       _active_run_release
       return 0
     fi
+    # #67 startup-crash circuit-breaker: a worker that died at spawn (rc!=0) BEFORE
+    # `deputy start` created a waypoint ledger is invisible to the resume-budget (which
+    # counts ledger attempts), so it would crash-loop — revert→re-pick→respawn every tick.
+    # Count consecutive such spawns per item; under the limit, revert to waiting so it
+    # retries; on the <startup_fail_strikes>th (default 3), SURFACE it for a human instead.
+    # Items that DID create a waypoint are owned by the resume-budget block below.
+    if [[ -n "$_rb_id" ]]; then
+      if [[ "$rc" -ne 0 && ! -f "$(_wp_json "$_rb_id")" ]]; then
+        _spawnfail_bump "$_rb_id"
+        local _sfs _cb_desc _cb_slug
+        _sfs="$(_config_get startup_fail_strikes)"; _valid_positive_int "$_sfs" || _sfs=3
+        # Both transitions target the EXACT claimed line ($running_line). A startup crash
+        # leaves the item untouched, so this matches; if the worker somehow already moved
+        # it, the exact-line match no-ops rather than touching the wrong/terminal item.
+        if [[ "$(_spawnfail_count "$_rb_id")" -ge "$_sfs" ]]; then
+          _cb_desc="${_rb_id_rest#*|}"; _cb_slug="$(_wp_slug "$_rb_id" "$_cb_desc")"
+          printf 'startup-crash circuit-breaker: %s consecutive spawns died before any waypoint progress.\nSurfaced for a human — likely a broken spawn/env (the worker exits before `deputy start`).\nInvestigate the run log, fix the cause, then `deputy set "<line>" waiting` to retry.\n' "$_sfs" \
+            > "$(_trail_path questions "$_cb_slug")" 2>/dev/null || true
+          # Flip via the public cmd_set so the surface is committed + the human notified.
+          cmd_set "$running_line" surfaced >/dev/null 2>&1 || true
+          _spawnfail_reset "$_rb_id"
+          printf 'deputy: startup-crash circuit-breaker tripped for #%s after %s no-progress spawns — surfaced.\n' "$_rb_id" "$_sfs" >&2
+        else
+          # under the limit: revert so the item is retried next tick (don't leave it orphaned running)
+          _with_lock _revert_to_waiting "$running_line" >/dev/null 2>&1 || true
+        fi
+        _archive_run_log "$running_line" "$log"
+        _active_run_release
+        processed=$((processed + 1))
+        [[ "$once" -eq 1 ]] && break
+        [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
+        continue
+      else
+        _spawnfail_reset "$_rb_id"   # progressed / clean exit / has a waypoint → reset the breaker
+      fi
+    fi
     # Successful orchestrator exit: track attempt progress.
     # If a new step was committed, the budget resets; otherwise increments attempt counter.
     if [[ -n "$_rb_id" ]]; then
@@ -3211,6 +3248,12 @@ _do_set_item_failed() {
   to="$(_serialize_item failed "$prio" "$_fsid" "$desc")"
   _flip_line "$raw" "$to"
 }
+
+# #67 startup-crash circuit-breaker counters: consecutive FAILED spawns that never
+# created a waypoint ledger (the resume-budget can't see those). Per-item dotfile counter.
+_spawnfail_count() { local c; c="$(cat "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true)"; [[ "$c" =~ ^[0-9]+$ ]] && printf '%s' "$c" || printf '0'; }
+_spawnfail_bump()  { local n; n=$(( $(_spawnfail_count "$1") + 1 )); printf '%s\n' "$n" > "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
+_spawnfail_reset() { rm -f "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 
 # #63: live-tail the currently-running worker's output (the stable per-item log). The
 # watcher brings its own TTY, so this works from ANY terminal — even one that didn't launch
