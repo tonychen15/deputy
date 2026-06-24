@@ -30,8 +30,7 @@
 ;[P2][#2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 ;[P2][#1] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
-### Failed / Cancelled / Duplicate (1)
-%[P3][#74] test write
+### Failed / Cancelled / Duplicate (0)
 
 ### Done (59)
 +[P3][#47] Harden BACKLOG write paths against masked failures: _regroup_backlog, _allocate_ids, _flip_line, cmd_clean do unchecked mktemp/printf>>tmp/mv under _with_lock || rc (suppressed errexit), so a disk-full/partial write could replace BACKLOG.md with truncated output and still report success. Add explicit checks (validate tmp non-empty before mv; || return 1) + failure-injection tests. Repo-wide, pre-existing; surfaced during #41 review.
