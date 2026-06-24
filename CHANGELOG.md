@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.3.0 — 2026-06-24
+
+Minor release. Clears the backlog to zero open items — write-path safety, the agent-claim
+race protocol, and a batch of CLI/format polish. All changes cross-LLM reviewed; the full
+suite stands at 68 suites / 1221 tests.
+
+### Reliability & race safety
+- **Repo-wide write-path hardening (#47, #73).** Every `BACKLOG.md` write
+  (`_regroup_backlog`, `_flip_line`, `_allocate_ids`, `_append_item`, `cmd_clean`) is now a
+  single atomic transaction routed through `_regroup_backlog`, and every internal `printf`
+  loop is failure-checked — a disk-full / partial write can no longer leave a
+  truncated-but-non-empty `BACKLOG.md` and still report success. Also works when the repo
+  directory is read-only but `BACKLOG.md` is rw-bound (the bwrap sandbox case).
+- **Working-tree leftover gate (#65).** `deputy recover` and a new **`deputy doctor`** warn
+  about a hung worker's stray uncommitted changes in the main tree (excluding `BACKLOG.md`
+  and `.deputy/`), instead of only discovering them when the next merge aborts.
+- **Agent-claim protocol — the agent now conforms (#67).** The interactive orchestrator
+  acquires the active-run claim (`deputy claim --agent`) with agent-shaped heartbeat-TTL
+  liveness (refresh-while-active, auto-EXPIRE after ~2× `heartbeat_mins`), so the cron
+  heartbeat backs off uniformly across human/agent/cron rather than racing on the single
+  `.deputy/wt` slot. `cmd_recover` is TTL-aware (a fresh agent claim survives; an expired
+  one is reaped). Adds a **startup-crash circuit-breaker** (`startup_fail_strikes`, default
+  3): a worker that dies before any waypoint progress is retried, then surfaced for a human
+  instead of respawning every tick.
+
+### CLI & format
+- **`deputy set prio|state` (#69).** Re-prioritize an item by id (`set prio #N p0`) or set
+  state explicitly (`set state #N done`). The bare `set "<line>" <state>` whole-line form
+  (the headless-worker contract) is unchanged.
+- **Per-command help (#72).** `deputy <cmd> --help|-h` prints focused help for that command,
+  sliced from the canonical `usage()` so it can never drift; aliases and a full-usage
+  fallback for plumbing verbs.
+- **Id-first item line order (#62).** Serialized items are now `<state>[#N][Pn]` (id first).
+  The parser is order-free and content-driven (`P…` → priority, `[#N]` → id) and old
+  `[Pn][#N]` files migrate on next write.
+- **Tidier `.deputy/` (#70).** Per-item runtime trails moved into `reviews/`, `questions/`,
+  `fails/` subfolders, with a one-shot migration of existing flat trails.
+
 ## v1.2.0 — 2026-06-21
 
 Minor release. **Autonomous runs are now safe to leave armed.** A batch of hardening so a
