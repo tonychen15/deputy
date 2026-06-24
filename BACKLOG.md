@@ -14,7 +14,8 @@
 
 ### Surfaced (0)
 
-### Waiting (0)
+### Waiting (1)
+[P3] line format in BACKLOG's legend is out of date
 
 ### Paused (0)
 
