@@ -1580,6 +1580,32 @@ symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancel
 EOF
 }
 
+# #72: focused per-command help. Slices the command's block out of usage() — the SINGLE
+# source of truth, so `deputy <cmd> --help` can never drift from `deputy help`. A block
+# is the `  <cmd> ` line plus its indented continuation lines, up to the next command,
+# section header, or blank. Commands without a documented block (internal/plumbing verbs)
+# fall back to the full usage.
+_cmd_help() {
+  local cmd="$1" block
+  # public aliases resolve to their documented command's block (review→reflect, tail→watch)
+  case "$cmd" in review) cmd=reflect ;; tail) cmd=watch ;; esac
+  block="$(usage | awk -v c="$cmd" '
+    # literal prefix match ("  <cmd> ") — never interpret cmd as a regex, so a
+    # regex-shaped unknown command falls back to usage instead of matching a block.
+    BEGIN { p = "  " c " "; pl = length(p) }
+    substr($0, 1, pl) == p && !grab { grab=1; print; next }
+    grab && /^  [^ ]/        { exit }   # next command block (exactly 2-space indent)
+    grab && /^[^ ]/          { exit }   # next section header (column 0)
+    grab && /^[[:space:]]*$/ { exit }   # blank line → end of the commands section
+    grab                     { print }
+  ')"
+  if [[ -n "$block" ]]; then
+    printf '%s\n' "$block"
+  else
+    usage
+  fi
+}
+
 # Classify a CLI invocation outcome: ok|quota_exhausted|auth_error|hard_error.
 # Conservative: an unrecognized non-zero exit is hard_error, never quota_exhausted.
 _detect_outcome() {
@@ -3154,6 +3180,18 @@ cmd_watch() {
 
 main() {
   local cmd="${1:-help}"
+  # #72: `deputy <cmd> --help|-h` prints focused help for that command, then exits.
+  # (Bare `-h`/`--help`/`help` with no subcommand is the top-level usage, handled in
+  # the dispatch below. Intercept here so it works before each command's own parsing.)
+  case "$cmd" in
+    -h|--help|help) ;;
+    *)
+      local _ha
+      for _ha in "${@:2}"; do
+        [[ "$_ha" == "--" ]] && break   # respect the `--` escape (e.g. `add -- "--desc"`)
+        case "$_ha" in -h|--help) _cmd_help "$cmd"; return 0 ;; esac
+      done ;;
+  esac
   # #67: keep the agent's claim heartbeat fresh whenever the orchestrator drives a
   # spine verb (no-op unless an agent-owned claim/run for this $PPID exists), so its
   # claim stays live while actively working and auto-EXPIRES once it stops.
