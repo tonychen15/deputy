@@ -69,3 +69,53 @@ printf '%s\n' "[P2][#$sid] duplicate id line" >> "$DEPUTY_ROOT/BACKLOG.md"
 out="$(bash "$DEPUTY" set "$sid" running 2>&1)"; rc=$?
 assert_eq "$rc" "2" "set <duplicated id> exits 2"
 assert_contains "$out" "multiple items with id #$sid" "set <duplicated id>: clear error"
+
+# ── #69: set [prio|state] keyword forms ──────────────────────────────────────────
+setup_repo
+printf '%s\n' '[P3] prio-target' >> "$DEPUTY_ROOT/BACKLOG.md"
+bash "$DEPUTY" list >/dev/null
+pid="$(bash "$DEPUTY" list | grep 'prio-target' | cut -d'|' -f3)"
+
+# set prio #N p0 — re-prioritizes; state preserved (still waiting)
+bash "$DEPUTY" set prio "$pid" p0
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|$pid|prio-target" "set prio p0: tag changed, state preserved"
+
+# lowercase normalized to uppercase; case-insensitive accept
+bash "$DEPUTY" set prio "$pid" p1
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|$pid|prio-target" "set prio p1: lowercase normalized to P1"
+bash "$DEPUTY" set prio "$pid" P2
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P2|$pid|prio-target" "set prio P2: uppercase accepted"
+
+# prio on a running item is ALLOWED (no guard) and keeps it running
+bash "$DEPUTY" set state "$pid" running
+bash "$DEPUTY" set prio "$pid" p0
+assert_contains "$(bash "$DEPUTY" list)" "running|P0|$pid|prio-target" "set prio on running item: allowed, state preserved"
+
+# explicit 'set state' is an alias for the bare form
+bash "$DEPUTY" set state "$pid" waiting
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|$pid|prio-target" "set state: explicit alias transitions state"
+
+# bare form (back-compat) still works unchanged
+bash "$DEPUTY" set "$pid" deferred
+assert_contains "$(bash "$DEPUTY" list)" "deferred|P0|$pid|prio-target" "set bare: back-compat state transition"
+
+# invalid priority -> exit 2, file unchanged
+pbefore="$(cat "$DEPUTY_ROOT/BACKLOG.md")"
+out="$(bash "$DEPUTY" set prio "$pid" p5 2>&1)"; rc=$?
+assert_eq "$rc" "2" "set prio p5: invalid priority exits 2"
+assert_contains "$out" "invalid priority" "set prio p5: clear error"
+assert_eq "$(cat "$DEPUTY_ROOT/BACKLOG.md")" "$pbefore" "set prio p5: file unchanged"
+
+# non-pN priority value also rejected
+out="$(bash "$DEPUTY" set prio "$pid" high 2>&1)"; rc=$?
+assert_eq "$rc" "2" "set prio high: non-pN exits 2"
+
+# #69 regression: bare 'deputy set' (no args) → clean usage error, not a set -u crash
+out="$(bash "$DEPUTY" set 2>&1)"; rc=$?
+assert_eq "$rc" "2" "set (no args): exits 2, not a crash"
+assert_contains "$out" "set [prio|state]" "set (no args): shows usage"
+
+# #69 disambiguation: the 2-arg whole-line/id form is NEVER read as a keyword.
+# An item whose id we set with a bare 2-arg call still transitions state (not prio).
+bash "$DEPUTY" set "$pid" waiting
+assert_contains "$(bash "$DEPUTY" list)" "waiting|" "set <id> <state> (2-arg) stays the bare state form"

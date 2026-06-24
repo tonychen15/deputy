@@ -928,18 +928,31 @@ _notify() {
 }
 
 cmd_set() {
-  local from="${1:-}" newstate="${2:-}"
-  [[ -n "$from" && -n "$newstate" ]] || { printf 'deputy: set requires "<line>|<id>" <state>\n' >&2; return 2; }
+  # #69: an optional leading 'prio'|'state' keyword selects what to change. Default is
+  # 'state', so the existing whole-line form `deputy set "<line>" <state>` (the headless
+  # worker's contract) is unchanged. 'prio' re-prioritizes IN PLACE (state untouched).
+  # Only consume a leading prio|state keyword in the unambiguous 3-arg form
+  # (`set <kw> <line> <value>`); the 2-arg form `set <line> <state>` is NEVER
+  # reinterpreted, so the whole-line worker contract is exactly preserved. Use
+  # ${1:-} so a no-arg `deputy set` hits the usage check, not a set -u crash.
+  local action="state"
+  if [[ "$#" -ge 3 && ( "${1:-}" == "prio" || "${1:-}" == "state" ) ]]; then action="$1"; shift; fi
+  local from="${1:-}" newval="${2:-}"
+  [[ -n "$from" && -n "$newval" ]] || { printf 'deputy: set [prio|state] "<line>|<id>" <value>\n' >&2; return 2; }
   # #60: --ready-merge marks a 'surfaced' item as "branch ready for human merge-review"
   # (distinct from a blocked surface) so it's excluded from the blocking-surfaced count.
   local _ready_merge=0 _a
-  for _a in "${@:3}"; do          # flags only AFTER <line> <state> — never the line/desc itself
+  for _a in "${@:3}"; do          # flags only AFTER <line> <value> — never the line/desc itself
     case "$_a" in
       --ready-merge) _ready_merge=1 ;;
       *) printf 'deputy: set: unknown argument: %s\n' "$_a" >&2; return 2 ;;
     esac
   done
-  _valid_state "$newstate" || { printf 'deputy: invalid state: %s\n' "$newstate" >&2; return 2; }
+  if [[ "$action" == "prio" ]]; then
+    [[ "$newval" =~ ^[pP][0-4]$ ]] || { printf 'deputy: set: invalid priority: %s (expected p0..p4)\n' "$newval" >&2; return 2; }
+  else
+    _valid_state "$newval" || { printf 'deputy: invalid state: %s\n' "$newval" >&2; return 2; }
+  fi
   # #56: accept an item id (N or #N) as the <line> arg, for parity with `run #N` /
   # `clean N`. Only when 'from' is NOT already a literal backlog line (whole-line form
   # always wins, so a legacy numeric raw line is unaffected) and looks like an id, resolve
@@ -958,21 +971,32 @@ cmd_set() {
   fi
   _do_set() {
     grep -qxF -- "$from" "$BACKLOG" || return 1     # exact-line existence
-    local parsed prio desc to _id_rest _id
+    local parsed curr_state prio desc to _id_rest _id _eff_state
     parsed="$(_parse_item "$from")"
+    curr_state="${parsed%%|*}"
     prio="${parsed#*|}"; prio="${prio%%|*}"
     _id_rest="${parsed#*|}"; _id_rest="${_id_rest#*|}"; _id="${_id_rest%%|*}"
     desc="${_id_rest#*|}"
-    to="$(_serialize_item "$newstate" "$prio" "$_id" "$desc")"
+    # #69: 'prio' keeps the current state and rewrites the [Px] tag; 'state' (default)
+    # keeps the priority and rewrites the state — the original behavior. _eff_state is
+    # the RESULTING state (current state for a prio change), used for the #60 marker.
+    if [[ "$action" == "prio" ]]; then
+      local _np; _np="$(printf '%s' "$newval" | tr 'a-z' 'A-Z')"
+      to="$(_serialize_item "$curr_state" "$_np" "$_id" "$desc")"
+      _eff_state="$curr_state"
+    else
+      to="$(_serialize_item "$newval" "$prio" "$_id" "$desc")"
+      _eff_state="$newval"
+    fi
     # Propagate a write failure: a swallowed rc here would let the trailing #60 marker
     # block (which returns 0) mask a failed line flip, so 'set' would falsely report success.
     _flip_line "$from" "$to" || return 1
     # #60: maintain the ready-merge marker under the SAME lock as the line flip, so scheduling
     # never sees a 'surfaced' item without its marker (no blocking-count race window).
     if [[ "$_id" =~ ^[0-9]+$ ]]; then
-      if [[ "$newstate" == "surfaced" && "$_ready_merge" == "1" ]]; then
+      if [[ "$_eff_state" == "surfaced" && "$_ready_merge" == "1" ]]; then
         printf 'ready-merge-at: %s\nbranch ready for human merge-review\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
-      elif [[ "$newstate" != "surfaced" ]]; then
+      elif [[ "$_eff_state" != "surfaced" ]]; then
         rm -f "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
       fi
     fi
@@ -980,31 +1004,37 @@ cmd_set() {
   local _set_rc=0
   _with_lock _do_set || _set_rc=$?
   if [[ "$_set_rc" -eq 0 ]]; then
-    _commit_queue "set $newstate"
-    local _parsed _desc _id_rest2
+    if [[ "$action" == "prio" ]]; then _commit_queue "set prio $newval"; else _commit_queue "set $newval"; fi
+    local _parsed _desc _id_rest2 _eff_state2
     _parsed="$(_parse_item "$from")"
     _id_rest2="${_parsed#*|}"; _id_rest2="${_id_rest2#*|}"; _desc="${_id_rest2#*|}"
+    # The resulting state: unchanged (current) for a prio change, else the new state.
+    if [[ "$action" == "prio" ]]; then _eff_state2="${_parsed%%|*}"; else _eff_state2="$newval"; fi
     # #53: once a proposal (surfaced) is approved (->waiting), rejected (->cancelled),
     # or otherwise leaves surfaced, its .deputy/proposed-<id> marker is obsolete. The
     # rm is a no-op for non-proposal items (no marker). Skip while staying surfaced.
-    if [[ "$newstate" != "surfaced" ]]; then
+    if [[ "$_eff_state2" != "surfaced" ]]; then
       local _ps_id="${_id_rest2%%|*}"
       [[ "$_ps_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_ps_id" 2>/dev/null || true
     fi
-    # Background by default so slow channels (e.g. push/curl) don't block the CLI.
-    # Set DEPUTY_NOTIFY_SYNC=1 to run synchronously (used in tests).
-    if [[ "${DEPUTY_NOTIFY_SYNC:-0}" == "1" ]]; then
-      _notify "$newstate" "$_desc" >/dev/null 2>&1 || true
-    else
-      _notify "$newstate" "$_desc" >/dev/null 2>&1 &
-    fi
-    # On a completion, show what's left. Done-only by design: a task is "completed"
-    # only when done — failures (which transition via internal _do_set_item_failed,
-    # not cmd_set) intentionally do not print the queue. In autonomous runs the
-    # orchestrator's `deputy set <line> done` stdout is captured + relayed by the
-    # run loop, so this single call covers both interactive and autonomous paths.
-    if [[ "$newstate" == "done" ]]; then
-      _print_waiting_queue
+    # #69: a prio change is not a lifecycle transition — skip the notify + done-queue
+    # print (those belong to state changes only).
+    if [[ "$action" == "state" ]]; then
+      # Background by default so slow channels (e.g. push/curl) don't block the CLI.
+      # Set DEPUTY_NOTIFY_SYNC=1 to run synchronously (used in tests).
+      if [[ "${DEPUTY_NOTIFY_SYNC:-0}" == "1" ]]; then
+        _notify "$newval" "$_desc" >/dev/null 2>&1 || true
+      else
+        _notify "$newval" "$_desc" >/dev/null 2>&1 &
+      fi
+      # On a completion, show what's left. Done-only by design: a task is "completed"
+      # only when done — failures (which transition via internal _do_set_item_failed,
+      # not cmd_set) intentionally do not print the queue. In autonomous runs the
+      # orchestrator's `deputy set <line> done` stdout is captured + relayed by the
+      # run loop, so this single call covers both interactive and autonomous paths.
+      if [[ "$newval" == "done" ]]; then
+        _print_waiting_queue
+      fi
     fi
   fi
   return "$_set_rc"
@@ -1420,8 +1450,11 @@ commands:
                                   headed=0 config forces the buffered/cron behavior)
                                   if <id> given (integer; '#7' also accepted), run that
                                   specific item bypassing priority order (targeted, one item only)
-  set "<exact line>"|<id> <state> transition an item's state — by exact-line match, or by
-                                  item id (e.g. `deputy set 50 waiting` / `set #50 waiting`)
+  set [prio|state] "<exact line>"|<id> <value>
+                                  change an item's state (default) or priority — by exact-line
+                                  match or item id. e.g. `deputy set 50 waiting`, `set #50 waiting`,
+                                  `set state #50 done`, or `set prio #50 p0` (priority p0..p4;
+                                  prio keeps the current state). Bare form = state, unchanged.
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
   clean [<id>] [--dry-run] [--state <state>]
                                   remove items matching the filter:
