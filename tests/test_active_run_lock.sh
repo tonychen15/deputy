@@ -97,3 +97,25 @@ DEPUTY_ROOT="$DEPUTY_ROOT" bash -c 'source "'"$DEPUTY"'"; _active_run_release' >
 assert_eq "$([[ -d "$DEPUTY_ROOT/.deputy/active-run.lock" ]] && echo yes || echo no)" "yes" \
   "active-run release refuses another owner"
 kill "$OTHER_PID" 2>/dev/null || true
+
+# ── #67 part 2: the active-run lock is the flock-atomic guard+claim ──────────────────
+# (a) A live AGENT claim (owner=agent, fresh heartbeat — TTL-live even with a dead PID)
+#     is the PRIMARY guard cron respects: a new run backs off, item stays waiting.
+setup_repo
+printf 'human_backoff=0\n' > "$DEPUTY_ROOT/.deputy/config"
+bash "$DEPUTY" add "blocked by agent" --p0 >/dev/null; bash "$DEPUTY" list >/dev/null
+mkdir -p "$DEPUTY_ROOT/.deputy/active-run.lock"
+printf '%s\n' 999999 > "$DEPUTY_ROOT/.deputy/active-run.lock/pid"        # dead PID
+printf 'x\n'         > "$DEPUTY_ROOT/.deputy/active-run.lock/start_time"
+printf 'agent\n'     > "$DEPUTY_ROOT/.deputy/active-run.lock/owner"
+printf 'agent work\n'> "$DEPUTY_ROOT/.deputy/active-run.lock/item"
+printf '%s\n' "$(date +%s)" > "$DEPUTY_ROOT/.deputy/active-run.lock/heartbeat"   # fresh
+DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run --once >/dev/null 2>&1 || true
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "#67: live AGENT claim (TTL) blocks a new cron run"
+assert_eq "$(ls "$DEPUTY_ROOT"/.deputy/*.claim 2>/dev/null | wc -l | tr -d ' ')" "0" "#67: blocked run wrote no claim"
+
+# (b) _active_run_acquire is an atomic mutex: within one live owner, the 2nd acquire
+#     backs off with rc 3 (sees the lock live), confirming guard+claim is serialized.
+setup_repo
+out="$(bash -c 'source "'"$DEPUTY"'"; r1=0; _active_run_acquire a run >/dev/null 2>&1 || r1=$?; r2=0; _active_run_acquire b run >/dev/null 2>&1 || r2=$?; echo "$r1 $r2"')"
+assert_eq "$out" "0 3" "#67: second _active_run_acquire backs off (atomic flock+mkdir mutex)"
