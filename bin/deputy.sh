@@ -373,6 +373,12 @@ _do_active_run_acquire() {
   date +%s > "$ACTIVE_RUN_DIR/heartbeat"
 }
 
+# #67: THIS is the flock-atomic "read guard + claim" gate. _with_lock is `flock -x`, so
+# _do_active_run_acquire checks the guard (_active_run_live) AND mkdir's the lock in one
+# critical section — two cron ticks (or cron vs the agent, which acquires this same lock
+# via `claim --agent`) can never both succeed; the loser sees it live and backs off. The
+# active-run claim is the PRIMARY cross-party (human/agent/cron) guard; .deputy/wt + the
+# session scan are backstops.
 _active_run_acquire() {
   _with_lock _do_active_run_acquire "$@"
 }

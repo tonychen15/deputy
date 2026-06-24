@@ -154,6 +154,19 @@ If no coder is available, `deputy cron --reschedule "<reset text>"` — never bu
 
 After `deputy wt-create <slug>` (and before planning):
 
+- **#67 — acquire the active-run claim (INTERACTIVE path only).** If you are an
+  interactive orchestrator (the human ran `/deputy` / "work the backlog") — **NOT** a
+  `DEPUTY_HEADLESS=1` spawned worker, which `deputy run` already claimed — claim the item
+  you are about to work so the cron heartbeat and other parties back off uniformly instead
+  of racing you on the single `.deputy/wt` slot:
+  `deputy claim --agent "<item-line>"`
+  This writes an `owner=agent` active-run claim with heartbeat-TTL liveness. It stays alive
+  automatically as you drive the spine verbs (each refreshes the heartbeat) and is released
+  when you transition the item out of `running` (`deputy set "<line>" done|surfaced|paused`);
+  if you simply stop, it auto-EXPIRES after ~2× `heartbeat_mins`. If the claim FAILS
+  (any non-zero exit — e.g. `busy (a live claim exists)` or `active run exists … —
+  skipping this tick.`), another party holds the slot — **stop, do not proceed.**
+  (The item must be `waiting`/`paused` to claim; `claim --agent` flips it to `running`.)
 - **If `.deputy/waypoints/<slug>/waypoint.json` exists** (interrupted run): **RESUME** —
   first purge any dirty worktree state so a half-written step can't poison the retry:
   `git -C .deputy/wt reset --hard HEAD && git -C .deputy/wt clean -fd`
