@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.2 — 2026-06-24
+
+Patch — customer-project upgrade ergonomics.
+
+- **Self-heal so customer projects never need re-init after an upgrade (#76).** Protected
+  globs now LAYER the per-project `.deputy/protected` over the release template defaults, so
+  new default globs shipped in a release reach existing projects automatically (and a project
+  with no file still gets the safe baseline); a missing `.deputy/config` / `.deputy/protected`
+  is auto-seeded from the templates on run; and `_config_get` is now **last-wins** on
+  duplicate keys, so an appended override beats an earlier (e.g. template-seeded) line instead
+  of returning the stale first value. Net: a customer runs `init` **once**, and every release
+  afterward auto-applies (command, skill, hook, config defaults, and protected globs) with
+  zero per-project action.
+- **Document the upgrade story (#75).** The README "Upgrading" section now makes explicit that
+  the `deputy` command, the `/deputy` skill, and the guardrail hook are a single **global**
+  install shared by every project — so `git pull` in the deputy repo upgrades all projects at
+  once — and folds in the #76 self-heal behaviour.
+
 ## v1.3.1 — 2026-06-24
 
 Patch — docs & process.
