@@ -295,6 +295,7 @@ cmd_list() {
     _ls="${parsed%%|*}"; _lrest="${parsed#*|}"
     _lp="${_lrest%%|*}"; _lrest="${_lrest#*|}"
     _li="${_lrest%%|*}"; _ld="${_lrest#*|}"
+    [[ -n "$filter" && "$count" -gt 0 ]] && printf '\n'
     printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
     count=$(( count + 1 ))
   done < <(_each_item)
