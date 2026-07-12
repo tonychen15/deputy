@@ -518,12 +518,25 @@ _backlog_commit() {
       rm -f "$tmp" "$bak" 2>/dev/null || true
       return 0
     fi
+    # #86: the in-place write FAILED even though BACKLOG.md looked writable by mode —
+    # the hallmark of a stale sandbox bind (dead inode, #82) or a hard I/O error. This is
+    # PERSISTENT and retry-proof, so signal it distinctly (exit 3) below (after restore).
     [[ -s "$bak" ]] && cat "$bak" > "$BACKLOG" 2>/dev/null || true
     rm -f "$tmp" "$bak" 2>/dev/null || true
-    return 1
+    _backlog_unwritable_signal; return 3
   fi
+  # dir NOT writable AND BACKLOG.md NOT writable by mode (e.g. genuinely read-only file):
+  # also a persistent, retry-proof failure — same distinct signal.
   rm -f "$tmp" 2>/dev/null || true
-  return 1
+  _backlog_unwritable_signal; return 3
+}
+
+# #86: one loud, actionable message for an UNRECOVERABLE BACKLOG.md write (stale sandbox
+# bind / read-only file / I/O error). A headless worker must NOT death-loop retrying or
+# debugging this — after a bounded tryout it should write .deputy/<slug>.fail.md (in
+# .deputy/, a dir bind that stays writable) and EXIT; the runner recovers the item.
+_backlog_unwritable_signal() {
+  printf 'deputy: BACKLOG.md is UNWRITABLE (persistent, not retryable — likely a stale sandbox bind or read-only file). Do NOT retry; write .deputy/<slug>.fail.md and exit (the runner will recover the item). See #85/#86.\n' >&2
 }
 
 # Exact whole-line replacement (research.sh flip_line). Atomic via tmpfile+mv.
@@ -1142,7 +1155,9 @@ cmd_set() {
     fi
     # Propagate a write failure: a swallowed rc here would let the trailing #60 marker
     # block (which returns 0) mask a failed line flip, so 'set' would falsely report success.
-    _flip_line "$from" "$to" || return 1
+    # Preserve the EXACT rc (#86): _flip_line returns 3 on an unrecoverable BACKLOG write,
+    # which the worker keys on to fail-fast — collapsing it to 1 would lose that contract.
+    local _fl_rc; _flip_line "$from" "$to"; _fl_rc=$?; [[ "$_fl_rc" -eq 0 ]] || return "$_fl_rc"
     # #60: maintain the ready-merge marker under the SAME lock as the line flip, so scheduling
     # never sees a 'surfaced' item without its marker (no blocking-count race window).
     if [[ "$_id" =~ ^[0-9]+$ ]]; then
@@ -1374,9 +1389,11 @@ cmd_claim() {
     fi
     # Abort (undoing any agent active-run) if the BACKLOG transition fails, so a failed
     # write can't leave a live claim/run pointing at a never-transitioned line (#47).
-    if ! _flip_line "$from" "$to"; then
+    # Preserve the EXACT rc (#86): 3 = unrecoverable BACKLOG write, which the worker keys on.
+    local _fl_rc; _flip_line "$from" "$to"; _fl_rc=$?
+    if [[ "$_fl_rc" -ne 0 ]]; then
       [[ "$_agent_acq" -eq 1 ]] && rm -rf "$ACTIVE_RUN_DIR" 2>/dev/null || true
-      return 1
+      return "$_fl_rc"
     fi
     # Claim file: line1=running item, line2=PID start-time, line3=owner, line4=heartbeat.
     # Old 2-line readers still work; line3/4 enable #67 agent-TTL liveness.

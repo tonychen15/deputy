@@ -259,6 +259,16 @@ counts against the retry budget in §4).
   Note: there is no `deputy fail <slug>` spine verb; on terminal failure the waypoint
   ledger intentionally stays `in_progress` so the failure context is preserved for
   debugging. Use `deputy recover` to reset the backlog item to `waiting` if re-queuing.
+- **Unrecoverable BACKLOG.md write (#86) — FAIL FAST, do NOT death-loop.** If a `deputy
+  set` / `deputy add` / `deputy commit` fails with *"BACKLOG.md is UNWRITABLE (persistent,
+  not retryable …)"* (exit 3), the queue file cannot be written — usually a stale sandbox
+  bind (#85) or a read-only file. This is **PERSISTENT**: retrying or reasoning about it
+  only burns tokens. After **at most one** re-try, STOP. **Do NOT** try `deputy set
+  "<line>" surfaced` — that ALSO writes BACKLOG.md (the broken file) and will fail the same
+  way. Instead: write the diagnosis to `.deputy/<slug>.fail.md` (under `.deputy/`, a
+  directory bind that stays writable) and **EXIT non-zero immediately**. The runner detects
+  the abandoned claim on its next tick and `deputy recover`s the item so a human sees it.
+  Never spend more than a couple of tool calls on an UNWRITABLE-BACKLOG error.
 
 ## Hard rules
 - **Never** hand-edit `BACKLOG.md`, `.deputy/waypoints/`, or any other `.deputy/` state
