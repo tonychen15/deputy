@@ -10,14 +10,14 @@
 
 ## Items
 
-### Running (1)
-@[#82][P2] add a status to 'deputy cron status' to show the cron status in the current folder
+### Running (0)
 
 ### Surfaced (0)
 
-### Waiting (2)
+### Waiting (3)
+[#82][P2] add a status to 'deputy cron status' to show the cron status in the current folder
 [#83][P3] when 'deputy add' command is executed successfully, deputy should show the added task's id as 'deputy: added #<id>: xxxxx'
-[P3] In BACKLOG.md a task is displayed as <state>[#<id>][<priority>] <desc>, but 'deputy list <state>' output is still the 'waiting|P3|83|<desc>' pipe format — make the list output consistent with the BACKLOG.md line format.
+[#84][P3] In BACKLOG.md a task is displayed as <state>[#<id>][<priority>] <desc>, but 'deputy list <state>' output is still the 'waiting|P3|83|<desc>' pipe format — make the list output consistent with the BACKLOG.md line format.
 
 ### Paused (0)
 
