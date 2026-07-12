@@ -160,6 +160,10 @@ deputy run [--once]    # work the backlog (triage → do / surface), until empty
                        # interactive (TTY): streams the worker's output live; cron/no-TTY: buffered
 deputy run --headless  # force buffered output even interactively (or set headed=0 in .deputy/config)
 deputy run <id>        # targeted run: bypass priority order and run a specific item by id
+deputy watch [--once]  # passive monitor: beeps 3× + prints a resume digest when the batch
+                       # drains (runnable→0, blocking-surfaced>0); re-arms after each run;
+                       # --once: one poll cycle then exit (useful in scripts/tests);
+                       # Ctrl-C exits without stopping the worker (alias: deputy tail)
 deputy reflect         # re-triage report: learnings, untagged items, reprioritization, duplicates
 deputy release [version] # mark a release boundary: insert a dated delimiter at the top of Done
                        # (version defaults to ./VERSION); tasks above the last marker = next release

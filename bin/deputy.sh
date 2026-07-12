@@ -1610,7 +1610,9 @@ commands:
                                   optional --<state> (e.g. --waiting, --running, --deferred)
                                   lists only items in that state
   status                          counts by state
-  watch                           live-tail the currently-running worker's output (any terminal; Ctrl-C detaches)
+  watch [--once]                  passive monitor: live-tails a running worker; on quiescence
+                                  (runnable→0, items surfaced) beeps 3× + prints a resume digest
+                                  once; re-arms after each new worker run; Ctrl-C exits (alias: tail)
   run [<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
                                   (interactive/TTY runs stream output live; --headless or
                                   headed=0 config forces the buffered/cron behavior)
@@ -3286,33 +3288,150 @@ _spawnfail_count() { local c; c="$(cat "$STATE_DIR/.spawnfail-$1" 2>/dev/null ||
 _spawnfail_bump()  { local n; n=$(( $(_spawnfail_count "$1") + 1 )); printf '%s\n' "$n" > "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 _spawnfail_reset() { rm -f "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 
-# #63: live-tail the currently-running worker's output (the stable per-item log). The
-# watcher brings its own TTY, so this works from ANY terminal — even one that didn't launch
-# the run (the watch-the-headless-worker case). Ctrl-C detaches without affecting the run.
+# Count waiting+paused items (the runnable set cmd_pick draws from).
+_runnable_count() {
+  local n=0 raw parsed state
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    case "$state" in waiting|paused) n=$(( n + 1 )) ;; esac
+  done < <(_each_item)
+  printf '%s' "$n"
+}
+
+# Emit 3 terminal BEL chars ~0.3 s apart. No-op when stdout is not a TTY.
+_watch_beep() {
+  [[ -t 1 ]] || return 0
+  printf '\a'; sleep 0.3; printf '\a'; sleep 0.3; printf '\a'
+}
+
+# Print the quiescence digest: one entry per surfaced (non-proposal, non-ready-merge) item.
+_watch_digest() {
+  local _wd_raw _wd_p _wd_state _wd_rest _wd_prio _wd_id _wd_desc _wd_cand _wd_qf _wd_first _wd_any=0
+  printf '\ndeputy: batch quiescent — surfaced items need your attention:\n'
+  while IFS= read -r _wd_raw; do
+    _wd_p="$(_parse_item "$_wd_raw")"; _wd_state="${_wd_p%%|*}"
+    [[ "$_wd_state" == "surfaced" ]] || continue
+    _wd_rest="${_wd_p#*|}"; _wd_prio="${_wd_rest%%|*}"
+    _wd_rest="${_wd_rest#*|}"; _wd_id="${_wd_rest%%|*}"; _wd_desc="${_wd_rest#*|}"
+    [[ "$_wd_id" =~ ^[0-9]+$ ]] && { [[ -f "$STATE_DIR/proposed-$_wd_id" ]] || [[ -f "$STATE_DIR/ready-merge-$_wd_id" ]]; } && continue
+    _wd_any=1
+    local _wd_hdr="#${_wd_id:-?}"
+    [[ -n "$_wd_prio" ]] && _wd_hdr="${_wd_hdr} [${_wd_prio}]"
+    printf '\n  %s %s\n' "$_wd_hdr" "$_wd_desc"
+    if [[ "$_wd_id" =~ ^[0-9]+$ ]]; then
+      # The slug is orchestrator-chosen, so the questions file may use either the
+      # interactive orchestrator's '<desc>-<id>' (suffix) convention or the runner's
+      # _wp_slug '<id>-<desc>' (prefix) convention. Match BOTH under .deputy/questions/
+      # (#70), then legacy flat .deputy/*.questions.md. First match wins.
+      _wd_qf=""
+      for _wd_cand in "$STATE_DIR"/questions/*-"$_wd_id".md "$STATE_DIR"/questions/"$_wd_id"-*.md \
+                      "$STATE_DIR"/*-"$_wd_id".questions.md "$STATE_DIR"/"$_wd_id"-*.questions.md; do
+        [[ -f "$_wd_cand" ]] && { _wd_qf="$_wd_cand"; break; }
+      done
+      if [[ -n "$_wd_qf" ]]; then
+        _wd_first="$(head -1 "$_wd_qf" 2>/dev/null || true)"
+        printf '    questions: %s\n' "$_wd_qf"
+        [[ -n "$_wd_first" ]] && printf '    summary:   %s\n' "$_wd_first"
+      fi
+    fi
+    printf '    resume:    run /deputy — it will pick up #%s from its waypoint\n' "${_wd_id:-?}"
+  done < <(_each_item)
+  [[ "$_wd_any" -eq 0 ]] && printf '  (no blocking surfaced items found)\n'
+  printf '\n'
+}
+
+# #63/#79: passive, persistent queue monitor. Modes by queue state on each poll tick:
+#   worker live  → live-tail it (existing path); loop back after tail exits and re-arm.
+#   runnable > 0 → stay quiet, keep polling (work still queued; NOT quiescent yet).
+#   quiescent    → runnable==0 AND blocking-surfaced>0: beep 3× + print digest ONCE;
+#                  _wcanbeep re-arms only after the next worker run completes.
+#   empty        → no worker, no surfaced, no runnable: friendly one-shot exit.
+# --once: one poll pass then exit (test/script seam; live-tail still blocks until run ends).
+# Ctrl-C exits; the 'tail' alias is preserved.
 cmd_watch() {
-  local d="$ACTIVE_RUN_DIR" item pid id log i
-  if [[ ! -d "$d" ]] || ! _active_run_live "$d"; then
-    printf 'deputy: no worker is running. (Past run logs are archived under %s/logs/.)\n' "$STATE_DIR"
-    return 0
-  fi
-  item="$(sed -n '1p' "$d/item" 2>/dev/null || true)"
-  pid="$(sed -n '1p' "$d/pid" 2>/dev/null || true)"
-  id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
-  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: a worker is running but its item has no id to watch.\n' >&2; return 1; }
-  log="$STATE_DIR/run-$id.log"
-  # The lock is published just before the log is created — wait briefly for the file.
-  for i in $(seq 1 20); do [[ -e "$log" ]] && break; sleep 0.25; done
-  [[ -e "$log" ]] || { printf 'deputy: worker #%s is starting; no output yet.\n' "$id" >&2; return 0; }
-  printf 'deputy: watching #%s (pid %s) — Ctrl-C to detach (the run keeps going)...\n' "$id" "$pid" >&2
-  # --pid: exit when the run process ends; -f follows the open fd cleanly across the archive mv.
-  # #66: render the stream-json log to readable text. Capture tail's exit (PIPESTATUS[0])
-  # under set +e: only a CLEAN exit (the run actually ended, tail rc 0) prints the archived
-  # line — a Ctrl-C detach (tail killed, non-zero) must NOT falsely claim the run ended.
-  local _had_e=0; [[ $- == *e* ]] && _had_e=1; set +e
-  tail --pid="$pid" -f "$log" | _render_stream
-  local trc=${PIPESTATUS[0]}
-  [[ "$_had_e" -eq 1 ]] && set -e
-  [[ "$trc" -eq 0 ]] && printf 'deputy: run #%s ended — output archived to %s/logs/%s.log\n' "$id" "$STATE_DIR" "$id" >&2
+  local _wonce=0
+  [[ "${1:-}" == "--once" ]] && _wonce=1
+
+  local d="$ACTIVE_RUN_DIR"
+  local _wpoll=5 _wcanbeep=1 _wprevlive=0
+
+  # Track the logs/ directory mtime as a run-completion signal: each worker run
+  # archives a log file there, bumping the dir mtime — human queue edits do NOT
+  # touch it, so this is tighter than BACKLOG mtime and handles same-item reruns.
+  local _wbeep_logdir_mtime=0 _wcur_logdir_mtime
+  _wbeep_logdir_mtime="$(stat -c '%y' "$STATE_DIR/logs" 2>/dev/null || printf '0')"
+
+  while true; do
+    # ── live worker? ─────────────────────────────────────────────────────────
+    if [[ -d "$d" ]] && _active_run_live "$d"; then
+      _wprevlive=1
+      local _wi_item _wi_pid _wi_id _wi_log _wi_i
+      _wi_item="$(sed -n '1p' "$d/item" 2>/dev/null || true)"
+      _wi_pid="$(sed -n '1p'  "$d/pid"  2>/dev/null || true)"
+      _wi_id="$(_parse_item "$_wi_item")"; _wi_id="${_wi_id#*|}"; _wi_id="${_wi_id#*|}"; _wi_id="${_wi_id%%|*}"
+      if [[ ! "$_wi_id" =~ ^[0-9]+$ ]]; then
+        printf 'deputy: a worker is running but its item has no id to watch.\n' >&2
+        [[ "$_wonce" -eq 1 ]] && return 1; sleep "$_wpoll"; continue
+      fi
+      _wi_log="$STATE_DIR/run-$_wi_id.log"
+      for _wi_i in $(seq 1 20); do [[ -e "$_wi_log" ]] && break; sleep 0.25; done
+      if [[ ! -e "$_wi_log" ]]; then
+        printf 'deputy: worker #%s is starting; no output yet.\n' "$_wi_id" >&2
+        [[ "$_wonce" -eq 1 ]] && return 0; sleep "$_wpoll"; continue
+      fi
+      printf 'deputy: watching #%s (pid %s) — Ctrl-C to detach (the run keeps going)...\n' "$_wi_id" "$_wi_pid" >&2
+      # --pid: exit when the run process ends; -f follows the open fd cleanly across archive mv.
+      # #66: render the stream-json log to readable text. Capture tail's exit (PIPESTATUS[0])
+      # under set +e: only a CLEAN exit (run ended, tail rc 0) prints the archived line —
+      # a Ctrl-C detach (tail killed, non-zero) must NOT falsely claim the run ended.
+      local _w_had_e=0; [[ $- == *e* ]] && _w_had_e=1; set +e
+      tail --pid="$_wi_pid" -f "$_wi_log" | _render_stream
+      local _w_trc=${PIPESTATUS[0]}
+      [[ "$_w_had_e" -eq 1 ]] && set -e
+      [[ "$_w_trc" -eq 0 ]] && printf 'deputy: run #%s ended — output archived to %s/logs/%s.log\n' \
+        "$_wi_id" "$STATE_DIR" "$_wi_id" >&2
+      # non-zero trc = Ctrl-C detach — exit immediately (run still going; no quiescence check).
+      # Zero trc (run ended cleanly): fall through to quiescence check, even with --once.
+      [[ "$_w_trc" -ne 0 ]] && return 0
+      continue  # run ended cleanly → re-check immediately for quiescence (+ --once digest)
+    fi
+
+    # ── worker just ended (observed live) → re-arm ───────────────────────────
+    if [[ "$_wprevlive" -eq 1 ]]; then _wcanbeep=1; fi
+    _wprevlive=0
+
+    # ── poll the queue ────────────────────────────────────────────────────────
+    local _wr; _wr="$(_runnable_count)"
+    local _ws; _ws="$(_blocking_surfaced_count)"
+
+    # Re-arm if a new run was archived since the last beep (logs/ dir mtime changes
+    # on every run-complete; unaffected by human queue edits or status reads).
+    _wcur_logdir_mtime="$(stat -c '%y' "$STATE_DIR/logs" 2>/dev/null || printf '0')"
+    if [[ "$_wcanbeep" -eq 0 && "$_wcur_logdir_mtime" != "$_wbeep_logdir_mtime" ]]; then _wcanbeep=1; fi
+
+    # Totally empty — friendly exit
+    if [[ "$_wr" -eq 0 && "$_ws" -eq 0 ]]; then
+      printf 'deputy: nothing to watch (queue empty — no running worker, no surfaced or runnable items).\n'
+      return 0
+    fi
+
+    # Runnable items queued — stay quiet (not quiescent yet)
+    if [[ "$_wr" -gt 0 ]]; then
+      [[ "$_wonce" -eq 1 ]] && return 0
+      sleep "$_wpoll"; continue
+    fi
+
+    # Quiescent: runnable==0, blocking-surfaced>0 — beep + digest (once per batch)
+    if [[ "$_wcanbeep" -eq 1 ]]; then
+      _watch_beep
+      _watch_digest
+      _wcanbeep=0
+      _wbeep_logdir_mtime="$_wcur_logdir_mtime"  # snapshot logs/ mtime at beep for re-arm
+    fi
+
+    [[ "$_wonce" -eq 1 ]] && return 0
+    sleep "$_wpoll"
+  done
 }
 
 main() {
@@ -3344,7 +3463,7 @@ main() {
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
     status) cmd_status; return 0 ;;
-    watch|tail) cmd_watch; return $? ;;
+    watch|tail) shift; cmd_watch "$@"; return $? ;;
     pick) cmd_pick; return 0 ;;
     set) shift; cmd_set "$@"; return $? ;;
     claim) shift; cmd_claim "$@"; return $? ;;
