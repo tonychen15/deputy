@@ -534,6 +534,79 @@ _backlog_commit() {
   _backlog_unwritable_signal; return 3
 }
 
+# #94: On startup/recover, detect a leftover _backlog_commit .bak alongside a torn
+# BACKLOG (empty or missing the '## Items' header) and restore from it. A SIGKILL mid
+# in-place write is the primary cause; #87's SIGTERM+grace makes the window rare.
+# Stale .bak files from prior clean runs are cleaned unconditionally. Caller holds
+# _with_lock. Restore is routed through _backlog_commit (mv-or-inplace, atomic).
+# Called from _do_recover, which is invoked both at startup (via cmd_recover in cmd_run)
+# and on the explicit 'deputy recover' command — covers both cases.
+_recover_torn_backlog() {
+  local d; d="$(dirname "$BACKLOG")"
+
+  # Deduplicate scan dirs: only add STATE_DIR when it differs from BACKLOG's dir.
+  local -a dirs=("$d")
+  [[ "$STATE_DIR" != "$d" ]] && dirs+=("$STATE_DIR")
+
+  # Collect all .bak candidates from both _backlog_mktemp drop locations.
+  local -a baks=()
+  local b dir
+  for dir in "${dirs[@]}"; do
+    for b in "$dir"/.backlog.tmp.*.bak; do [[ -f "$b" ]] && baks+=("$b"); done
+  done
+  [[ "${#baks[@]}" -eq 0 ]] && return 0
+
+  # Torn check (strict pre-condition): empty OR missing the '## Items' structure header.
+  local torn=0
+  if [[ ! -s "$BACKLOG" ]] || ! grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$BACKLOG" 2>/dev/null; then
+    torn=1
+  fi
+
+  local best=""
+  if [[ "$torn" -eq 1 ]]; then
+    # Pick the most-recent structurally-valid .bak (mtime + filename for tie-breaking).
+    local best_key="" key
+    for b in "${baks[@]}"; do
+      [[ -s "$b" ]] && grep -qE '^[[:space:]]*##[[:space:]]+Items[[:space:]]*$' "$b" 2>/dev/null || continue
+      key="$(stat -c '%Y %n' "$b" 2>/dev/null)" || continue
+      [[ -z "$best" || "$key" > "$best_key" ]] && { best_key="$key"; best="$b"; }
+    done
+
+    if [[ -n "$best" ]]; then
+      # Restore via _backlog_commit: handles mv-vs-inplace, atomic, inode-safe.
+      # _backlog_commit's in-place path creates its own internal .bak (of the torn
+      # BACKLOG) and always removes it on both success and failure paths; the final
+      # re-glob below catches any edge-case leaks so cleanup is self-contained.
+      local restore_tmp
+      restore_tmp="$(_backlog_mktemp)" || {
+        printf 'deputy: WARNING — torn BACKLOG: cannot create restore tmp (%s preserved)\n' "$best" >&2
+        return 0
+      }
+      if cat "$best" > "$restore_tmp" && _backlog_commit "$restore_tmp"; then
+        printf 'deputy: torn BACKLOG restored from .bak (%s)\n' "$best" >&2
+        rm -f "$best" "${best%.bak}" 2>/dev/null || true
+      else
+        rm -f "$restore_tmp" 2>/dev/null || true
+        printf 'deputy: WARNING — torn BACKLOG: restore failed (%s preserved)\n' "$best" >&2
+      fi
+    else
+      printf 'deputy: WARNING — BACKLOG appears torn but no structurally-valid .bak found\n' >&2
+    fi
+  fi
+
+  # Final cleanup pass — re-glob to catch any .bak created by _backlog_commit's
+  # in-place path during the restore above (backup of the torn BACKLOG, normally
+  # removed by _backlog_commit itself; re-glob is defense-in-depth). We hold
+  # _with_lock so no concurrent write can create legitimate .bak files at this point.
+  for dir in "${dirs[@]}"; do
+    for b in "$dir"/.backlog.tmp.*.bak; do
+      [[ -f "$b" ]] || continue
+      [[ "$b" == "$best" ]] && continue  # preserved: failed restore candidate
+      rm -f "$b" "${b%.bak}" 2>/dev/null || true
+    done
+  done
+}
+
 # #86: one loud, actionable message for an UNRECOVERABLE BACKLOG.md write (stale sandbox
 # bind / read-only file / I/O error). A headless worker must NOT death-loop retrying or
 # debugging this — after a bounded tryout it should write .deputy/<slug>.fail.md (in
@@ -1459,6 +1532,8 @@ _check_main_tree_dirty() {
 
 cmd_recover() {
   _do_recover() {
+    # #94: restore a torn BACKLOG from a leftover .bak before any claim/orphan work.
+    _recover_torn_backlog || true
     local f pid line
     # (1) Dead-claim recovery: reap any claim that is NOT live. _claim_live is #67
     # agent-TTL aware, so a fresh-heartbeat agent claim (dead PID, fresh line-4) is
