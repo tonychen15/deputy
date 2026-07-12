@@ -7,12 +7,12 @@ bash "$DEPUTY" add "Urgent one" --p0
 bash "$DEPUTY" add "Important one" --p2
 
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting|P3|"     "add untagged gets default P3 priority"
-assert_contains "$out" "First task"      "add untagged: description"
-assert_contains "$out" "waiting|P0|"     "add --p0 (has id)"
-assert_contains "$out" "Urgent one"      "add --p0: description"
-assert_contains "$out" "waiting|P2|"     "add --p2 (has id)"
-assert_contains "$out" "Important one"   "add --p2: description"
+assert_contains "$out" "[P3]"        "add untagged gets default P3 priority"
+assert_contains "$out" "First task"  "add untagged: description"
+assert_contains "$out" "[P0]"        "add --p0 (has id)"
+assert_contains "$out" "Urgent one"  "add --p0: description"
+assert_contains "$out" "[P2]"        "add --p2 (has id)"
+assert_contains "$out" "Important one" "add --p2: description"
 
 # Dedup by description (no duplicate even with a different flag).
 bash "$DEPUTY" add "First task" --p1
@@ -24,9 +24,9 @@ assert_eq "$(grep -c 'LEGEND' "$DEPUTY_ROOT/BACKLOG.md")" "1" "legend intact aft
 
 # --p3 and --p4 are valid priority flags.
 bash "$DEPUTY" add "low priority task" --p3
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P3|" "add --p3 accepted"
+assert_contains "$(bash "$DEPUTY" list)" "[P3]" "add --p3 accepted"
 bash "$DEPUTY" add "lowest priority task" --p4
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P4|" "add --p4 accepted"
+assert_contains "$(bash "$DEPUTY" list)" "[P4]" "add --p4 accepted"
 
 # Unknown flags are rejected, not absorbed into the description.
 bash "$DEPUTY" add "real task" --p5 2>/dev/null; rc=$?
@@ -62,17 +62,17 @@ bash "$DEPUTY" add "urgent important" -ui
 bash "$DEPUTY" add "just urgent" -u
 bash "$DEPUTY" add "just important" -i
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting|P0|"     "-ui maps to P0"
+assert_contains "$out" "[P0]"           "-ui maps to P0"
 assert_contains "$out" "urgent important" "-ui: description"
-assert_contains "$out" "waiting|P1|"     "-u maps to P1"
-assert_contains "$out" "just urgent"     "-u: description"
-assert_contains "$out" "waiting|P2|"     "-i maps to P2"
-assert_contains "$out" "just important"  "-i: description"
+assert_contains "$out" "[P1]"           "-u maps to P1"
+assert_contains "$out" "just urgent"    "-u: description"
+assert_contains "$out" "[P2]"           "-i maps to P2"
+assert_contains "$out" "just important" "-i: description"
 
 # Flag may come before or after the text; last priority flag wins.
 bash "$DEPUTY" add -ui "flag first"
 assert_contains "$(bash "$DEPUTY" list)" "flag first" "flag may precede text"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "flag first has P0"
+assert_contains "$(bash "$DEPUTY" list)" "[P0]"        "flag first has P0"
 
 # `--` ends flag parsing so a description can start with a dash.
 bash "$DEPUTY" add -u -- "-5% drop alert"
@@ -113,7 +113,7 @@ printf '@[P0] already running\n' >> "$DEPUTY_ROOT/BACKLOG.md"
 printf '@[P0] already running\n' > "$DEPUTY_ROOT/.deputy/$LIVE.claim"
 DEPUTY_NO_AUTORUN=0 DEPUTY_AUTORUN_CMD="$AUTORUN_MOCK2" \
   bash "$DEPUTY" add "new lower" --p1
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|" "add queues item but does not run when claim exists"
+assert_contains "$(bash "$DEPUTY" list)" "[P1]"        "add queues item but does not run when claim exists"
 assert_contains "$(bash "$DEPUTY" list)" "new lower"   "add queues item description present"
 assert_eq "$(test -f "$AUTORUN_FIRED2" && echo yes || echo no)" "no" \
   "add does not dispatch autorun when live claim exists"

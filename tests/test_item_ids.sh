@@ -68,27 +68,27 @@ bash "$DEPUTY" add "gamma"
 # After add, allocation fires in _do_add. IDs are assigned in file insertion order:
 # alpha(P1)=1, beta(P0)=2, gamma=3  (regroup doesn't affect ID assignment order)
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting|P1|"     "alloc: alpha has an id"
-assert_contains "$out" "waiting|P0|"     "alloc: beta has an id"
-assert_contains "$out" "waiting|P3|"     "alloc: gamma gets default P3"
-assert_contains "$out" "alpha"           "alloc: alpha desc present"
-assert_contains "$out" "beta"            "alloc: beta desc present"
-assert_contains "$out" "waiting|P1|1|alpha" "alloc: alpha gets id 1 (first added)"
-assert_contains "$out" "waiting|P0|2|beta"  "alloc: beta gets id 2 (second added)"
-assert_contains "$out" "waiting|P3|3|gamma" "alloc: gamma gets id 3 with P3 default"
+assert_contains "$out" "[P1]"   "alloc: alpha has an id"
+assert_contains "$out" "[P0]"   "alloc: beta has an id"
+assert_contains "$out" "[P3]"   "alloc: gamma gets default P3"
+assert_contains "$out" "alpha"  "alloc: alpha desc present"
+assert_contains "$out" "beta"   "alloc: beta desc present"
+assert_contains "$out" "[#1][P1] alpha" "alloc: alpha gets id 1 (first added)"
+assert_contains "$out" "[#2][P0] beta"  "alloc: beta gets id 2 (second added)"
+assert_contains "$out" "[#3][P3] gamma" "alloc: gamma gets id 3 with P3 default"
 
 # Second pass is a no-op (ids don't change, new list call same result)
 out2="$(bash "$DEPUTY" list)"
-assert_contains "$out2" "waiting|P1|1|alpha"  "alloc idempotent: alpha still id 1"
-assert_contains "$out2" "waiting|P0|2|beta"   "alloc idempotent: beta still id 2"
+assert_contains "$out2" "[#1][P1] alpha"  "alloc idempotent: alpha still id 1"
+assert_contains "$out2" "[#2][P0] beta"   "alloc idempotent: beta still id 2"
 
 # New add gets max+1
 bash "$DEPUTY" add "delta" --p2
 out3="$(bash "$DEPUTY" list)"
 # delta is P2, so after regroup: beta(P0)=1, alpha(P1)=2, delta(P2)=4 or gamma gets 3
 # Exact ids depend on regroup order. Just check delta has an id > existing max
-assert_contains "$out3" "delta"            "alloc: delta added"
-assert_contains "$out3" "waiting|P2|"      "alloc: delta has id"
+assert_contains "$out3" "delta"   "alloc: delta added"
+assert_contains "$out3" "[P2]"    "alloc: delta has id"
 
 # Done item's ID is not reused: add two, list to allocate, mark first done, add third
 setup_repo
@@ -101,11 +101,11 @@ raw_one="$(bash "$DEPUTY" pick)"
 bash "$DEPUTY" set "$raw_one" done
 bash "$DEPUTY" add "task three"
 out4="$(bash "$DEPUTY" list)"
-assert_contains "$out4" "done|P3|1|task one"     "done item keeps its id 1"
-assert_contains "$out4" "waiting|P3|2|task two"  "task two keeps id 2"
-assert_contains "$out4" "task three"             "task three present"
+assert_contains "$out4" "+[#1][P3] task one"  "done item keeps its id 1"
+assert_contains "$out4" "[#2][P3] task two"   "task two keeps id 2"
+assert_contains "$out4" "task three"          "task three present"
 # task three must have id > 2 (max was 2, so 3)
-assert_contains "$out4" "waiting|P3|3|task three" "new item gets id 3 (not reusing 1)"
+assert_contains "$out4" "[#3][P3] task three" "new item gets id 3 (not reusing 1)"
 
 # Status preserves id across state transitions
 setup_repo
@@ -114,7 +114,7 @@ bash "$DEPUTY" list >/dev/null
 raw="$(bash "$DEPUTY" pick)"
 bash "$DEPUTY" set "$raw" done
 out5="$(bash "$DEPUTY" list)"
-assert_contains "$out5" "done|P0|1|check status" "set done preserves id"
+assert_contains "$out5" "+[#1][P0] check status" "set done preserves id"
 
 # ── Regroup preserves IDs ─────────────────────────────────────────────────────
 setup_repo
@@ -126,8 +126,8 @@ raw_urgent="$(bash "$DEPUTY" pick)"
 bash "$DEPUTY" set "$raw_urgent" done
 out6="$(bash "$DEPUTY" list)"
 # Both items should still have their IDs after regroup
-assert_contains "$out6" "done|P0|"      "regroup: P0 item preserved with id"
-assert_contains "$out6" "waiting|P2|"   "regroup: P2 item preserved with id"
+assert_contains "$out6" "+[#"   "regroup: P0 item preserved with id"
+assert_contains "$out6" "[P2]"  "regroup: P2 item preserved with id"
 assert_contains "$out6" "regroup urgent"   "regroup: urgent desc preserved"
 assert_contains "$out6" "regroup waiting"  "regroup: waiting desc preserved"
 
@@ -140,8 +140,8 @@ bash "$DEPUTY" add "high prio" --p0
 bash "$DEPUTY" list >/dev/null
 out_list="$(bash "$DEPUTY" list)"
 # Verify the IDs so test is aware (insertion-order allocation)
-assert_contains "$out_list" "waiting|P2|1|low prio"  "setup: low prio gets id 1 (added first)"
-assert_contains "$out_list" "waiting|P0|2|high prio" "setup: high prio gets id 2 (added second)"
+assert_contains "$out_list" "[#1][P2] low prio"  "setup: low prio gets id 1 (added first)"
+assert_contains "$out_list" "[#2][P0] high prio" "setup: high prio gets id 2 (added second)"
 
 ORCH="$(mktemp)"
 # $DEPUTY is the full path (set in lib.sh); DEPUTY_ROOT is exported per setup_repo
@@ -159,19 +159,19 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH" ORCH_LOG="$ORCH_LOG" DEPUTY_AVAIL="claude,gemini
 item_ran="$(cat "$ORCH_LOG")"
 # Item 1 (low prio) should have run, not item 2 (high prio)
 assert_contains "$item_ran" "low prio"  "run <id> targeted low-prio item directly"
-assert_contains "$(bash "$DEPUTY" list)" "done|P2|1|low prio"   "run <id> marks targeted item done"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|2|high prio" "run <id> leaves high prio untouched"
+assert_contains "$(bash "$DEPUTY" list)" "+[#1][P2] low prio"  "run <id> marks targeted item done"
+assert_contains "$(bash "$DEPUTY" list)" "[#2][P0] high prio"  "run <id> leaves high prio untouched"
 rm -f "$ORCH_LOG"
 
 # run <id> with leading # (deputy run '#1')
 setup_repo
 bash "$DEPUTY" add "hash id test" --p1
 bash "$DEPUTY" list >/dev/null
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|1|hash id test" "setup: hash id test has id 1"
+assert_contains "$(bash "$DEPUTY" list)" "[#1][P1] hash id test" "setup: hash id test has id 1"
 ORCH_LOG2="$(mktemp)"
 DEPUTY_ORCHESTRATOR_CMD="$ORCH" ORCH_LOG="$ORCH_LOG2" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true \
   bash "$DEPUTY" run '#1' 2>&1 || true
-assert_contains "$(bash "$DEPUTY" list)" "done|P1|1|hash id test" "run '#1' accepted with leading hash"
+assert_contains "$(bash "$DEPUTY" list)" "+[#1][P1] hash id test" "run '#1' accepted with leading hash"
 rm -f "$ORCH_LOG2"
 
 # run <id> unknown → non-zero + message

@@ -25,7 +25,7 @@ printf '#!/bin/bash\nexit 1\n' > "$FAKE_MV_BIN/mv"
 chmod +x "$FAKE_MV_BIN/mv"
 
 item_id_of() {
-  bash "$DEPUTY" list 2>/dev/null | grep -F "$1" | grep -oE '\|[0-9]+\|' | head -1 | tr -d '|'
+  line_id "$(bash "$DEPUTY" list 2>/dev/null | grep -F "$1")"
 }
 
 # ── mktemp failure tests (fake mktemp in PATH) ────────────────────────────────

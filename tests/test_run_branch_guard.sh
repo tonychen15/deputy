@@ -48,7 +48,7 @@ assert_contains "$err_out" "refusing to run" \
 assert_contains "$err_out" "feature/my-work" \
   "feature branch: current branch name in message"
 # Item must still be waiting (no work done)
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" \
+assert_contains "$(bash "$DEPUTY" list)" "[P0]" \
   "feature branch: item stays waiting (not claimed)"
 # No claim file created
 assert_eq "$(ls "$REPO_A/.deputy/"*.claim 2>/dev/null | wc -l | tr -d ' ')" "0" \
@@ -66,7 +66,7 @@ out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude,gemini" \
   bash "$DEPUTY" run --once 2>&1)"; rc=$?
 
 assert_eq "$rc" "0" "default branch: deputy run exits 0"
-assert_contains "$(bash "$DEPUTY" list)" "done|P0|" \
+assert_contains "$(bash "$DEPUTY" list)" "+[#" \
   "default branch: item driven to done"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ out="$(DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_ORCHESTRATOR_CMD="$ORCH" \
   bash "$DEPUTY" run --once 2>&1)"; rc=$?
 
 assert_eq "$rc" "0" "escape hatch: deputy run exits 0 on feature branch"
-assert_contains "$(bash "$DEPUTY" list)" "done|P0|" \
+assert_contains "$(bash "$DEPUTY" list)" "+[#" \
   "escape hatch: item driven to done"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude,gemini" \
   bash "$DEPUTY" run --once 2>&1)"; rc=$?
 
 assert_eq "$rc" "0" "non-git dir: deputy run exits 0"
-assert_contains "$(bash "$DEPUTY" list)" "done|P0|" \
+assert_contains "$(bash "$DEPUTY" list)" "+[#" \
   "non-git dir: item driven to done"
 
 # ─────────────────────────────────────────────────────────────────────────────

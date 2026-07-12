@@ -23,7 +23,7 @@ make_autorun_mock() {  # touches $1 when invoked
 }
 
 marker_count() { ls "$DEPUTY_ROOT/.deputy"/proposed-* 2>/dev/null | wc -l | tr -d ' '; }
-proposal_id() { bash "$DEPUTY" list --surfaced | grep -F "$1" | head -1 | cut -d'|' -f3; }
+proposal_id() { line_id "$(bash "$DEPUTY" list --surfaced | grep -F "$1" | head -1)"; }
 
 # ── Test 1: worker add → surfaced + id + marker, NO autorun, "proposed" message ──
 setup_repo
@@ -34,7 +34,7 @@ out="$(DEPUTY_GUARDED=1 DEPUTY_ACTIVE_RUN_PID=$WPID DEPUTY_NO_AUTORUN=0 DEPUTY_A
         bash "$DEPUTY" add "worker found a bug" --p2)"
 assert_contains "$out" "proposed" "worker add reports a proposal"
 lst="$(bash "$DEPUTY" list)"
-assert_contains "$lst" "surfaced|P2|" "worker add lands surfaced (not waiting)"
+assert_contains "$lst" "?[#"          "worker add lands surfaced (not waiting)"
 assert_contains "$lst" "worker found a bug" "proposal description present"
 pid_id="$(proposal_id "worker found a bug")"
 assert_eq "$([[ "$pid_id" =~ ^[0-9]+$ ]] && echo yes || echo no)" "yes" "proposal has a numeric id"
@@ -47,7 +47,7 @@ rm -f "$MOCK"; kill "$WPID" 2>/dev/null
 setup_repo
 FIRED="$DEPUTY_ROOT/.autorun.fired"; MOCK="$(make_autorun_mock "$FIRED")"
 DEPUTY_NO_AUTORUN=0 DEPUTY_AUTORUN_CMD="$MOCK" bash "$DEPUTY" add "human task" --p1
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|" "human add lands waiting"
+assert_contains "$(bash "$DEPUTY" list)" "[P1]"        "human add lands waiting"
 assert_eq "$(test -f "$FIRED" && echo yes || echo no)" "yes" "human add DOES autorun"
 assert_eq "$(marker_count)" "0" "human add writes no proposal marker"
 rm -f "$MOCK"
@@ -60,7 +60,7 @@ write_active_lock "$DEPUTY_ROOT" "$WPID" "$(proc_start "$WPID")"
 DEPUTY_GUARDED=1 DEPUTY_ACTIVE_RUN_PID=$WPID DEPUTY_NOTIFY_SYNC=1 \
   bash "$DEPUTY" add "notify path task" --p2
 kill "$WPID" 2>/dev/null
-assert_contains "$(bash "$DEPUTY" list)" "surfaced|P2|" "worker add with notify enabled (sync) still proposes"
+assert_contains "$(bash "$DEPUTY" list)" "?[#"          "worker add with notify enabled (sync) still proposes"
 assert_contains "$(bash "$DEPUTY" list)" "notify path task" "notify-enabled proposal description present"
 assert_eq "$(marker_count)" "1" "notify-enabled worker add writes exactly one marker"
 
@@ -70,7 +70,7 @@ sleep 0.1 & DEADPID=$!; wait "$DEADPID" 2>/dev/null   # a guaranteed-dead, just-
 FIRED="$DEPUTY_ROOT/.autorun.fired"; MOCK="$(make_autorun_mock "$FIRED")"
 DEPUTY_GUARDED=1 DEPUTY_ACTIVE_RUN_PID=$DEADPID DEPUTY_NO_AUTORUN=0 DEPUTY_AUTORUN_CMD="$MOCK" \
   bash "$DEPUTY" add "stale env task" --p2
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P2|" "stale worker env does not gate (waiting)"
+assert_contains "$(bash "$DEPUTY" list)" "[P2]"        "stale worker env does not gate (waiting)"
 assert_eq "$(marker_count)" "0" "stale env: no marker"
 assert_eq "$(test -f "$FIRED" && echo yes || echo no)" "yes" "stale env autoruns like a human add"
 rm -f "$MOCK"
@@ -82,7 +82,7 @@ write_active_lock "$DEPUTY_ROOT" "$WPID" "$(proc_start "$WPID")"
 FIRED="$DEPUTY_ROOT/.autorun.fired"; MOCK="$(make_autorun_mock "$FIRED")"
 DEPUTY_GUARDED=1 DEPUTY_ACTIVE_RUN_PID=123456 DEPUTY_NO_AUTORUN=0 DEPUTY_AUTORUN_CMD="$MOCK" \
   bash "$DEPUTY" add "pid mismatch task" --p2
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P2|" "pid mismatch is not worker context (waiting)"
+assert_contains "$(bash "$DEPUTY" list)" "[P2]"        "pid mismatch is not worker context (waiting)"
 assert_eq "$(marker_count)" "0" "pid mismatch: no marker"
 assert_eq "$(test -f "$FIRED" && echo yes || echo no)" "yes" "pid mismatch autoruns like a human add"
 rm -f "$MOCK"; kill "$WPID" 2>/dev/null
@@ -99,7 +99,7 @@ assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/proposed-$aid" && echo yes || echo no
   "approve-me: marker EXISTS before approve (precondition)"
 aln="$(grep -F "approve me" "$DEPUTY_ROOT/BACKLOG.md")"
 bash "$DEPUTY" set "$aln" waiting >/dev/null
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P2|" "approved proposal -> waiting"
+assert_contains "$(bash "$DEPUTY" list)" "[P2]"        "approved proposal -> waiting"
 assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/proposed-$aid" && echo yes || echo no)" "no" \
   "approve removes the proposal marker"
 
@@ -142,8 +142,8 @@ assert_eq "$bcount" "1" "surfaced item without an id counts as blocking"
 setup_repo
 bash "$DEPUTY" add "rm blocker" --p1
 bash "$DEPUTY" add "ready item 60" --p2
-bid="$(bash "$DEPUTY" list | grep -F 'rm blocker' | cut -d'|' -f3)"
-rid="$(bash "$DEPUTY" list | grep -F 'ready item 60' | cut -d'|' -f3)"
+bid="$(line_id "$(bash "$DEPUTY" list | grep -F 'rm blocker')")"
+rid="$(line_id "$(bash "$DEPUTY" list | grep -F 'ready item 60')")"
 bash "$DEPUTY" set "$bid" surfaced >/dev/null              # genuine blocked surface (no marker)
 bash "$DEPUTY" set "$rid" surfaced --ready-merge >/dev/null
 assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/ready-merge-$rid" && echo yes || echo no)" "yes" \
@@ -159,7 +159,7 @@ assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/ready-merge-$rid" && echo yes || echo
 # item is cleaned in a terminal state — the defensive net for id reuse.)
 setup_repo
 bash "$DEPUTY" add "done item 60" --p2
-did="$(bash "$DEPUTY" list | grep -F 'done item 60' | cut -d'|' -f3)"
+did="$(line_id "$(bash "$DEPUTY" list | grep -F 'done item 60')")"
 bash "$DEPUTY" set "$did" done >/dev/null
 touch "$DEPUTY_ROOT/.deputy/ready-merge-$did"      # simulate a stale marker
 bash "$DEPUTY" clean "$did" >/dev/null
@@ -169,7 +169,7 @@ assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/ready-merge-$did" && echo yes || echo
 # ── Test 9: clean removes a (leaked) proposal marker on both paths ───────────────
 setup_repo
 bash "$DEPUTY" add "to clean by id" --p2
-cid="$(bash "$DEPUTY" list | grep -F "to clean by id" | cut -d'|' -f3)"
+cid="$(line_id "$(bash "$DEPUTY" list | grep -F 'to clean by id')")"
 cln="$(grep -F "to clean by id" "$DEPUTY_ROOT/BACKLOG.md")"
 bash "$DEPUTY" set "$cln" cancelled >/dev/null
 touch "$DEPUTY_ROOT/.deputy/proposed-$cid"        # simulate a leaked marker
@@ -179,7 +179,7 @@ assert_eq "$(test -f "$DEPUTY_ROOT/.deputy/proposed-$cid" && echo yes || echo no
 
 setup_repo
 bash "$DEPUTY" add "to clean by state" --p2
-sid="$(bash "$DEPUTY" list | grep -F "to clean by state" | cut -d'|' -f3)"
+sid="$(line_id "$(bash "$DEPUTY" list | grep -F 'to clean by state')")"
 sln="$(grep -F "to clean by state" "$DEPUTY_ROOT/BACKLOG.md")"
 bash "$DEPUTY" set "$sln" cancelled >/dev/null
 touch "$DEPUTY_ROOT/.deputy/proposed-$sid"

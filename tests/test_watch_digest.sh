@@ -6,7 +6,7 @@ source "$(dirname "$0")/lib.sh"
 _add_surfaced() {
   local desc="$1" qtext="${2:-}"
   DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" add "$desc" --p2 >/dev/null
-  id="$(bash "$DEPUTY" list | grep -F "$desc" | cut -d'|' -f3)"
+  id="$(line_id "$(bash "$DEPUTY" list | grep -F "$desc")")"
   bash "$DEPUTY" set "$id" surfaced >/dev/null 2>&1
   if [[ -n "$qtext" ]]; then
     # Real orchestrator convention (SKILL.md): '<desc>-<id>' (id suffix), not '<id>-<desc>'.
@@ -67,7 +67,7 @@ fi
 # 5: proposal surfaces ARE shown, labeled 'proposed', with approve/reject tips
 setup_repo
 DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" add "epsilon proposal item" --p2 >/dev/null
-pid5="$(bash "$DEPUTY" list | grep -F "epsilon proposal item" | cut -d'|' -f3)"
+pid5="$(line_id "$(bash "$DEPUTY" list | grep -F "epsilon proposal item")")"
 bash "$DEPUTY" set "$pid5" surfaced >/dev/null 2>&1
 mkdir -p "$DEPUTY_ROOT/.deputy"
 printf 'proposed-by-run-pid: 0\nitem: epsilon proposal item\n' > "$DEPUTY_ROOT/.deputy/proposed-$pid5"
@@ -79,7 +79,7 @@ assert_contains "$out5" "approve:"              "watch --once: proposal shows ap
 # 5b: ready-merge surfaces ARE shown, labeled 'ready to merge', with a merge command
 setup_repo
 DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" add "zeta merge item" --p2 >/dev/null
-mid="$(bash "$DEPUTY" list | grep -F "zeta merge item" | cut -d'|' -f3)"
+mid="$(line_id "$(bash "$DEPUTY" list | grep -F "zeta merge item")")"
 bash "$DEPUTY" set "$mid" surfaced >/dev/null 2>&1
 mkdir -p "$DEPUTY_ROOT/.deputy"
 printf 'ready-merge-at: t\nbranch ready for human merge-review\n' > "$DEPUTY_ROOT/.deputy/ready-merge-$mid"
@@ -98,7 +98,7 @@ assert_contains "$out6" "nothing to watch" "watch --once: empty queue exits with
 for conv in "prefix" "legacy-suffix" "legacy-prefix"; do
   setup_repo
   DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" add "zeta $conv item" --p2 >/dev/null
-  zid="$(bash "$DEPUTY" list | grep -F "zeta $conv item" | cut -d'|' -f3)"
+  zid="$(line_id "$(bash "$DEPUTY" list | grep -F "zeta $conv item")")"
   bash "$DEPUTY" set "$zid" surfaced >/dev/null 2>&1
   base="$(printf '%s' "zeta-$conv-item-$zid" | tr -cs 'a-zA-Z0-9' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')"
   case "$conv" in

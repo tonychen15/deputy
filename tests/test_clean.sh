@@ -7,18 +7,18 @@ printf '%s\n' '[P0] active one' 'second waiting' '#[P1] finished thing' '%[P2] c
 # --- dry-run lists the untouched (waiting) items but changes nothing ---
 out="$(bash "$DEPUTY" clean --dry-run)"
 assert_contains "$out" "would remove 2" "dry-run counts untouched (waiting) items"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "dry-run leaves the file intact"
+assert_contains "$(bash "$DEPUTY" list)" "[P0]"        "dry-run leaves the file intact"
 assert_contains "$(bash "$DEPUTY" list)" "active one"  "dry-run leaves active one"
 
 # --- real clean removes untouched (waiting), keeps everything deputy has touched ---
 bash "$DEPUTY" clean
 out="$(bash "$DEPUTY" list)"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'active one\|second waiting')" "0" "clean removed the untouched items"
-assert_contains "$out" "done|P1|"           "clean keeps done items"
+assert_contains "$out" "+[#"                "clean keeps done items"
 assert_contains "$out" "finished thing"     "clean keeps done item description"
-assert_contains "$out" "cancelled|P2|"      "clean keeps cancelled items"
+assert_contains "$out" "%[#"               "clean keeps cancelled items"
 assert_contains "$out" "cancelled thing"    "clean keeps cancelled item description"
-assert_contains "$out" "failed|P1|"         "clean keeps failed items"
+assert_contains "$out" "![#"               "clean keeps failed items"
 assert_contains "$out" "broken thing"       "clean keeps failed item description"
 
 # --- legend/header survives ---
@@ -89,7 +89,7 @@ assert_contains "$out" "keep one"   "IDs/content preserved: keep one present"
 assert_contains "$out" "keep three" "IDs/content preserved: keep three present"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'done two')" "0" "done item removed"
 # IDs should still be numeric (allocated)
-assert_contains "$out" "|1|" "IDs still allocated after --state clean"
+assert_contains "$out" "[#1]" "IDs still allocated after --state clean"
 assert_eq "$(grep -c 'LEGEND' "$DEPUTY_ROOT/BACKLOG.md")" "1" "--state clean preserves legend/## Items header"
 
 # --- no consecutive blank lines after --state clean ---
@@ -198,7 +198,7 @@ bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" release 2.0.0 >/dev/null 2>&1
 bash "$DEPUTY" add "post release item" --p1 >/dev/null
 bash "$DEPUTY" set "$(lof 'post release item')" done >/dev/null
-id_pre="$(bash "$DEPUTY" list | grep 'pre release item' | grep -oP '\|\K[0-9]+(?=\|)')"
+id_pre="$(line_id "$(bash "$DEPUTY" list | grep 'pre release item')")"
 bash "$DEPUTY" clean "$id_pre"
 assert_eq "$(grep -cE '^<!-- release v2.0.0' "$DEPUTY_ROOT/BACKLOG.md")" "0" "trailing-bucket: delimiter stripped when released bucket is emptied"
 assert_contains "$(bash "$DEPUTY" list)" "post release item" "trailing-bucket: post-release item preserved"
@@ -214,7 +214,7 @@ bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" release 3.0.0 >/dev/null 2>&1
 bash "$DEPUTY" add "post release item" --p1 >/dev/null
 bash "$DEPUTY" set "$(lof 'post release item')" done >/dev/null
-id_post="$(bash "$DEPUTY" list | grep 'post release item' | grep -oP '\|\K[0-9]+(?=\|)')"
+id_post="$(line_id "$(bash "$DEPUTY" list | grep 'post release item')")"
 bash "$DEPUTY" clean "$id_post"
 assert_eq "$(grep -cE '^<!-- release v3.0.0' "$DEPUTY_ROOT/BACKLOG.md")" "1" "delimiter preserved when items remain below it"
 assert_contains "$(bash "$DEPUTY" list)" "pre release item" "pre-release item preserved"
@@ -239,13 +239,13 @@ assert_eq "$(grep -c '<!-- arbitrary comment -->' "$DEPUTY_ROOT/BACKLOG.md")" "1
 # unified grammar: bare '<state>' cleans that state; '#<id>' cleans one item.
 setup_repo
 bash "$DEPUTY" add "clean-bare done item" >/dev/null
-cid="$(bash "$DEPUTY" list | grep -F 'clean-bare done item' | cut -d'|' -f3)"
+cid="$(line_id "$(bash "$DEPUTY" list | grep -F 'clean-bare done item')")"
 bash "$DEPUTY" set "#$cid" done
 bash "$DEPUTY" clean done
 assert_eq "$(grep -c 'clean-bare done item' "$DEPUTY_ROOT/BACKLOG.md")" "0" "clean <state> bare positional removes that state"
 
 setup_repo
 bash "$DEPUTY" add "clean-by-id hash item" >/dev/null
-cid2="$(bash "$DEPUTY" list | grep -F 'clean-by-id hash item' | cut -d'|' -f3)"
+cid2="$(line_id "$(bash "$DEPUTY" list | grep -F 'clean-by-id hash item')")"
 bash "$DEPUTY" clean "#$cid2"
 assert_eq "$(grep -c 'clean-by-id hash item' "$DEPUTY_ROOT/BACKLOG.md")" "0" "clean #<id> removes one item by id"

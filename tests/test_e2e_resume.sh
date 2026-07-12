@@ -157,7 +157,7 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH2" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bi
 
 # 1. Item is now done in BACKLOG
 LIST_OUT="$(bash "$DEPUTY" list)"
-assert_contains "$LIST_OUT" "done|"               "item reached done state"
+assert_contains "$LIST_OUT" "+[#"                 "item reached done state"
 assert_contains "$LIST_OUT" "two step e2e task"   "done item description preserved"
 
 # 2. Waypoint shows task completed with both steps succeeded

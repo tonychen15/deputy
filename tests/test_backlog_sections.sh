@@ -104,8 +104,8 @@ setup_repo
 } >> "$DEPUTY_ROOT/BACKLOG.md"
 # read path: old symbols parse to the right states
 out="$(bash "$DEPUTY" list 2>&1)"
-assert_contains "$out" "done|P0|1|legacy done"         "dual-read: old '#' parses as done"
-assert_contains "$out" "deferred|P3|2|legacy deferred" "dual-read: old '>' parses as deferred"
+assert_contains "$out" "+[#1][P0] legacy done"         "dual-read: old '#' parses as done"
+assert_contains "$out" ";[#2][P3] legacy deferred"     "dual-read: old '>' parses as deferred"
 # trigger a regroup, then assert the file now uses the NEW symbols
 bash "$DEPUTY" set "$(grep -F 'plain waiting' "$DEPUTY_ROOT/BACKLOG.md" | head -1)" running >/dev/null
 # #62: legacy lines were written old-order ([Pn][#N]); on migrate-regroup they re-serialize

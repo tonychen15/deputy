@@ -288,11 +288,14 @@ cmd_list() {
     esac
   done
   _with_lock _allocate_ids
-  local raw parsed count=0
+  local raw parsed count=0 _ls _lp _li _ld _lrest
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     [[ -n "$filter" && "${parsed%%|*}" != "$filter" ]] && continue
-    printf '%s\n' "$parsed"
+    _ls="${parsed%%|*}"; _lrest="${parsed#*|}"
+    _lp="${_lrest%%|*}"; _lrest="${_lrest#*|}"
+    _li="${_lrest%%|*}"; _ld="${_lrest#*|}"
+    printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
     count=$(( count + 1 ))
   done < <(_each_item)
   [[ -n "$filter" && "$count" -eq 0 ]] && printf '0 tasks in %s state\n' "$filter"

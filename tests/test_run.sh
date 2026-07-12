@@ -13,7 +13,7 @@ chmod +x "$ORCH"
 
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true \
   bash "$DEPUTY" run --once 2>&1)"
-assert_contains "$(bash "$DEPUTY" list)" "done|P0|"     "run drove orchestrator to done"
+assert_contains "$(bash "$DEPUTY" list)" "+[#"          "run drove orchestrator to done"
 assert_contains "$(bash "$DEPUTY" list)" "do a thing"   "run: item description preserved"
 assert_eq "$(ls "$DEPUTY_ROOT"/.deputy/*.claim 2>/dev/null | wc -l | tr -d ' ')" "0" "no stale claim left"
 
@@ -26,7 +26,7 @@ setup_repo
 bash "$DEPUTY" add "later" --p1
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="gemini" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run --once 2>&1)"; rc=$?
 assert_eq "$rc" "0" "run exits 0 when claude unavailable"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|" "item stays waiting when claude down"
+assert_contains "$(bash "$DEPUTY" list)" "[P1]"        "item stays waiting when claude down"
 assert_contains "$(bash "$DEPUTY" list)" "later"       "item 'later' stays waiting"
 
 # --- session limit (quota) stops the cycle, reverts item, uses always-on heartbeat for retry ---
@@ -53,7 +53,7 @@ EOF
 chmod +x "$FAKE"
 out="$(DEPUTY_ORCHESTRATOR_CMD="$LIMIT" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB="$FAKE" bash "$DEPUTY" run 2>&1)"
 assert_contains "$out" "session limit" "run reports the session limit"
-assert_eq "$(bash "$DEPUTY" list | grep -c 'waiting|P0')" "2" "both items remain waiting (first reverted, second never started)"
+assert_eq "$(bash "$DEPUTY" list | grep -c '^\[#')" "2" "both items remain waiting (first reverted, second never started)"
 # Always-on model: do NOT reschedule the shared cron line for quota.
 # The fixed heartbeat retries; quota is a per-task skip (no cron line written).
 assert_eq "$(grep -c 'deputy' "$STORE")" "0" "always-on: session limit does NOT reschedule cron (heartbeat handles retry)"
@@ -65,29 +65,29 @@ mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=1\n' > "$DEPUTY_ROOT/.deputy/
 bash "$DEPUTY" add "one" --p0
 bash "$DEPUTY" add "two" --p0
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
-assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "1" "max_items=1 processes exactly one item"
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "the second item is left for the next cycle"
+assert_eq "$(bash "$DEPUTY" list | grep -c '^+\[#')" "1" "max_items=1 processes exactly one item"
+assert_contains "$(bash "$DEPUTY" list)" "[P0]"        "the second item is left for the next cycle"
 assert_contains "$(bash "$DEPUTY" list)" "two"         "item 'two' is left for the next cycle"
 
 # --- #60: max_items defaults to 1 when unset (one tick = one item) ---
 setup_repo
 bash "$DEPUTY" add "a" --p0; bash "$DEPUTY" add "b" --p0
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
-assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "1" "unset max_items defaults to 1 (not unlimited)"
+assert_eq "$(bash "$DEPUTY" list | grep -c '^+\[#')" "1" "unset max_items defaults to 1 (not unlimited)"
 
 # --- #60: max_items=0 clamps to 1 (NO unbounded drain) ---
 setup_repo
 mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=0\n' > "$DEPUTY_ROOT/.deputy/config"
 bash "$DEPUTY" add "x" --p0; bash "$DEPUTY" add "y" --p0; bash "$DEPUTY" add "z" --p0
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
-assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "1" "max_items=0 clamps to 1 (no unbounded drain)"
+assert_eq "$(bash "$DEPUTY" list | grep -c '^+\[#')" "1" "max_items=0 clamps to 1 (no unbounded drain)"
 
 # --- #60: an explicit max_items=N still processes up to N ---
 setup_repo
 mkdir -p "$DEPUTY_ROOT/.deputy"; printf 'max_items=2\n' > "$DEPUTY_ROOT/.deputy/config"
 bash "$DEPUTY" add "p" --p0; bash "$DEPUTY" add "q" --p0; bash "$DEPUTY" add "r" --p0
 out="$(DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL="claude" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run 2>&1)"
-assert_eq "$(bash "$DEPUTY" list | grep -c 'done|P0')" "2" "explicit max_items=2 processes up to 2"
+assert_eq "$(bash "$DEPUTY" list | grep -c '^+\[#')" "2" "explicit max_items=2 processes up to 2"
 
 rm -f "$ORCH"
 

@@ -6,9 +6,9 @@ setup_repo
 # ── Parse / serialize ────────────────────────────────────────────────────────
 printf '%s\n' '^[P0] paused urgent' '^plain paused' >> "$DEPUTY_ROOT/BACKLOG.md"
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "paused|P0|"    "paused P0 has state+prio"
+assert_contains "$out" "^[#"           "paused P0 has state+prio"
 assert_contains "$out" "paused urgent" "paused P0 description"
-assert_contains "$out" "paused|P3|"    "paused untagged gets P3 default"
+assert_contains "$out" "[P3]"          "paused untagged gets P3 default"
 assert_contains "$out" "plain paused"  "paused untagged description"
 
 ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3" "$4"; }
@@ -52,7 +52,7 @@ paused_line="$(bash "$DEPUTY" pick)"   # ^[P0][#1] paused work
 sleep 300 & LIVE=$!
 bash "$DEPUTY" claim "$paused_line" --pid "$LIVE"; rc=$?
 assert_eq "$rc" "0" "claim from paused state succeeds"
-assert_contains "$(bash "$DEPUTY" list)" "running|P0|" "claimed paused item is running"
+assert_contains "$(bash "$DEPUTY" list)" "@[#"          "claimed paused item is running"
 assert_contains "$(bash "$DEPUTY" list)" "paused work"  "claimed paused item description"
 kill "$LIVE" 2>/dev/null
 
@@ -61,11 +61,11 @@ setup_repo
 printf '%s\n' '^[P0] checkpoint pause' '^[P1] another pause' '[P2] waiting' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" recover
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "paused|P0|"       "recover preserves paused P0"
+assert_contains "$out" "^[#"              "recover preserves paused P0"
 assert_contains "$out" "checkpoint pause" "recover preserves paused P0 description"
-assert_contains "$out" "paused|P1|"       "recover preserves paused P1"
+assert_contains "$out" "[P1]"             "recover preserves paused P1"
 assert_contains "$out" "another pause"    "recover preserves paused P1 description"
-assert_contains "$out" "waiting|P2|"      "recover leaves waiting intact"
+assert_contains "$out" "[P2]"             "recover leaves waiting intact"
 assert_contains "$out" "waiting"          "recover leaves waiting description intact"
 
 # ── cmd_set can transition to/from paused ─────────────────────────────────────
@@ -74,11 +74,11 @@ bash "$DEPUTY" add "future job" --p1
 bash "$DEPUTY" list >/dev/null
 future_line="$(bash "$DEPUTY" pick)"   # [P1][#1] future job
 bash "$DEPUTY" set "$future_line" paused
-assert_contains "$(bash "$DEPUTY" list)" "paused|P1|"  "set waiting→paused"
+assert_contains "$(bash "$DEPUTY" list)" "^[#"         "set waiting→paused"
 assert_contains "$(bash "$DEPUTY" list)" "future job"  "set waiting→paused description"
 paused_future="$(grep 'future job' "$DEPUTY_ROOT/BACKLOG.md")"
 bash "$DEPUTY" set "$paused_future" waiting
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|" "set paused→waiting"
+assert_contains "$(bash "$DEPUTY" list)" "[P1]"        "set paused→waiting"
 assert_contains "$(bash "$DEPUTY" list)" "future job"  "set paused→waiting description"
 
 # ── cmd_add: ^ prefix in description is rejected ─────────────────────────────
