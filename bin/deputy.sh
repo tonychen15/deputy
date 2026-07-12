@@ -3306,7 +3306,7 @@ _watch_beep() {
 
 # Print the quiescence digest: one entry per surfaced (non-proposal, non-ready-merge) item.
 _watch_digest() {
-  local _wd_raw _wd_p _wd_state _wd_rest _wd_prio _wd_id _wd_desc _wd_slug _wd_qf _wd_first _wd_any=0
+  local _wd_raw _wd_p _wd_state _wd_rest _wd_prio _wd_id _wd_desc _wd_cand _wd_qf _wd_first _wd_any=0
   printf '\ndeputy: batch quiescent — surfaced items need your attention:\n'
   while IFS= read -r _wd_raw; do
     _wd_p="$(_parse_item "$_wd_raw")"; _wd_state="${_wd_p%%|*}"
@@ -3319,9 +3319,16 @@ _watch_digest() {
     [[ -n "$_wd_prio" ]] && _wd_hdr="${_wd_hdr} [${_wd_prio}]"
     printf '\n  %s %s\n' "$_wd_hdr" "$_wd_desc"
     if [[ "$_wd_id" =~ ^[0-9]+$ ]]; then
-      _wd_slug="$(_wp_slug "$_wd_id" "$_wd_desc")"
-      _wd_qf="$(_trail_path questions "$_wd_slug")"
-      if [[ -f "$_wd_qf" ]]; then
+      # The slug is orchestrator-chosen, so the questions file may use either the
+      # interactive orchestrator's '<desc>-<id>' (suffix) convention or the runner's
+      # _wp_slug '<id>-<desc>' (prefix) convention. Match BOTH under .deputy/questions/
+      # (#70), then legacy flat .deputy/*.questions.md. First match wins.
+      _wd_qf=""
+      for _wd_cand in "$STATE_DIR"/questions/*-"$_wd_id".md "$STATE_DIR"/questions/"$_wd_id"-*.md \
+                      "$STATE_DIR"/*-"$_wd_id".questions.md "$STATE_DIR"/"$_wd_id"-*.questions.md; do
+        [[ -f "$_wd_cand" ]] && { _wd_qf="$_wd_cand"; break; }
+      done
+      if [[ -n "$_wd_qf" ]]; then
         _wd_first="$(head -1 "$_wd_qf" 2>/dev/null || true)"
         printf '    questions: %s\n' "$_wd_qf"
         [[ -n "$_wd_first" ]] && printf '    summary:   %s\n' "$_wd_first"

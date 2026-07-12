@@ -9,7 +9,8 @@ _add_surfaced() {
   id="$(bash "$DEPUTY" list | grep -F "$desc" | cut -d'|' -f3)"
   bash "$DEPUTY" set "$id" surfaced >/dev/null 2>&1
   if [[ -n "$qtext" ]]; then
-    local slug; slug="$(printf '%s' "${id}-${desc}" | tr -cs 'a-zA-Z0-9' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')"
+    # Real orchestrator convention (SKILL.md): '<desc>-<id>' (id suffix), not '<id>-<desc>'.
+    local slug; slug="$(printf '%s' "${desc}-${id}" | tr -cs 'a-zA-Z0-9' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')"
     slug="${slug:0:64}"
     mkdir -p "$DEPUTY_ROOT/.deputy/questions"
     printf '%s\n' "$qtext" > "$DEPUTY_ROOT/.deputy/questions/${slug}.md"
@@ -79,3 +80,20 @@ assert_contains "$out5" "nothing to watch" "watch --once: proposal surfaces don'
 setup_repo
 out6="$(bash "$DEPUTY" watch --once 2>&1)"
 assert_contains "$out6" "nothing to watch" "watch --once: empty queue exits with nothing-to-watch"
+
+# 7: digest resolves the questions file across ALL lookup conventions (not just <desc>-<id>).
+#    Covers: <id>-<desc> (runner _wp_slug prefix), and legacy flat .deputy/<*>.questions.md.
+for conv in "prefix" "legacy-suffix" "legacy-prefix"; do
+  setup_repo
+  DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" add "zeta $conv item" --p2 >/dev/null
+  zid="$(bash "$DEPUTY" list | grep -F "zeta $conv item" | cut -d'|' -f3)"
+  bash "$DEPUTY" set "$zid" surfaced >/dev/null 2>&1
+  base="$(printf '%s' "zeta-$conv-item-$zid" | tr -cs 'a-zA-Z0-9' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')"
+  case "$conv" in
+    prefix)        mkdir -p "$DEPUTY_ROOT/.deputy/questions"; printf 'MARKER-%s\n' "$conv" > "$DEPUTY_ROOT/.deputy/questions/${zid}-zeta-prefix-item.md" ;;
+    legacy-suffix) printf 'MARKER-%s\n' "$conv" > "$DEPUTY_ROOT/.deputy/${base}.questions.md" ;;
+    legacy-prefix) printf 'MARKER-%s\n' "$conv" > "$DEPUTY_ROOT/.deputy/${zid}-zeta-legacy.questions.md" ;;
+  esac
+  outc="$(bash "$DEPUTY" watch --once 2>&1)"
+  assert_contains "$outc" "MARKER-$conv" "digest resolves questions file via $conv convention"
+done
