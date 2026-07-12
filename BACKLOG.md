@@ -15,7 +15,7 @@
 ### Surfaced (0)
 
 ### Waiting (1)
-[P2] if 'deputy list <state>' has 0 task to show, it still need to dispay '0 task in <state> state'
+[#81][P2] if 'deputy list <state>' has 0 task to show, it still need to dispay '0 task in <state> state'
 
 ### Paused (0)
 
