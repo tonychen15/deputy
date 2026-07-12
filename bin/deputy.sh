@@ -1672,7 +1672,8 @@ commands:
                                   decides: a state word sets state, 'p0'..'p4' sets priority.
                                   e.g. `deputy set #50 done`, `deputy set #50 p0`. Explicit
                                   `set state #50 done` / `set prio #50 p0` forms also accepted.
-  cron --ensure|--remove|--reschedule "<text>"|status   manage the safety-net schedule
+  cron ensure|remove|reschedule "<text>"|status   manage the safety-net schedule
+                                  (legacy --ensure/--remove/--reschedule also accepted)
   clean [#<id>|<state>] [--dry-run]
                                   remove items matching the filter:
                                     #<id>          clean one item by id (bare integer also accepted)
@@ -1938,8 +1939,10 @@ _set_cron() {
 }
 
 cmd_cron() {
+  # #88: bare subcommands (ensure|remove|reschedule|status) are canonical; the legacy
+  # '--ensure'/'--remove'/'--reschedule' flag forms remain as back-compat aliases.
   case "${1:-}" in
-    --ensure)
+    ensure|--ensure)
       mkdir -p "$STATE_DIR" 2>/dev/null || true
       : > "$STATE_DIR/cron.enabled"
       # Read heartbeat_mins from config; validate integer in 1–59; default 10.
@@ -1950,8 +1953,8 @@ cmd_cron() {
         _set_cron "*/10 * * * *"
       fi
       ;;
-    --remove)     rm -f "$STATE_DIR/cron.enabled" 2>/dev/null || true; _set_cron "" ;;
-    --reschedule) local h; h="$(_parse_reset_hour "${2:-}")"
+    remove|--remove)     rm -f "$STATE_DIR/cron.enabled" 2>/dev/null || true; _set_cron "" ;;
+    reschedule|--reschedule) local h; h="$(_parse_reset_hour "${2:-}")"
                   if [[ -n "$h" ]]; then _set_cron "0 $h * * *"
                   else _set_cron "0 */2 * * *"; fi ;;
     status)
@@ -1982,7 +1985,7 @@ cmd_cron() {
       fi
       printf 'enabled:  %s\nschedule: %s\nlast run: %s\n' "$enabled" "$schedule" "$last_run"
       ;;
-    *) printf 'deputy: cron needs --ensure|--remove|--reschedule "<text>"|status\n' >&2; return 2 ;;
+    *) printf 'deputy: cron needs ensure|remove|reschedule "<text>"|status (legacy --ensure/--remove/--reschedule also accepted)\n' >&2; return 2 ;;
   esac
 }
 

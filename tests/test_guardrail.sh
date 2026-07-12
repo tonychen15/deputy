@@ -84,6 +84,11 @@ assert_eq "$(bash_cmd 'deputy cron status')" "0" "deputy cron status allowed (re
 assert_eq "$(bash_cmd 'deputy cron status; deputy cron --remove')" "2" "chained status then remove denied"
 assert_eq "$(bash_cmd 'deputy cron --reschedule x; deputy cron --remove')" "2" "chained reschedule then remove denied"
 assert_eq "$(bash_cmd 'deputy cron --reschedule x --ensure')" "2" "reschedule+ensure in one segment denied"
+# #88: bare subcommands — ensure/remove blocked, reschedule/status allowed (same policy as --flags)
+assert_eq "$(bash_cmd 'deputy cron ensure')" "2" "bare 'cron ensure' denied"
+assert_eq "$(bash_cmd 'deputy cron remove')" "2" "bare 'cron remove' denied"
+assert_eq "$(bash_cmd 'deputy cron reschedule \"5pm reset\"')" "0" "bare 'cron reschedule' allowed (quota failover)"
+assert_eq "$(bash_cmd 'deputy cron reschedule x; deputy cron remove')" "2" "chained bare reschedule then remove denied"
 assert_eq "$(bash_cmd 'echo ok && git push')" "2" "chained git push denied"
 
 # --- benign Bash → allow (exit 0) ---

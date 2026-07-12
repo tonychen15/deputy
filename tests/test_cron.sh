@@ -42,6 +42,14 @@ bash "$DEPUTY" cron --remove; rc=$?
 assert_eq "$rc" "0" "remove exits 0"
 assert_eq "$(grep -c "deputy\[$ROOT_A\]" "$STORE" 2>/dev/null || true)" "0" "remove deletes entry for this repo"
 
+# ── #88: bare subcommands (ensure|remove|reschedule) match the --flag aliases ──
+bash "$DEPUTY" cron ensure
+assert_eq "$(grep -c "deputy\[$ROOT_A\]" "$STORE")" "1" "bare 'cron ensure' installs the entry"
+bash "$DEPUTY" cron reschedule "resets 11pm"
+assert_contains "$(cat "$STORE")" "0 23 " "bare 'cron reschedule' parses the hour"
+bash "$DEPUTY" cron remove
+assert_eq "$(grep -c "deputy\[$ROOT_A\]" "$STORE" 2>/dev/null || true)" "0" "bare 'cron remove' deletes the entry"
+
 # ── Test 6: multi-repo — ensure for repo A, then repo B, both markers preserved ──
 : > "$STORE"
 ROOT_B="$(mktemp -d)"
