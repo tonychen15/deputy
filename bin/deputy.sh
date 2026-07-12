@@ -1701,6 +1701,7 @@ config keys (.deputy/config):
   waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
   startup_fail_strikes=N          consecutive spawns that die before any waypoint progress before the startup-crash circuit-breaker SURFACES the item (default 3)
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
+  watchdog_mins=N                 hard-cap a headless worker that makes NO waypoint progress for N min: surface the item + kill the worker (a hung/looping worker can't burn tokens or hold the slot). Default 45; set 0 to disable
   auto_merge=1                    allow a spawned (headless) worker to git-merge its branch to the default branch; default 0 = the guardrail blocks the merge and the worker must surface the branch for human review
   delete_merged_branch=1          after a successful wt-remove following a clean merge, delete the local deputy/<slug> branch (uses 'git branch -d', merged-only safe delete, NEVER -D/-f); default 0 = leave the branch for manual cleanup
   notify_on_spawn=0               silence the notification + cron.log '===SPAWN===' line emitted when the heartbeat autonomously spawns a worker; default 1 = announce every autonomous pickup (never silent)
@@ -2503,6 +2504,69 @@ _render_stream() {
   ' 2>/dev/null
 }
 
+# #87: newest FILE mtime (epoch) under THIS item's waypoint dir — the worker "real progress"
+# signal. Each `deputy commit` UPDATES waypoint.json (advancing its mtime), so this rises on
+# every committed step. Scoped to the running item (matched by id across both slug
+# conventions) so an unrelated `deputy start` elsewhere can't reset a hung worker's timer.
+# NOTE: the waypoints DIR mtime does NOT rise on an in-place file update, so dir-mtime would
+# miss per-step progress; the run log updates even during a death-loop, so it is not a
+# progress signal either. Empty output = no waypoint yet (counts as no-progress).
+_wp_progress_stamp() {
+  local id="$1" d
+  for d in "$STATE_DIR"/waypoints/*-"$id" "$STATE_DIR"/waypoints/"$id"-*; do
+    [[ -d "$d" ]] && { find "$d" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1; return 0; }
+  done
+  return 0
+}
+
+# #87: on a watchdog trip — surface the hung item (fires the notify + shows in `deputy
+# watch`), write a diagnosis note, then stop the worker group: SIGTERM, a short grace so an
+# in-flight (ms-long) BACKLOG write can finish, then SIGKILL. cmd_run's normal post-run
+# handling (retry budget / circuit-breaker) still runs afterward on the returned non-zero rc.
+_watchdog_trip() {
+  local wpid="$1" item="$2" cap="$3" id slug note
+  id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  printf 'deputy: WATCHDOG — no waypoint progress in %s min; surfacing #%s and stopping the worker.\n' "$cap" "${id:-?}" >&2
+  if [[ "$id" =~ ^[0-9]+$ ]]; then
+    slug="$(_wp_slug "$id" "watchdog timeout")"; note="$(_trail_path questions "$slug")"
+    mkdir -p "$(dirname "$note")" 2>/dev/null || true
+    printf 'WATCHDOG TIMEOUT (#87): no waypoint progress for %s min — the worker was killed as a suspected hang. Check the run log (%s/logs/%s.log), then resume via /deputy or resolve as appropriate.\n' "$cap" "$STATE_DIR" "$id" > "$note" 2>/dev/null || true
+  fi
+  # Surface BEFORE the kill, so the state flips while the worker still holds 'running'.
+  cmd_set "$item" surfaced >/dev/null 2>&1 || true
+  kill -TERM -- "-$wpid" 2>/dev/null || true
+  sleep "${DEPUTY_WATCHDOG_GRACE_SECS:-5}"
+  kill -0 "$wpid" 2>/dev/null && kill -KILL -- "-$wpid" 2>/dev/null || true
+}
+
+# #87: background watchdog for a headless worker. Trips if there is NO waypoint progress (a
+# committed step) for watchdog_mins (default 45; set 0 to disable) — surfacing the item and
+# stopping the worker so a hung/looping worker can't burn tokens or hold the slot forever.
+# Runs as a deputy child OUTSIDE the worker's pgroup so `kill -- -$wpid` hits only the worker.
+# Test seams: DEPUTY_WATCHDOG_SECS overrides the cap (seconds); DEPUTY_WATCHDOG_POLL_SECS the poll.
+_run_watchdog() {
+  local wpid="$1" item="$2" cap poll cap_secs last ref now cur id
+  id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  cap="$(_config_get watchdog_mins)"; cap="${cap:-45}"
+  [[ "$cap" =~ ^[0-9]+$ ]] || cap=45
+  cap_secs="${DEPUTY_WATCHDOG_SECS:-$(( cap * 60 ))}"
+  [[ "$cap_secs" =~ ^[0-9]+$ && "$cap_secs" -gt 0 ]] || return 0   # 0 / invalid → disabled
+  poll="${DEPUTY_WATCHDOG_POLL_SECS:-30}"
+  last="$(date +%s)"; ref="$(_wp_progress_stamp "$id")"
+  while kill -0 "$wpid" 2>/dev/null; do
+    sleep "$poll"
+    cur="$(_wp_progress_stamp "$id")"
+    if [[ "$cur" != "$ref" ]]; then ref="$cur"; last="$(date +%s)"; continue; fi
+    now="$(date +%s)"
+    if (( now - last >= cap_secs )); then
+      cur="$(_wp_progress_stamp "$id")"; if [[ "$cur" != "$ref" ]]; then ref="$cur"; last="$now"; continue; fi
+      kill -0 "$wpid" 2>/dev/null || return 0
+      _watchdog_trip "$wpid" "$item" "$cap"
+      return 0
+    fi
+  done
+}
+
 _run_orchestrator_logged() {
   local item="$1" provider="$2" log="$3" rc _had_e=0
   [[ $- == *e* ]] && _had_e=1
@@ -2524,7 +2588,11 @@ _run_orchestrator_logged() {
     set -m
     _spawn_orchestrator "$item" "$provider" >"$log" 2>&1 &
     local wpid=$!
+    # #87: background watchdog — kills a no-waypoint-progress worker + surfaces it.
+    local _wdpid=""; _run_watchdog "$wpid" "$item" & _wdpid=$!
     wait "$wpid"; rc=$?
+    # Stop the watchdog (no-op if it already tripped and exited): kill its process + group.
+    [[ -n "$_wdpid" ]] && { kill "$_wdpid" 2>/dev/null; kill -- -"$_wdpid" 2>/dev/null; wait "$_wdpid" 2>/dev/null; }
     [[ "$wpid" =~ ^[0-9]+$ && "$wpid" != "$_self_pgid" ]] && kill -TERM -- "-$wpid" 2>/dev/null
     [[ "$_had_m" -eq 1 ]] || set +m
     cat "$log"
