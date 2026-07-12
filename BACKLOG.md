@@ -10,13 +10,13 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[#78][P2] if a scheduled task needs human's input, deputy should expose its output for three minutes and give three consecutive beeps before deputy puts it into surfaced state.
 
 ### Surfaced (0)
 
-### Waiting (2)
+### Waiting (1)
 [#77][P4] Opt-in auto-delete of the merged deputy/<slug> branch after a SUCCESSFUL merge to the default branch. TODAY: deputy wt-remove only tears down the .deputy/wt worktree; the deputy/<slug> BRANCH is never deleted (git doesn't delete branches on merge/worktree-remove, and 'git branch -d/-D' is a guardrailed confirm/block op), so merged deputy/* branches accumulate and must be pruned by hand. PROPOSAL: after the safe merge path succeeds (interactive OR auto_merge=1: git merge --no-ff deputy/<slug> into a clean default branch, then deputy done), optionally run 'git branch -d deputy/<slug>' (merged-only safe delete, NEVER -D/-f) to clean up. STRICT CONSTRAINTS: gate behind a NEW opt-in config key (default OFF) e.g. delete_merged_branch=0; delete ONLY on the clean-merge success path — NEVER on the surfaced/ready-merge, merge-blocked (dirty/wrong-branch), or conflict-abort paths, where the branch IS the unreviewed deliverable / recovery record and must survive; LOCAL branch only, never touch the remote; never auto-push. SCOPE: add the config key + call-site default; add the delete step to SKILL.md step 9c/d success path only; decide how the guardrail treats this specific merged-only delete (currently hooks/guardrail.sh flags 'git branch -d' — either add a narrow allowlist for the post-merge cleanup under DEPUTY_GUARDED with the config on, or keep it human-confirmed); tests: branch deleted after clean merge with key on, branch PRESERVED on surface/abort/conflict and when key off. GRILL: config key name + default (off for safety); guardrail exception vs keep-confirmed; interaction with #2 (parallel worktrees) and whether cleanup should also prune stale UNMERGED branches (NO — out of scope, unsafe); should it also delete on a headless run that later gets human-merged (no — deputy only owns the branch during its own merge).
-[#78][P2] if a scheduled task needs human's input, deputy should expose its output for three minutes and give three consecutive beeps before deputy puts it into surfaced state.
 
 ### Paused (0)
 
