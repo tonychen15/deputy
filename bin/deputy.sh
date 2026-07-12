@@ -266,10 +266,15 @@ cmd_list() {
   # ('deputy list waiting'), '--state <state>', or the shorthand '--<state>'
   # ('deputy list --waiting'). Bare 'deputy list' lists all. (Unified arg grammar:
   # a bare state word is a state; ids are never listed here.)
-  local filter="" arg s
+  # --porcelain emits stable machine-readable 'state|prio|id|desc' per line;
+  # desc is the raw remainder after the 3rd pipe (may itself contain '|').
+  # prio and id are empty strings when unset. Composes with all state filters.
+  local filter="" porcelain=0 arg s
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
+      --porcelain)
+        porcelain=1; shift ;;
       --state=*)
         s="${arg#--state=}"
         if _valid_state "$s"; then filter="$s"; shift
@@ -281,7 +286,7 @@ cmd_list() {
       --*)
         s="${arg#--}"
         if _valid_state "$s"; then filter="$s"; shift
-        else printf 'deputy: list: unknown state filter: %s\n' "$arg" >&2; return 2; fi ;;
+        else printf 'deputy: list: unknown flag: %s\n' "$arg" >&2; return 2; fi ;;
       *)
         if _valid_state "$arg"; then filter="$arg"; shift
         else printf 'deputy: list: unexpected argument: %s (want a <state> or --<state>)\n' "$arg" >&2; return 2; fi ;;
@@ -295,10 +300,15 @@ cmd_list() {
     _ls="${parsed%%|*}"; _lrest="${parsed#*|}"
     _lp="${_lrest%%|*}"; _lrest="${_lrest#*|}"
     _li="${_lrest%%|*}"; _ld="${_lrest#*|}"
-    printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
+    if [[ "$porcelain" -eq 1 ]]; then
+      printf '%s|%s|%s|%s\n' "$_ls" "$_lp" "$_li" "$_ld"
+    else
+      printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
+    fi
     count=$(( count + 1 ))
   done < <(_each_item)
-  [[ -n "$filter" && "$count" -eq 0 ]] && printf '0 tasks in %s state\n' "$filter"
+  [[ -n "$filter" && "$count" -eq 0 && "$porcelain" -eq 0 ]] && printf '0 tasks in %s state\n' "$filter"
+  return 0
 }
 
 # Run a function while holding an exclusive lock on LOCK_FILE (short-held).
@@ -1653,10 +1663,15 @@ commands:
                                   no flag → default priority P3 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
-  list [<state>]                  print items in BACKLOG.md format (e.g. '@[#1][P0] desc');
+  list [<state>] [--porcelain]    print items in BACKLOG.md format (e.g. '@[#1][P0] desc');
                                   optional state filter — bare '<state>' (e.g. 'deputy list
                                   waiting'), '--state <state>', or '--<state>' shorthand;
-                                  no arg lists all
+                                  no arg lists all.
+                                  --porcelain: emit stable machine-readable output instead —
+                                  one 'state|prio|id|desc' line per item (desc is the raw
+                                  remainder after the 3rd pipe and may itself contain '|';
+                                  prio and id are empty strings when unset); composes with
+                                  all state filters; use 'cut -d"|" -f4-' to extract desc
   status                          counts by state
   watch [--once]                  passive monitor: live-tails a running worker; on quiescence
                                   (runnable→0, items surfaced) beeps 3× + prints a resume digest
