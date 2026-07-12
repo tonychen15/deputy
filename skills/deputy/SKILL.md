@@ -101,6 +101,10 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    c. Merge: `git merge --no-ff deputy/<slug>` (from repo root, already confirmed on default branch + clean).
    d. On merge failure: run `git merge --abort`, write the conflict details to `.deputy/<slug>.questions.md`, `deputy set "<item-line>" surfaced`, then **`deputy wt-remove`** (do **not** call `deputy done`; the `deputy/<slug>` branch keeps its commits for manual resolution).
    Then: `deputy done <slug>` → `deputy set "<item-line>" done` → `deputy wt-remove`.
+   If `delete_merged_branch=1` is set, `deputy wt-remove` will also delete the local
+   `deputy/<slug>` branch (uses `git branch -d`, merged-only safe delete). This only
+   fires on the clean-merge success path — on surface/abort/conflict paths the branch is
+   unmerged so the delete is silently skipped.
    **Never auto-push** to the remote — pushing is the user's decision.
 
 **Failover (quota/rate-limit):** not a failure — route the *coding* to **Codex**

@@ -1652,6 +1652,7 @@ config keys (.deputy/config):
   startup_fail_strikes=N          consecutive spawns that die before any waypoint progress before the startup-crash circuit-breaker SURFACES the item (default 3)
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
   auto_merge=1                    allow a spawned (headless) worker to git-merge its branch to the default branch; default 0 = the guardrail blocks the merge and the worker must surface the branch for human review
+  delete_merged_branch=1          after a successful wt-remove following a clean merge, delete the local deputy/<slug> branch (uses 'git branch -d', merged-only safe delete, NEVER -D/-f); default 0 = leave the branch for manual cleanup
   notify_on_spawn=0               silence the notification + cron.log '===SPAWN===' line emitted when the heartbeat autonomously spawns a worker; default 1 = announce every autonomous pickup (never silent)
   sandbox=0                       disable the bwrap read-only sandbox around the headless worker (default 1 = repo code is OS-read-only to the worker, only .deputy/+BACKLOG.md+worktree writable); 0 falls back to cwd-pinning only
   auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
@@ -1974,8 +1975,29 @@ _wt_create() {
 _wt_remove() {
   _do_wt_remove() {
     local wt; wt="$(_wt_path)"
-    [[ -e "$wt" ]] && git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || true
+    # Capture branch name before removing (needed for optional post-merge cleanup).
+    local branch=""
+    [[ -e "$wt" ]] && branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" || true
+    # Remove the worktree; track success so branch cleanup is never attempted on failure.
+    local removed=0
+    if [[ -e "$wt" ]]; then
+      git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null && removed=1 || true
+    fi
     git -C "$ROOT" worktree prune 2>/dev/null || true
+    # Opt-in cleanup: delete the merged deputy/<slug> branch when configured.
+    # Safety: uses 'git branch -d' (merged-only, never -D/-f) — fails silently when
+    # the branch is NOT merged (surface/abort/conflict paths). Also guards that $ROOT
+    # is not itself on a deputy/* branch (invariant: after a clean merge, $ROOT is on
+    # the default branch; this guard catches out-of-order manual calls).
+    local del_cfg; del_cfg="$(_config_get delete_merged_branch)"
+    if [[ "${del_cfg:-0}" == "1" && "$removed" == "1" && "$branch" == deputy/* ]]; then
+      local cur_br; cur_br="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+      if [[ "$cur_br" != deputy/* ]]; then
+        git -C "$ROOT" branch -d "$branch" 2>/dev/null \
+          && printf 'deputy: deleted merged branch %s\n' "$branch" >&2 \
+          || true
+      fi
+    fi
   }
   _with_lock _do_wt_remove
 }
