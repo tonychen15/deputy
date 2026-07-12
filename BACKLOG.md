@@ -10,10 +10,10 @@
 
 ## Items
 
-### Running (1)
-@[#87][P2] RUNNER WATCHDOG backstop (split from #86): hard-cap a headless worker that makes NO waypoint progress for a bounded time and reap it, so a hung/looping worker can't burn tokens or hold the active-run claim indefinitely — independent of whether the agent obeys the SKILL fail-fast guidance (#86 CLI+SKILL landed; this is the enforcement layer that doesn't rely on agent cooperation). TODAY deputy only WARNS (orphan_warn_mins) and time_cap_mins is referenced in SKILL/help but NOT enforced as a hard per-worker cap. DESIGN/GRILL: no-progress detection (waypoint.json / logs mtime unchanged for N min) rather than a flat timeout, so legitimately-long single steps aren't killed; where to enforce (cmd_run waits on _spawn_orchestrator synchronously — could background it + monitor progress, or wrap with a smart timeout that resets on waypoint commits); default cap + config key; on trip: reap the worker tree, then 'deputy recover' the item (surface for a human) rather than silently retry; must also reap bwrap/claude descendants (ties to #58 worker reaping). Motivated by #82: a worker death-looped ~34 min on an unrecoverable BACKLOG write with no hard cap to stop it.
+### Running (0)
 
-### Surfaced (0)
+### Surfaced (1)
+?[#87][P2] RUNNER WATCHDOG backstop (split from #86): hard-cap a headless worker that makes NO waypoint progress for a bounded time and reap it, so a hung/looping worker can't burn tokens or hold the active-run claim indefinitely — independent of whether the agent obeys the SKILL fail-fast guidance (#86 CLI+SKILL landed; this is the enforcement layer that doesn't rely on agent cooperation). TODAY deputy only WARNS (orphan_warn_mins) and time_cap_mins is referenced in SKILL/help but NOT enforced as a hard per-worker cap. DESIGN/GRILL: no-progress detection (waypoint.json / logs mtime unchanged for N min) rather than a flat timeout, so legitimately-long single steps aren't killed; where to enforce (cmd_run waits on _spawn_orchestrator synchronously — could background it + monitor progress, or wrap with a smart timeout that resets on waypoint commits); default cap + config key; on trip: reap the worker tree, then 'deputy recover' the item (surface for a human) rather than silently retry; must also reap bwrap/claude descendants (ties to #58 worker reaping). Motivated by #82: a worker death-looped ~34 min on an unrecoverable BACKLOG write with no hard cap to stop it.
 
 ### Waiting (3)
 [#83][P3] when 'deputy add' command is executed successfully, deputy should show the added task's id as 'deputy: added #<id>: xxxxx'
