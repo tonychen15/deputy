@@ -15,7 +15,8 @@
 
 ### Surfaced (0)
 
-### Waiting (0)
+### Waiting (1)
+[P3] when 'deputy add' command is executed successfully, deputy should show the added task's id as 'deputy: added #<id>: xxxxx'
 
 ### Paused (0)
 
