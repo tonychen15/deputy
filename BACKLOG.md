@@ -24,8 +24,7 @@
 ;[#2][P2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 ;[#1][P2] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
 
-### Failed / Cancelled / Duplicate (1)
-=[#78][P2] if a scheduled task needs human's input, deputy should expose its output for three minutes and give three consecutive beeps before deputy puts it into surfaced state.
+### Failed / Cancelled / Duplicate (0)
 
 ### Done (70)
 <!-- release v1.3.3 — 2026-07-12 -->
