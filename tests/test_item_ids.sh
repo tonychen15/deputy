@@ -65,8 +65,8 @@ setup_repo
 bash "$DEPUTY" add "alpha" --p1
 bash "$DEPUTY" add "beta"  --p0
 bash "$DEPUTY" add "gamma"
-# After add, allocation fires in _do_add. IDs are assigned in file insertion order:
-# alpha(P1)=1, beta(P0)=2, gamma=3  (regroup doesn't affect ID assignment order)
+# IDs are eagerly assigned in _do_add (insertion order); each add returns #N immediately:
+# alpha(P1)=1, beta(P0)=2, gamma(P3)=3  (regroup doesn't affect ID assignment order)
 out="$(bash "$DEPUTY" list)"
 assert_contains "$out" "waiting|P1|"     "alloc: alpha has an id"
 assert_contains "$out" "waiting|P0|"     "alloc: beta has an id"
@@ -85,18 +85,28 @@ assert_contains "$out2" "waiting|P0|2|beta"   "alloc idempotent: beta still id 2
 # New add gets max+1
 bash "$DEPUTY" add "delta" --p2
 out3="$(bash "$DEPUTY" list)"
-# delta is P2, so after regroup: beta(P0)=1, alpha(P1)=2, delta(P2)=4 or gamma gets 3
-# Exact ids depend on regroup order. Just check delta has an id > existing max
+# delta is eagerly assigned id 4 (alpha=1, beta=2, gamma=3 already assigned)
 assert_contains "$out3" "delta"            "alloc: delta added"
 assert_contains "$out3" "waiting|P2|"      "alloc: delta has id"
 
-# Done item's ID is not reused: add two, list to allocate, mark first done, add third
+# ── deputy add output: 'deputy: added #<id>: <text>' ────────────────────────
+setup_repo
+out_add="$(DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" add "brand new item" --p2)"
+assert_contains "$out_add" "added #" "add output includes 'added #'"
+assert_contains "$out_add" "brand new item" "add output includes description"
+# Extract the id from 'deputy: added #N: ...'
+_test_id="${out_add#*#}"; _test_id="${_test_id%%:*}"
+assert_eq "$([[ "$_test_id" =~ ^[0-9]+$ ]] && echo yes || echo no)" "yes" "add output has numeric id"
+# Item is persisted immediately with the id (no list call needed to allocate)
+assert_contains "$(cat "$DEPUTY_ROOT/BACKLOG.md")" "[#${_test_id}]" "item persisted with id immediately on add"
+assert_contains "$(DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" list)" "waiting|P2|${_test_id}|brand new item" "list confirms id and state"
+
+# Done item's ID is not reused: add two, mark first done, add third
 setup_repo
 bash "$DEPUTY" add "task one"
 bash "$DEPUTY" add "task two"
-# list to allocate ids (task one gets id 1, task two gets id 2 — no regroup since both untagged)
+# IDs are eagerly assigned: task one = [#1], task two = [#2] (assigned on add, no list needed)
 bash "$DEPUTY" list >/dev/null
-# after alloc: task one = [#1], task two = [#2]
 raw_one="$(bash "$DEPUTY" pick)"
 bash "$DEPUTY" set "$raw_one" done
 bash "$DEPUTY" add "task three"
@@ -135,9 +145,8 @@ assert_contains "$out6" "regroup waiting"  "regroup: waiting desc preserved"
 setup_repo
 bash "$DEPUTY" add "low prio"  --p2
 bash "$DEPUTY" add "high prio" --p0
-# IDs assigned in file/insertion order: low prio=1, high prio=2
-# (add(high prio) calls _allocate_ids which assigns low prio=1, then list gives high prio=2)
-bash "$DEPUTY" list >/dev/null
+# IDs eagerly assigned on add: low prio=1, high prio=2
+bash "$DEPUTY" list >/dev/null  # no-op for IDs (already assigned); runs for safety
 out_list="$(bash "$DEPUTY" list)"
 # Verify the IDs so test is aware (insertion-order allocation)
 assert_contains "$out_list" "waiting|P2|1|low prio"  "setup: low prio gets id 1 (added first)"

@@ -880,8 +880,12 @@ cmd_add() {
       printf 'deputy: proposed (awaiting human approval, #%s): %s\n' "$_nid" "$text"
       return 0
     fi
-    _append_item "$(_serialize_item waiting "$prio" "" "$text")" || return 1
-    printf 'deputy: added: %s\n' "$text"
+    # Eagerly assign the id (so the output can name it), applying the P3 default now,
+    # exactly as _allocate_ids would for an un-prioritized item.
+    local _nid _pprio; _nid="$(_next_id)"; _pprio="${prio:-P3}"
+    [[ "$_nid" =~ ^[0-9]+$ ]] || { printf 'deputy: id allocation failed\n' >&2; return 1; }
+    _append_item "$(_serialize_item waiting "$_pprio" "$_nid" "$text")" || return 1
+    printf 'deputy: added #%s: %s\n' "$_nid" "$text"
   }
   local _add_rc=0
   _with_lock _do_add || _add_rc=$?
