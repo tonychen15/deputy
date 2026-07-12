@@ -10,10 +10,10 @@
 
 ## Items
 
-### Running (1)
-@[#91][P3] add one more option for list command. Now, 'deputy list <state>' will list all items which are in <state>. I want to add 'deputy list #<id>' to only list the task with id as <id>
+### Running (0)
 
-### Surfaced (2)
+### Surfaced (3)
+?[#91][P3] add one more option for list command. Now, 'deputy list <state>' will list all items which are in <state>. I want to add 'deputy list #<id>' to only list the task with id as <id>
 ?[#90][P3] Clarify + natively bridge deputy's autonomy controls — the 'auto' naming is confusing and there's no wiring from a user's autonomy intent to headless workers. Three overlapping concepts today: (a) the interactive Claude terminal's auto-mode (ephemeral Claude Code session state, INVISIBLE to headless workers), (b) '.deputy/config auto_merge' (headless+orchestrator merge autonomy: 1=auto-merge, 0=surface for review), (c) '.deputy/config auto_mode' (ONLY the no-peer-reviewer xReview self-review fallback). Users reasonably expect 'auto mode on -> headless auto-merges without waiting', but headless workers read ONLY .deputy/config, so nothing bridges it. SCOPE/GRILL: (1) rename/document to kill the auto_mode-vs-auto_merge collision (auto_mode is misleadingly named for a reviewer-fallback knob — consider e.g. self_review_when_no_peer); (2) add a 'deputy config <key> <value>' SETTER — today 'deputy config' only READS, so toggling autonomy requires hand-editing .deputy/config; (3) consider a single documented autonomy switch; (4) document in help/README/SKILL that a spawned headless worker's autonomy comes ONLY from .deputy/config, never from the interactive session's auto-mode. NOTE: push is NEVER automatic regardless — auto_merge governs only the LOCAL merge. Ref: standing rule terminal-auto-mode ON<->auto_merge=1, OFF<->auto_merge=0.
 ?[#95][P2] GUARDRAIL HARDENING: the risky-op guardrail (hooks/guardrail.sh) only matches when the command is the FIRST token, so shell-valid prefixes bypass EVERY pattern — 'DEPUTY_ROOT=/tmp deputy cron remove', 'X=1 git push', 'command git branch -D', 'env rm -rf ...'. Systemic (affects git push, rm -rf, git branch -d/-f, crontab, cron ensure/remove, etc.), pre-existing (surfaced by codex during #82 + #88 reviews). FIX: normalize ONCE in _norm (or a shared prefix-strip) — strip leading 'VAR=val ' env-assignments and 'command'/'env' wrappers before pattern-matching, so all deny patterns become prefix-resistant. GRILL: exact prefix grammar (env-assignments, command/env, builtins like 'exec'); keep it from over-stripping legit args; add tests per bypass form for a few representative patterns. Ref: #82/#88 guardrail reviews.
 
