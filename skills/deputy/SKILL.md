@@ -91,16 +91,19 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
      The runner will execute the higher-priority item next, then resume this one.
 9. When `deputy resume <slug>` returns empty (all steps succeeded):
    **Merge into the local default branch** (safe-only):
-   **#60 — autonomous runs SURFACE, they do not auto-merge.** FIRST, before any merge: if
-   `DEPUTY_HEADLESS=1` (a spawned/cron worker) **and** `deputy config auto_merge` is not `1`,
-   do **NOT** `git merge` — the guardrail blocks it anyway. Instead write *"branch
+   **#60/#97 — a headless worker NEVER merges; it surfaces ready-merge and the RUNNER merges.**
+   FIRST, before any merge: if `DEPUTY_HEADLESS=1` (a spawned/cron worker), do **NOT** `git
+   merge` **regardless of `auto_merge`** — you physically can't: the #64 bwrap sandbox makes the
+   repo code read-only to you, so a merge into the main tree fails. Instead write *"branch
    `deputy/<slug>` READY FOR MERGE REVIEW — merge: `git checkout <default-branch> && git merge
    --no-ff deputy/<slug>`"* to `.deputy/<slug>.questions.md`, run `deputy set "<item-line>"
    surfaced --ready-merge` (the `--ready-merge` marker keeps it out of the blocking-surfaced
-   count, like a proposal), then **`deputy wt-remove`** and STOP — do **not** call `deputy
-   done`; a human reviews the `deputy/<slug>` branch and merges. Only an interactive/
-   human-supervised run (no `DEPUTY_HEADLESS=1`) **or** `auto_merge=1` proceeds to the
-   safe-merge below.
+   count, like a proposal), then **`deputy wt-remove`** and STOP — do **not** call `deputy done`.
+   What happens next: if `auto_merge=1`, the **unsandboxed runner** (`cmd_run`, #97) merges the
+   `deputy/<slug>` branch into the default branch after you exit (clean tree + on default branch),
+   marks the item done, and cleans up; if `auto_merge=0`, a human reviews + merges. Only an
+   **interactive/human-supervised** run (no `DEPUTY_HEADLESS=1`, so not sandboxed) proceeds to the
+   safe-merge below itself.
    a. Detect the default branch using this sequence: `git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||'`; if empty, check if local `main` exists (`git show-ref --quiet refs/heads/main`), then `master`; last resort: `git config init.defaultBranch`.
    b. Check main-tree readiness from the repo root: `git status --porcelain -- . ':!BACKLOG.md' ':!.deputy'` (dirty, excluding deputy-owned files?) and `git rev-parse --abbrev-ref HEAD` (current branch?).
       - **Proceed** only if the main tree is **clean** (no uncommitted changes outside `BACKLOG.md` and `.deputy/`) **and already on the default branch**. `BACKLOG.md` and `.deputy/` are deputy-owned and self-committed by the runner — their transient state must not block the merge.

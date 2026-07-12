@@ -1169,7 +1169,11 @@ cmd_set() {
     # never sees a 'surfaced' item without its marker (no blocking-count race window).
     if [[ "$_id" =~ ^[0-9]+$ ]]; then
       if [[ "$_eff_state" == "surfaced" && "$_ready_merge" == "1" ]]; then
-        printf 'ready-merge-at: %s\nbranch ready for human merge-review\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
+        # Record the EXACT branch (#97) so the runner's auto-merge never has to guess it from
+        # a slug glob: at ready-merge time the worker is still on .deputy/wt's deputy/<slug>.
+        local _rm_br; _rm_br="$(git -C "$(_wt_path)" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        { printf 'ready-merge-at: %s\nbranch ready for human merge-review\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          [[ "$_rm_br" == deputy/* ]] && printf 'branch: %s\n' "$_rm_br"; } > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
       elif [[ "$_eff_state" != "surfaced" ]]; then
         rm -f "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
       fi
@@ -2607,6 +2611,57 @@ _run_orchestrator_logged() {
   return "$rc"
 }
 
+# #97: runner-side auto-merge (runs UNSANDBOXED, in cmd_run). A headless worker surfaces its
+# branch as ready-merge — it CAN'T merge, because the #64 bwrap sandbox makes the repo code
+# read-only to it (a `git merge` into the main tree would fail). So the runner does the merge
+# here after the worker returns. No-op unless ALL hold: auto_merge=1, a .deputy/ready-merge-<id>
+# marker exists (so a *blocking* surface without the marker is never merged), the main tree is
+# on the default branch, and it is clean (excluding the deputy-owned BACKLOG.md/.deputy). On a
+# clean merge: item→done, markers cleared, opt-in branch delete. On conflict: abort + leave
+# surfaced with a note. Never pushes.
+# Returns 0 whenever a MERGE HAPPENED — item marked done (cleanup done), OR merged-but-the
+# done-write-failed (marker kept for retry) — so the caller skips retry-budget/failure handling
+# and never fails an already-merged item. Returns 1 only when NO merge occurred (no-op / skip
+# / conflict-aborted).
+_auto_merge_ready() {
+  local item="$1" id marker branch def cur
+  id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  [[ "$(_config_get auto_merge)" == "1" ]] || return 1
+  marker="$STATE_DIR/ready-merge-$id"
+  [[ -f "$marker" ]] || return 1                       # not ready (blocking surface / not applicable)
+  # Use the EXACT branch recorded in the marker at surface time — never guess from a slug
+  # glob (an id can appear in another item's slug). No recorded branch → don't auto-merge.
+  branch="$(sed -n 's/^branch: //p' "$marker" 2>/dev/null | head -1)"
+  [[ "$branch" == deputy/* ]] || { printf 'deputy: auto_merge: no branch recorded in marker for #%s — left surfaced\n' "$id" >&2; return 1; }
+  git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || { printf 'deputy: auto_merge: branch %s missing for #%s — left surfaced\n' "$branch" "$id" >&2; return 1; }
+  def="$(_default_branch)"; cur="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  [[ -n "$def" && "$cur" == "$def" ]] || { printf 'deputy: auto_merge: not on default branch (%s) — #%s left surfaced\n' "$cur" "$id" >&2; return 1; }
+  [[ -z "$(git -C "$ROOT" status --porcelain -- . ':!BACKLOG.md' ':!.deputy' 2>/dev/null)" ]] || { printf 'deputy: auto_merge: main tree dirty — #%s left surfaced\n' "$id" >&2; return 1; }
+  if ! git -C "$ROOT" merge --no-ff "$branch" -m "deputy: auto-merge $branch (#$id)" >/dev/null 2>&1; then
+    git -C "$ROOT" merge --abort 2>/dev/null || true
+    printf 'deputy: auto_merge: %s conflicts with %s — aborted; #%s left surfaced for manual merge\n' "$branch" "$def" "$id" >&2
+    local note; note="$(_trail_path questions "${branch#deputy/}")"; mkdir -p "$(dirname "$note")" 2>/dev/null || true
+    printf 'AUTO-MERGE CONFLICT (#97): %s does not merge cleanly into %s. Resolve manually: git checkout %s && git merge --no-ff %s\n' "$branch" "$def" "$def" "$branch" >> "$note" 2>/dev/null || true
+    return 1
+  fi
+  # Merge succeeded. Only clear the marker + delete the branch if the done-write succeeds,
+  # so a failed BACKLOG write leaves the marker for a retry rather than a lost item.
+  local cur_line; cur_line="$(grep -F "[#$id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+  if [[ -n "$cur_line" ]] && cmd_set "$cur_line" done >/dev/null 2>&1; then
+    rm -f "$marker" "$STATE_DIR/proposed-$id" 2>/dev/null || true
+    if [[ "$(_config_get delete_merged_branch)" == "1" ]] && git -C "$ROOT" merge-base --is-ancestor "$branch" HEAD 2>/dev/null; then
+      git -C "$ROOT" branch -d "$branch" >/dev/null 2>&1 || true
+    fi
+    printf 'deputy: auto-merged %s into %s — #%s done\n' "$branch" "$def" "$id" >&2
+    return 0
+  fi
+  # Merge HAPPENED but the done-write failed: keep the marker (so it's visible/retryable) and
+  # still return 0 — the item must NOT fall through to retry-budget handling and be failed.
+  printf 'deputy: auto_merge: merged %s but failed to mark #%s done — marker kept; resolve manually\n' "$branch" "$id" >&2
+  return 0
+}
+
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
 # If an integer <id> is given (deputy run <id> or deputy run '#<id>'), run that
 # specific item bypassing priority, then return (targeted = one item only).
@@ -2723,6 +2778,7 @@ cmd_run() {
       _active_run_release
       return 0
     fi
+    { [[ "$rc" -eq 0 ]] && _auto_merge_ready "$running_line"; } || true   # #97: runner merges ready-merge branch when auto_merge=1 (rc==0 only)
     _archive_run_log "$running_line" "$log"
     _active_run_release
     return 0
@@ -2836,6 +2892,16 @@ cmd_run() {
       else
         _spawnfail_reset "$_rb_id"   # progressed / clean exit / has a waypoint → reset the breaker
       fi
+    fi
+    # #97: runner merges a ready-merge branch when auto_merge=1 (only on a clean rc==0 exit).
+    # On a successful merge the item is DONE — skip the retry-budget/failure handling below.
+    if [[ "$rc" -eq 0 ]] && _auto_merge_ready "$running_line"; then
+      _archive_run_log "$running_line" "$log"
+      _active_run_release
+      processed=$((processed + 1))
+      [[ "$once" -eq 1 ]] && break
+      [[ "$cap" -gt 0 && "$processed" -ge "$cap" ]] && break
+      continue
     fi
     # Successful orchestrator exit: track attempt progress.
     # If a new step was committed, the budget resets; otherwise increments attempt counter.
