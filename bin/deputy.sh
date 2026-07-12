@@ -288,12 +288,14 @@ cmd_list() {
     esac
   done
   _with_lock _allocate_ids
-  local raw parsed
+  local raw parsed count=0
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     [[ -n "$filter" && "${parsed%%|*}" != "$filter" ]] && continue
     printf '%s\n' "$parsed"
+    count=$(( count + 1 ))
   done < <(_each_item)
+  [[ -n "$filter" && "$count" -eq 0 ]] && printf '0 tasks in %s state\n' "$filter"
 }
 
 # Run a function while holding an exclusive lock on LOCK_FILE (short-held).
