@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.4.0 — 2026-07-12
+
+Minor — autonomy hardening + CLI consistency (10 backlog items + follow-up fixes).
+
+**Autonomy & resilience**
+- **Inode-preserving BACKLOG writes (#85).** A concurrent human/agent queue edit no longer
+  orphans a running sandboxed worker's inode-pinned `BACKLOG.md` bind: `_backlog_commit`
+  writes in-place (preserving the inode) while a run is live, and uses atomic `mv` only when
+  idle. Fixes the death-loop where a worker got wedged on "BACKLOG.md not writable".
+- **Fail-fast on unrecoverable writes (#86).** `_backlog_commit` emits a distinct exit(3) +
+  message when `BACKLOG.md` is persistently unwritable; the SKILL tells the worker to write a
+  fail-file and exit (never `set surfaced`, which writes the same broken file) rather than
+  burn tokens retrying. `cmd_set`/`cmd_claim` preserve the rc.
+- **Runner watchdog (#87).** A background watchdog kills a headless worker that makes no
+  waypoint progress for `watchdog_mins` (default 45; 0 disables) and surfaces it — an
+  enforcement backstop independent of agent cooperation. Progress = newest file mtime under
+  the item's own waypoint dir.
+- **`deputy cron status` (#82).** Reports enabled / schedule / last-run for the current repo.
+
+**CLI consistency**
+- **Unified state/id grammar (#80).** `#<id>` = item id, a bare word = state, `p0`–`p4` =
+  priority, across list/set/clean/run; every prior flag/keyword form kept as a back-compat
+  alias, and the headless worker whole-line `set "<line>" <state>` contract is preserved.
+- **`deputy list` prints BACKLOG.md format (#84)** (`@[#1][P0] desc`), consistent with the
+  file, instead of the `state|priority|id|desc` pipe format. (No longer pipe-parseable —
+  see the `--porcelain` follow-up #93.)
+- **`deputy add` reports the assigned id (#83)** — `deputy: added #<id>: …`.
+- **`deputy list <state>` prints "0 tasks in <state> state" when empty (#81).**
+- **`deputy cron` bare subcommands (#88)** — `ensure|remove|status` (legacy `--flags` kept);
+  `reschedule` stays as the orchestrator-internal quota-failover verb (unadvertised).
+
+**Performance**
+- **Two-phase quality gate (#89).** Headless workers run *targeted* tests during iteration
+  and the full suite *once* before the final commit (was: full suite on every step/retry — a
+  ~1-line change took ~30 min), plus a tightened, unambiguous per-step retry budget.
+
+Also: `deputy watch` (the v1.3.3 quiescence monitor) now beeps + surfaces **all** pending
+kinds — needs-input, ready-to-merge, and proposed — not only blocking surfaces; and the
+opt-in merged-branch delete (#77) gained default-branch containment.
+
 ## v1.3.3 — 2026-07-12
 
 Patch — `deputy watch` becomes a passive summon-on-quiescence monitor; opt-in merged-branch cleanup.
