@@ -288,11 +288,14 @@ cmd_list() {
     esac
   done
   _with_lock _allocate_ids
-  local raw parsed count=0
+  local raw parsed count=0 _ls _lp _li _ld _lrest
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     [[ -n "$filter" && "${parsed%%|*}" != "$filter" ]] && continue
-    printf '%s\n' "$parsed"
+    _ls="${parsed%%|*}"; _lrest="${parsed#*|}"
+    _lp="${_lrest%%|*}"; _lrest="${_lrest#*|}"
+    _li="${_lrest%%|*}"; _ld="${_lrest#*|}"
+    printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
     count=$(( count + 1 ))
   done < <(_each_item)
   [[ -n "$filter" && "$count" -eq 0 ]] && printf '0 tasks in %s state\n' "$filter"
@@ -1650,7 +1653,7 @@ commands:
                                   no flag → default priority P3 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
-  list [<state>]                  print parsed items (state|priority|id|description);
+  list [<state>]                  print items in BACKLOG.md format (e.g. '@[#1][P0] desc');
                                   optional state filter — bare '<state>' (e.g. 'deputy list
                                   waiting'), '--state <state>', or '--<state>' shorthand;
                                   no arg lists all

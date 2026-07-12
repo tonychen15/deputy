@@ -153,7 +153,7 @@ it never overwrites your `BACKLOG.md` or existing config:
 ```bash
 deputy add "fix the login redirect loop" -ui   # add an urgent+important item (-ui=P0, -u=P1, -i=P2)
 deputy add "tidy the README"                    # bare items default to P3 at numbering (P4 is the lowest lane); --p0/--p1/--p2/--p3/--p4 also accepted
-deputy list [--<state>] # parsed items: state|priority|id|description; optional
+deputy list [--<state>] # items in BACKLOG.md format: @[#N][Pn] desc (running), [#N][Pn] desc (waiting), etc.
                        # --<state> (e.g. --waiting, --running, --deferred) filters to that state
 deputy status          # counts by state
 deputy run [--once]    # work the backlog (triage → do / surface), until empty or session limit

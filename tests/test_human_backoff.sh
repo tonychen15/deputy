@@ -33,7 +33,7 @@ write_session "$FAKE_HOME1/.claude/sessions" "sess1.json" \
 
 # Run deputy with fake HOME — should back off (item stays waiting).
 HOME="$FAKE_HOME1" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t1_stderr.txt
-item_state="$(bash "$DEPUTY" list | head -1 | cut -d'|' -f1)"
+item_state="$(line_state "$(bash "$DEPUTY" list | head -1)")"
 assert_eq "$item_state" "waiting" "live cli session in repo → item stays waiting (back-off)"
 assert_contains "$(cat /tmp/t1_stderr.txt)" "backing off" "back-off message emitted to stderr"
 assert_contains "$(cat /tmp/t1_stderr.txt)" "$SESSION_PID1" "back-off message includes PID"
@@ -58,7 +58,7 @@ chmod +x "$ORCH1B"
 
 HOME="$FAKE_HOME1B" DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_AVAIL="claude,gemini" \
   DEPUTY_ORCHESTRATOR_CMD="$ORCH1B" bash "$DEPUTY" run 2>/tmp/t1b_stderr.txt
-item_state1b="$(bash "$DEPUTY" list | head -1 | cut -d'|' -f1)"
+item_state1b="$(line_state "$(bash "$DEPUTY" list | head -1)")"
 assert_eq "$item_state1b" "done" "old idle cli session in repo → item can run"
 assert_eq "$(grep -c 'backing off' /tmp/t1b_stderr.txt 2>/dev/null || true)" "0" \
   "old idle cli session → no back-off message"
@@ -84,7 +84,7 @@ chmod +x "$ORCH1C"
 
 HOME="$FAKE_HOME1C" DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_AVAIL="claude,gemini" \
   DEPUTY_ORCHESTRATOR_CMD="$ORCH1C" bash "$DEPUTY" run 2>/tmp/t1c_stderr.txt
-item_state1c="$(bash "$DEPUTY" list | head -1 | cut -d'|' -f1)"
+item_state1c="$(line_state "$(bash "$DEPUTY" list | head -1)")"
 assert_eq "$item_state1c" "done" "old idle seconds timestamp → normalized and item can run"
 
 kill "$SESSION_PID1C" 2>/dev/null || true
@@ -167,7 +167,7 @@ write_session "$FAKE_HOME5/.claude/sessions" "sess5.json" \
 
 HOME="$FAKE_HOME5" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t5_stderr.txt
 # Item must now be surfaced (not waiting, and NOT running — no claim file created)
-item_state5="$(bash "$DEPUTY" list | grep -v '^$' | head -1 | cut -d'|' -f1)"
+item_state5="$(line_state "$(bash "$DEPUTY" list | grep -v '^$' | head -1)")"
 assert_eq "$item_state5" "surfaced" "dead-PID cli session in repo → item surfaced"
 assert_eq "$(grep -c 'backing off' /tmp/t5_stderr.txt 2>/dev/null || true)" "0" \
   "dead-PID cli session → no backing-off message"
@@ -237,7 +237,7 @@ write_session "$FAKE_HOME10/.claude/sessions" "sess10.json" \
   "$DEAD_PID10" "$DEPUTY_ROOT" "cli"
 
 HOME="$FAKE_HOME10" DEPUTY_ALLOW_ANY_BRANCH=1 bash "$DEPUTY" run 2>/tmp/t10_stderr.txt
-item_state10="$(bash "$DEPUTY" list | grep -v '^$' | head -1 | cut -d'|' -f1)"
+item_state10="$(line_state "$(bash "$DEPUTY" list | grep -v '^$' | head -1)")"
 # human_backoff=0 disables the stale-surface path — item should NOT be surfaced.
 assert_eq "$item_state10" "waiting" "human_backoff=0 + stale → surface NOT triggered, item stays waiting"
 assert_eq "$(grep -c 'stale\|surfaced' /tmp/t10_stderr.txt 2>/dev/null || true)" "0" \
@@ -312,11 +312,11 @@ HOME="$FAKE_HOME11" DEPUTY_ALLOW_ANY_BRANCH=1 \
   bash "$DEPUTY" run 2>/tmp/t11_stderr.txt
 
 # Item 1 must be done (processed before session appeared).
-item1_state11="$(bash "$DEPUTY" list | grep 'first item' | cut -d'|' -f1)"
+item1_state11="$(line_state "$(bash "$DEPUTY" list | grep 'first item')")"
 assert_eq "$item1_state11" "done" "mid-drain: first item was processed before session appeared"
 
 # Item 2 must still be waiting (gate fired before claiming it).
-item2_state11="$(bash "$DEPUTY" list | grep 'second item' | cut -d'|' -f1)"
+item2_state11="$(line_state "$(bash "$DEPUTY" list | grep 'second item')")"
 assert_eq "$item2_state11" "waiting" "mid-drain: second item stays waiting after session appeared mid-drain"
 
 # The back-off message must have been emitted.

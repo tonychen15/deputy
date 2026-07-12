@@ -9,7 +9,8 @@ if [[ -z "$DEP" ]]; then
 fi
 [[ -x "$DEP" && -f "$ROOT/BACKLOG.md" ]] || exit 0
 
-surfaced="$(DEPUTY_ROOT="$ROOT" "$DEP" list | awk -F'|' '$1=="surfaced"{out=$3; for(i=4;i<=NF;i++) out=out"|"$i; print "  ? " out}')"
+# deputy list prints items in BACKLOG.md format (#84): surfaced items start with '?'.
+surfaced="$(DEPUTY_ROOT="$ROOT" "$DEP" list | awk '/^\?/{print "  " $0}')"
 [[ -n "$surfaced" ]] || exit 0
 
 counts="$(DEPUTY_ROOT="$ROOT" "$DEP" status | tr '\n' ' ')"

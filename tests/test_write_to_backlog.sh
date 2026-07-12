@@ -22,7 +22,7 @@ chmod 755 "$test_dir"
 
 # Add an item and allocate its id (run from writable dir first).
 bash "$DEPUTY" add "ro-dir-test-item" >/dev/null
-item_id="$(bash "$DEPUTY" list | grep 'ro-dir-test-item' | cut -d'|' -f3)"
+item_id="$(line_id "$(bash "$DEPUTY" list | grep 'ro-dir-test-item')")"
 
 # Now make the BACKLOG.md directory read-only while the file stays writable.
 # STATE_DIR (.deputy/) remains writable (chmod 555 sets the parent dir perms,
@@ -35,7 +35,7 @@ chmod 555 "$test_dir"
 out="$(bash "$DEPUTY" set "$item_id" running 2>&1)"; rc=$?
 chmod 755 "$test_dir"  # restore before any assert (which may inspect files)
 assert_eq "$rc" "0" "deputy set succeeds with ro dir / rw BACKLOG.md"
-assert_contains "$(bash "$DEPUTY" list)" "running" "item state changed to running"
+assert_contains "$(bash "$DEPUTY" list)" "@[#" "item state changed to running"
 
 # No temp files should be left in the read-only directory (they should have
 # gone to STATE_DIR instead, or been cleaned up).

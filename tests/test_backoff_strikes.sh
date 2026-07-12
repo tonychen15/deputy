@@ -31,7 +31,7 @@ mk_repo() {  # mk_repo <status> <sua> : fresh repo + waiting item + live session
 seed()       { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" > "$DEPUTY_ROOT/.deputy/.backoff_waiting"; }
 do_run()     { HOME="$FAKE_HOME" DEPUTY_ORCHESTRATOR_CMD="$ORCH" DEPUTY_AVAIL=claude DEPUTY_ALLOW_ANY_BRANCH=1 \
                  bash "$DEPUTY" run --once 2>/tmp/bos_err.txt; }
-item_state() { bash "$DEPUTY" list | grep 'strike item' | head -1 | cut -d'|' -f1; }
+item_state() { line_state "$(bash "$DEPUTY" list | grep 'strike item' | head -1)"; }
 cleanup()    { kill "$SESS_PID" 2>/dev/null || true; rm -rf "$FAKE_HOME"; }
 NOW() { date +%s%3N 2>/dev/null || printf '%s000' "$(date +%s)"; }
 

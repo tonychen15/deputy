@@ -34,7 +34,7 @@ ORCH="$(make_done_orchestrator)"
 
 DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_AVAIL="claude,gemini" DEPUTY_ORCHESTRATOR_CMD="$ORCH" \
   bash "$DEPUTY" run 2>/tmp/active_lock_live.err
-state="$(bash "$DEPUTY" list | head -1 | cut -d'|' -f1)"
+state="$(line_state "$(bash "$DEPUTY" list | head -1)")"
 assert_eq "$state" "waiting" "live active-run lock blocks a new run"
 assert_contains "$(cat /tmp/active_lock_live.err)" "active run exists" \
   "live active-run lock emits skip reason"
@@ -56,7 +56,7 @@ ORCH="$(make_done_orchestrator)"
 
 DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_AVAIL="claude,gemini" DEPUTY_ORCHESTRATOR_CMD="$ORCH" \
   bash "$DEPUTY" run 2>/tmp/active_lock_stale.err
-state="$(bash "$DEPUTY" list | head -1 | cut -d'|' -f1)"
+state="$(line_state "$(bash "$DEPUTY" list | head -1)")"
 assert_eq "$state" "done" "stale active-run lock is cleared and run proceeds"
 assert_eq "$([[ -d "$DEPUTY_ROOT/.deputy/active-run.lock" ]] && echo yes || echo no)" "no" \
   "active-run lock is released after successful run"
@@ -73,7 +73,7 @@ ORCH="$(make_done_orchestrator)"
 
 DEPUTY_ALLOW_ANY_BRANCH=1 DEPUTY_AVAIL="claude,gemini" DEPUTY_ORCHESTRATOR_CMD="$ORCH" \
   bash "$DEPUTY" run 2>/tmp/active_lock_reused.err
-state="$(bash "$DEPUTY" list | head -1 | cut -d'|' -f1)"
+state="$(line_state "$(bash "$DEPUTY" list | head -1)")"
 assert_eq "$state" "done" "PID start-time mismatch lock is reclaimed and run proceeds"
 
 kill "$REUSED_PID" 2>/dev/null || true
@@ -111,7 +111,7 @@ printf 'agent\n'     > "$DEPUTY_ROOT/.deputy/active-run.lock/owner"
 printf 'agent work\n'> "$DEPUTY_ROOT/.deputy/active-run.lock/item"
 printf '%s\n' "$(date +%s)" > "$DEPUTY_ROOT/.deputy/active-run.lock/heartbeat"   # fresh
 DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true bash "$DEPUTY" run --once >/dev/null 2>&1 || true
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "#67: live AGENT claim (TTL) blocks a new cron run"
+assert_contains "$(bash "$DEPUTY" list)" "[P0]" "#67: live AGENT claim (TTL) blocks a new cron run"
 assert_eq "$(ls "$DEPUTY_ROOT"/.deputy/*.claim 2>/dev/null | wc -l | tr -d ' ')" "0" "#67: blocked run wrote no claim"
 
 # (b) _active_run_acquire is an atomic mutex: within one live owner, the 2nd acquire

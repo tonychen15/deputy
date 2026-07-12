@@ -8,9 +8,9 @@ setup_repo
 # Raw deferred lines (no ID yet)
 printf '%s\n' '>[P2][#3] x' '>plain deferred' >> "$DEPUTY_ROOT/BACKLOG.md"
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "deferred|P2|3|x"    "parse: deferred P2 #3 x"
-assert_contains "$out" "deferred|"          "parse: deferred untagged has deferred state"
-assert_contains "$out" "plain deferred"     "parse: deferred untagged description"
+assert_contains "$out" ";[#3][P2] x"    "parse: deferred P2 #3 x"
+assert_contains "$out" ";[#"            "parse: deferred untagged has deferred state"
+assert_contains "$out" "plain deferred" "parse: deferred untagged description"
 
 ser() { bash "$DEPUTY" _serialize "$1" "$2" "$3" "$4"; }
 assert_eq "$(ser deferred P2 3 'x')"             ";[#3][P2] x"           "serialize deferred P2 #3 x"
@@ -29,14 +29,14 @@ bash "$DEPUTY" list >/dev/null  # allocate IDs
 future_line="$(bash "$DEPUTY" pick)"  # [P1][#1] future work
 bash "$DEPUTY" set "$future_line" deferred
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "deferred|P1|"  "set waiting→deferred state"
-assert_contains "$out" "future work"   "set waiting→deferred description preserved"
+assert_contains "$out" ";[#"         "set waiting→deferred state"
+assert_contains "$out" "future work" "set waiting→deferred description preserved"
 
 deferred_line="$(grep 'future work' "$DEPUTY_ROOT/BACKLOG.md")"
 bash "$DEPUTY" set "$deferred_line" waiting
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting|P1|"  "set deferred→waiting state"
-assert_contains "$out" "future work"  "set deferred→waiting description preserved"
+assert_contains "$out" "[P1]"        "set deferred→waiting state"
+assert_contains "$out" "future work" "set deferred→waiting description preserved"
 
 # ── cmd_pick skips deferred items ────────────────────────────────────────────
 setup_repo
@@ -65,11 +65,11 @@ setup_repo
 printf '%s\n' '>[P0] deferred checkpoint' '>[P1] another deferred' '[P2] waiting' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" recover
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "deferred|P0|"          "recover preserves deferred P0"
+assert_contains "$out" ";[#"                   "recover preserves deferred P0"
 assert_contains "$out" "deferred checkpoint"   "recover preserves deferred P0 description"
-assert_contains "$out" "deferred|P1|"          "recover preserves deferred P1"
+assert_contains "$out" "[P1]"                  "recover preserves deferred P1"
 assert_contains "$out" "another deferred"      "recover preserves deferred P1 description"
-assert_contains "$out" "waiting|P2|"           "recover leaves waiting intact"
+assert_contains "$out" "[P2]"                  "recover leaves waiting intact"
 
 # ── _regroup_backlog places deferred group in correct position ────────────────
 # New sectioned order: Running → ... → Waiting → ... → Deferred → ... → Done
@@ -109,9 +109,9 @@ setup_repo
 printf '%s\n' '[P1] waiting item' '>[P2][#3] parked forever' '#[P0] finished' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "deferred|P2|3|parked forever" "regroup preserves deferred [#N] id and content"
-assert_contains "$out" "waiting|P1|"                   "regroup preserves waiting item"
-assert_contains "$out" "done|P0|"                      "regroup preserves done item"
+assert_contains "$out" ";[#3][P2] parked forever" "regroup preserves deferred [#N] id and content"
+assert_contains "$out" "[P1]"                         "regroup preserves waiting item"
+assert_contains "$out" "+[#"                          "regroup preserves done item"
 
 # ── cmd_clean --state deferred removes deferred items ────────────────────────
 setup_repo

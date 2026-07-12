@@ -9,17 +9,17 @@ echo '@ [P0] was running' > "$DEPUTY_ROOT/.deputy/99999.claim"
 
 bash "$DEPUTY" recover
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting|P0|"    "stale claim reverted to waiting"
+assert_contains "$out" "[P0]"           "stale claim reverted to waiting"
 assert_contains "$out" "was running"    "stale claim: description preserved"
 [[ -f "$DEPUTY_ROOT/.deputy/99999.claim" ]] && r=yes || r=no
 assert_eq "$r" "no" "dead claim file removed"
 
 # The triaging item had NO claim at all -> orphan revert.
-assert_contains "$out" "waiting|P1|"    "orphan triaging reverted"
+assert_contains "$out" "[P1]"           "orphan triaging reverted"
 assert_contains "$out" "was triaging"   "orphan triaging: description preserved"
 
 # Untouched waiting item stays put.
-assert_contains "$out" "waiting|P2|"    "untouched item unchanged"
+assert_contains "$out" "[P2]"           "untouched item unchanged"
 assert_contains "$out" "untouched"      "untouched item: description preserved"
 
 # A claim owned by a LIVE pid must NOT be reverted.
@@ -28,7 +28,7 @@ printf '%s\n' '@ [P0] live work' >> "$DEPUTY_ROOT/BACKLOG.md"
 sleep 300 & LIVE=$!
 echo '@ [P0] live work' > "$DEPUTY_ROOT/.deputy/$LIVE.claim"
 bash "$DEPUTY" recover
-assert_contains "$(bash "$DEPUTY" list)" "running|P0|" "live claim preserved"
+assert_contains "$(bash "$DEPUTY" list)" "@[#"          "live claim preserved"
 assert_contains "$(bash "$DEPUTY" list)" "live work"   "live claim: description preserved"
 kill "$LIVE" 2>/dev/null
 
@@ -37,9 +37,9 @@ setup_repo
 printf '%s\n' '^[P0] paused midway' '^plain paused' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" recover
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "paused|P0|"    "recover leaves paused P0 intact"
+assert_contains "$out" "^[#"           "recover leaves paused P0 intact"
 assert_contains "$out" "paused midway" "recover leaves paused P0 description intact"
-assert_contains "$out" "paused|P3|"    "recover leaves paused untagged (P3 default) intact"
+assert_contains "$out" "[P3]"          "recover leaves paused untagged (P3 default) intact"
 assert_contains "$out" "plain paused"  "recover leaves paused untagged description intact"
 
 # #62 interaction: a stale claim stored an OLD-order line (`@[P0][#1] x`) but BACKLOG has
@@ -51,7 +51,7 @@ printf '%s\n' '@[#1][P0] migrated running' >> "$DEPUTY_ROOT/BACKLOG.md"
 printf '%s\n%s\n%s\n' '@[P0][#1] migrated running' 'Mon Jan 1 00:00:00 2020' 'run' > "$DEPUTY_ROOT/.deputy/99998.claim"
 bash "$DEPUTY" recover >/dev/null 2>&1
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "waiting|P0|1|migrated running" "#62: old-order stale claim recovered via orphan backstop"
+assert_contains "$out" "[#1][P0] migrated running" "#62: old-order stale claim recovered via orphan backstop"
 [[ -f "$DEPUTY_ROOT/.deputy/99998.claim" ]] && r=yes || r=no
 assert_eq "$r" "no" "#62: old-order stale claim file removed"
 
@@ -64,6 +64,6 @@ printf '%s\n' '@[#1][P0] live migrated' >> "$DEPUTY_ROOT/BACKLOG.md"
 printf '%s\n%s\n%s\n%s\n' '@[P0][#1] live migrated' 'start' 'agent' "$(date +%s)" > "$DEPUTY_ROOT/.deputy/99997.claim"
 bash "$DEPUTY" recover >/dev/null 2>&1
 out="$(bash "$DEPUTY" list)"
-assert_contains "$out" "running|P0|1|live migrated" "#62: live old-order claim NOT reverted (canonical match)"
+assert_contains "$out" "@[#1][P0] live migrated" "#62: live old-order claim NOT reverted (canonical match)"
 [[ -f "$DEPUTY_ROOT/.deputy/99997.claim" ]] && r=yes || r=no
 assert_eq "$r" "yes" "#62: live claim kept across order migration"

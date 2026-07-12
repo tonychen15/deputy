@@ -20,8 +20,8 @@ assert_eq "$(printf '%s\n' "$all" | grep -c .)" "4" "bare list shows all items"
 # --waiting shows exactly the two waiting items and nothing else
 w="$(bash "$DEPUTY" list --waiting)"
 assert_eq "$(printf '%s\n' "$w" | grep -c .)"            "2" "--waiting shows exactly 2 items"
-assert_eq "$(printf '%s\n' "$w" | grep -c '^waiting|')"  "2" "--waiting: both lines are waiting"
-assert_eq "$(printf '%s\n' "$w" | grep -vc '^waiting|')" "0" "--waiting: no non-waiting lines leak"
+assert_eq "$(printf '%s\n' "$w" | grep -cv '^[@?+!%=^;~]')" "2" "--waiting: both lines are waiting"
+assert_eq "$(printf '%s\n' "$w" | grep -c '^[@?+!%=^;~]')"  "0" "--waiting: no non-waiting lines leak"
 assert_contains "$w" "wait one" "--waiting includes wait one"
 assert_contains "$w" "wait two" "--waiting includes wait two"
 

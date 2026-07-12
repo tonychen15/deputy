@@ -35,6 +35,19 @@ assert_contains() {  # assert_contains <haystack> <needle> [msg]
   fi
 }
 
+# Extract the state name from a BACKLOG.md format line (e.g. '@[#1][P0] desc' → 'running').
+line_state() {
+  case "${1:0:1}" in
+    '@') printf 'running'   ;; '?') printf 'surfaced'  ;; '+') printf 'done'      ;;
+    '!') printf 'failed'    ;; '%') printf 'cancelled' ;; '=') printf 'duplicate' ;;
+    '^') printf 'paused'    ;; ';') printf 'deferred'  ;; '~') printf 'triaging'  ;;
+    *)   printf 'waiting'   ;;
+  esac
+}
+
+# Extract the numeric ID from a BACKLOG.md format line (e.g. '@[#42][P0] desc' → '42').
+line_id() { printf '%s' "$1" | grep -o '\[#[0-9]*\]' | tr -d '[#]'; }
+
 _summarize() {
   local _rc=$?
   printf '%d run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"

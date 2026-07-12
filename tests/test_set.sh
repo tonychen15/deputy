@@ -10,19 +10,22 @@ plain_line="$(grep 'plain one' "$DEPUTY_ROOT/BACKLOG.md")"
 
 # waiting -> running keeps the priority tag.
 bash "$DEPUTY" set "$thing_line" running
-assert_contains "$(bash "$DEPUTY" list)" "running|P0|" "set waiting->running keeps P0"
+assert_contains "$(bash "$DEPUTY" list)" "@[#"         "set waiting->running: state is running"
+assert_contains "$(bash "$DEPUTY" list)" "[P0]"         "set waiting->running: keeps P0"
 assert_contains "$(bash "$DEPUTY" list)" "do the thing" "set waiting->running: description preserved"
 
 # running -> done (use the now-current raw line).
 running_thing="$(grep 'do the thing' "$DEPUTY_ROOT/BACKLOG.md")"
 bash "$DEPUTY" set "$running_thing" done
-assert_contains "$(bash "$DEPUTY" list)" "done|P0|" "set running->done"
+assert_contains "$(bash "$DEPUTY" list)" "+[#"          "set running->done: state is done"
+assert_contains "$(bash "$DEPUTY" list)" "[P0]"         "set running->done: P0 preserved"
 assert_contains "$(bash "$DEPUTY" list)" "do the thing" "set running->done: description preserved"
 
 # P3-defaulted item transition (items without explicit priority get P3 assigned).
 bash "$DEPUTY" set "$plain_line" surfaced
-assert_contains "$(bash "$DEPUTY" list)" "surfaced|P3|" "set P3-default->surfaced"
-assert_contains "$(bash "$DEPUTY" list)" "plain one"    "set P3-default->surfaced: description preserved"
+assert_contains "$(bash "$DEPUTY" list)" "?[#"       "set P3-default->surfaced: state is surfaced"
+assert_contains "$(bash "$DEPUTY" list)" "[P3]"      "set P3-default->surfaced: P3 preserved"
+assert_contains "$(bash "$DEPUTY" list)" "plain one" "set P3-default->surfaced: description preserved"
 
 # No match -> non-zero, file unchanged.
 before="$(cat "$DEPUTY_ROOT/BACKLOG.md")"
@@ -44,18 +47,19 @@ printf '%s\n' '[P1] a|b' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
 pipe_line="$(grep 'a|b' "$DEPUTY_ROOT/BACKLOG.md")"
 bash "$DEPUTY" set "$pipe_line" running
-assert_contains "$(bash "$DEPUTY" list)" "running|P1|" "set preserves pipe in description (state)"
-assert_contains "$(bash "$DEPUTY" list)" "a|b"          "set preserves pipe in description"
+assert_contains "$(bash "$DEPUTY" list)" "@[#"  "set preserves pipe in description (state)"
+assert_contains "$(bash "$DEPUTY" list)" "a|b"  "set preserves pipe in description"
 
 # ── #56: set by item id (N or #N) resolves to the unique line ────────────────────
 printf '%s\n' '[P2] set-by-id target' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
-sid="$(bash "$DEPUTY" list | grep 'set-by-id target' | cut -d'|' -f3)"
+sid_line="$(bash "$DEPUTY" list | grep 'set-by-id target')"
+sid="$(line_id "$sid_line")"
 bash "$DEPUTY" set "$sid" deferred
-assert_contains "$(bash "$DEPUTY" list)" "deferred|P2|"    "set <id> resolves and transitions"
+assert_contains "$(bash "$DEPUTY" list)" ";[#"              "set <id> resolves and transitions"
 assert_contains "$(bash "$DEPUTY" list)" "set-by-id target" "set <id>: description preserved"
 bash "$DEPUTY" set "#$sid" waiting
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P2|"     "set #<id> resolves and transitions"
+assert_contains "$(bash "$DEPUTY" list)" "[P2]"             "set #<id> resolves and transitions"
 
 # absent id -> exit 2 + message, file unchanged.
 b2="$(cat "$DEPUTY_ROOT/BACKLOG.md")"
@@ -74,30 +78,31 @@ assert_contains "$out" "multiple items with id #$sid" "set <duplicated id>: clea
 setup_repo
 printf '%s\n' '[P3] prio-target' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
-pid="$(bash "$DEPUTY" list | grep 'prio-target' | cut -d'|' -f3)"
+pid_line="$(bash "$DEPUTY" list | grep 'prio-target')"
+pid="$(line_id "$pid_line")"
 
 # set prio #N p0 — re-prioritizes; state preserved (still waiting)
 bash "$DEPUTY" set prio "$pid" p0
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|$pid|prio-target" "set prio p0: tag changed, state preserved"
+assert_contains "$(bash "$DEPUTY" list)" "[#$pid][P0] prio-target" "set prio p0: tag changed, state preserved"
 
 # lowercase normalized to uppercase; case-insensitive accept
 bash "$DEPUTY" set prio "$pid" p1
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P1|$pid|prio-target" "set prio p1: lowercase normalized to P1"
+assert_contains "$(bash "$DEPUTY" list)" "[#$pid][P1] prio-target" "set prio p1: lowercase normalized to P1"
 bash "$DEPUTY" set prio "$pid" P2
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P2|$pid|prio-target" "set prio P2: uppercase accepted"
+assert_contains "$(bash "$DEPUTY" list)" "[#$pid][P2] prio-target" "set prio P2: uppercase accepted"
 
 # prio on a running item is ALLOWED (no guard) and keeps it running
 bash "$DEPUTY" set state "$pid" running
 bash "$DEPUTY" set prio "$pid" p0
-assert_contains "$(bash "$DEPUTY" list)" "running|P0|$pid|prio-target" "set prio on running item: allowed, state preserved"
+assert_contains "$(bash "$DEPUTY" list)" "@[#$pid][P0] prio-target" "set prio on running item: allowed, state preserved"
 
 # explicit 'set state' is an alias for the bare form
 bash "$DEPUTY" set state "$pid" waiting
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|$pid|prio-target" "set state: explicit alias transitions state"
+assert_contains "$(bash "$DEPUTY" list)" "[#$pid][P0] prio-target" "set state: explicit alias transitions state"
 
 # bare form (back-compat) still works unchanged
 bash "$DEPUTY" set "$pid" deferred
-assert_contains "$(bash "$DEPUTY" list)" "deferred|P0|$pid|prio-target" "set bare: back-compat state transition"
+assert_contains "$(bash "$DEPUTY" list)" ";[#$pid][P0] prio-target" "set bare: back-compat state transition"
 
 # invalid priority -> exit 2, file unchanged
 pbefore="$(cat "$DEPUTY_ROOT/BACKLOG.md")"
@@ -118,14 +123,15 @@ assert_contains "$out" "set [prio|state]" "set (no args): shows usage"
 # #69 disambiguation: the 2-arg whole-line/id form is NEVER read as a keyword.
 # An item whose id we set with a bare 2-arg call still transitions state (not prio).
 bash "$DEPUTY" set "$pid" waiting
-assert_contains "$(bash "$DEPUTY" list)" "waiting|" "set <id> <state> (2-arg) stays the bare state form"
+assert_contains "$(bash "$DEPUTY" list)" "[#$pid]" "set <id> <state> (2-arg) stays the bare state form"
 
 # unified grammar: 'set #<id> pN' reprioritizes by SHAPE (no 'prio' keyword needed);
 # a bare state value still sets state — value shape decides.
 setup_repo
 bash "$DEPUTY" add "shape task" --p3 >/dev/null
-sid="$(bash "$DEPUTY" list | grep -F 'shape task' | cut -d'|' -f3)"
+sid_ln="$(bash "$DEPUTY" list | grep -F 'shape task')"
+sid="$(line_id "$sid_ln")"
 bash "$DEPUTY" set "#$sid" p0
-assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "set #id pN: bare pN value sets priority by shape (state untouched)"
+assert_contains "$(bash "$DEPUTY" list)" "[#$sid][P0]"  "set #id pN: bare pN value sets priority by shape (state untouched)"
 bash "$DEPUTY" set "#$sid" surfaced
-assert_contains "$(bash "$DEPUTY" list)" "surfaced|P0|" "set #id <state>: bare state value sets state (priority untouched)"
+assert_contains "$(bash "$DEPUTY" list)" "?[#$sid][P0]" "set #id <state>: bare state value sets state (priority untouched)"

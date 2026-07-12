@@ -29,6 +29,6 @@ assert_eq "$(grep -cE '^\[[0-9]+\]\+?|Terminated|^\[1\]' /tmp/reap_out.txt /tmp/
   "#58: no job-control noise in the run output/stderr"
 
 # the item still completes through the reaping path (rc/flow intact).
-assert_contains "$(bash "$DEPUTY" list)" "done|P0" "#58: the item still completes through the reaping path"
+assert_contains "$(bash "$DEPUTY" list)" "+[#"     "#58: the item still completes through the reaping path"
 
 rm -f "$ORCH" "$CF"

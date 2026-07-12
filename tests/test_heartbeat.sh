@@ -127,7 +127,7 @@ item_line="$(bash "$DEPUTY" pick)"
 bash "$DEPUTY" claim "$item_line" --pid "$LIVE_C" >/dev/null 2>&1
 
 # Verify the item is now running and a live claim file exists.
-assert_contains "$(bash "$DEPUTY" list)" "running|P0|" \
+assert_contains "$(bash "$DEPUTY" list)" "@[#" \
   "test setup: item is running before tick"
 
 ORCH_C="$(mktemp)"
@@ -143,7 +143,7 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH_C" DEPUTY_AVAIL="claude,gemini" \
   bash "$DEPUTY" run --once >/dev/null 2>&1 || true
 
 # item must still be in running state (not claimed again, not reverted)
-assert_contains "$(bash "$DEPUTY" list)" "running|P0|" \
+assert_contains "$(bash "$DEPUTY" list)" "@[#" \
   "tick skips: item stays running when live claim exists"
 
 kill "$LIVE_C" 2>/dev/null || true
@@ -179,7 +179,7 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH_D" DEPUTY_AVAIL="claude,gemini" \
 
 # The orphaned item should have been recovered and then run to done
 list_out="$(bash "$DEPUTY" list)"
-assert_contains "$list_out" "done|P0|" \
+assert_contains "$list_out" "+[#" \
   "tick: orphaned task recovered and run to done"
 assert_contains "$list_out" "orphan task" \
   "tick: orphaned task description preserved"
@@ -208,9 +208,9 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH_E" DEPUTY_AVAIL="claude,gemini" \
   bash "$DEPUTY" run >/dev/null 2>&1 || true
 
 list_out="$(bash "$DEPUTY" list)"
-assert_contains "$list_out" "surfaced|P0|" \
+assert_contains "$list_out" "?[#" \
   "tick: surfaced item left alone"
-assert_contains "$list_out" "failed|P1|" \
+assert_contains "$list_out" "![#" \
   "tick: failed item left alone"
 
 rm -f "$ORCH_E"
@@ -249,7 +249,7 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH_F" DEPUTY_AVAIL="claude,gemini" \
 
 # Wrong start-time → treated as dead → recovered → item runs to done
 list_out="$(bash "$DEPUTY" list)"
-assert_contains "$list_out" "done|P0|" \
+assert_contains "$list_out" "+[#" \
   "start-time mismatch: stale claim treated as dead, item recovers and runs"
 
 kill "$LIVE_F" 2>/dev/null || true
@@ -321,7 +321,7 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH_G" DEPUTY_AVAIL="claude,gemini" \
 
 # After 3 failed attempts with no step progress, item must be failed
 list_out="$(bash "$DEPUTY" list)"
-assert_contains "$list_out" "failed|P0|" \
+assert_contains "$list_out" "![#" \
   "retry budget: item marked failed after 3 no-progress resumes"
 # Fail file should exist
 assert_eq "$(ls "$ROOT_G/.deputy/fails/"*.md 2>/dev/null | wc -l | tr -d ' ')" "1" \
