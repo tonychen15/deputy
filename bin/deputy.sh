@@ -264,9 +264,10 @@ _migrate_trails() {
 cmd_list() {
   # State filter — three equivalent forms (canonical first): a bare '<state>'
   # ('deputy list waiting'), '--state <state>', or the shorthand '--<state>'
-  # ('deputy list --waiting'). Bare 'deputy list' lists all. (Unified arg grammar:
-  # a bare state word is a state; ids are never listed here.)
-  local filter="" arg s
+  # ('deputy list --waiting'). Bare 'deputy list' lists all.
+  # ID filter — three equivalent forms: '#<N>' (quoted), bare positive integer <N>,
+  # or '--id <N>'/'--id=<N>'. State and ID filters can coexist (ANDed).
+  local filter="" id_filter="" arg s
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
@@ -278,27 +279,64 @@ cmd_list() {
         [[ $# -ge 2 ]] || { printf 'deputy: list: --state requires a <state>\n' >&2; return 2; }
         if _valid_state "$2"; then filter="$2"; shift 2
         else printf 'deputy: list: unknown state: %s\n' "$2" >&2; return 2; fi ;;
+      --id=*)
+        s="${arg#--id=}"
+        if [[ "$s" =~ ^[0-9]+$ && "$s" -gt 0 ]]; then
+          [[ -n "$id_filter" ]] && { printf 'deputy: list: duplicate id filter\n' >&2; return 2; }
+          id_filter="$s"; shift
+        else printf 'deputy: list: --id requires a positive integer, got: %s\n' "$s" >&2; return 2; fi ;;
+      --id)
+        [[ $# -ge 2 ]] || { printf 'deputy: list: --id requires a <N>\n' >&2; return 2; }
+        s="$2"
+        if [[ "$s" =~ ^[0-9]+$ && "$s" -gt 0 ]]; then
+          [[ -n "$id_filter" ]] && { printf 'deputy: list: duplicate id filter\n' >&2; return 2; }
+          id_filter="$s"; shift 2
+        else printf 'deputy: list: --id requires a positive integer, got: %s\n' "$s" >&2; return 2; fi ;;
       --*)
         s="${arg#--}"
         if _valid_state "$s"; then filter="$s"; shift
         else printf 'deputy: list: unknown state filter: %s\n' "$arg" >&2; return 2; fi ;;
+      '#'[0-9]*)
+        # quoted '#<N>' form: e.g. deputy list '#42'
+        s="${arg#'#'}"
+        if [[ "$s" =~ ^[0-9]+$ && "$s" -gt 0 ]]; then
+          [[ -n "$id_filter" ]] && { printf 'deputy: list: duplicate id filter\n' >&2; return 2; }
+          id_filter="$s"; shift
+        else printf 'deputy: list: invalid id: %s\n' "$arg" >&2; return 2; fi ;;
+      '#'*)
+        printf 'deputy: list: invalid id: %s\n' "$arg" >&2; return 2 ;;
+      [0-9]*)
+        # bare positive integer form: e.g. deputy list 42
+        if [[ "$arg" =~ ^[0-9]+$ && "$arg" -gt 0 ]]; then
+          [[ -n "$id_filter" ]] && { printf 'deputy: list: duplicate id filter\n' >&2; return 2; }
+          id_filter="$arg"; shift
+        else printf 'deputy: list: invalid id: %s (must be a positive integer)\n' "$arg" >&2; return 2; fi ;;
       *)
         if _valid_state "$arg"; then filter="$arg"; shift
-        else printf 'deputy: list: unexpected argument: %s (want a <state> or --<state>)\n' "$arg" >&2; return 2; fi ;;
+        else printf 'deputy: list: unexpected argument: %s (want a <state>, --<state>, or #<id>)\n' "$arg" >&2; return 2; fi ;;
     esac
   done
   _with_lock _allocate_ids
   local raw parsed count=0 _ls _lp _li _ld _lrest
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
-    [[ -n "$filter" && "${parsed%%|*}" != "$filter" ]] && continue
     _ls="${parsed%%|*}"; _lrest="${parsed#*|}"
     _lp="${_lrest%%|*}"; _lrest="${_lrest#*|}"
     _li="${_lrest%%|*}"; _ld="${_lrest#*|}"
+    [[ -n "$filter"    && "$_ls" != "$filter"    ]] && continue
+    [[ -n "$id_filter" && "$_li" != "$id_filter" ]] && continue
     printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
     count=$(( count + 1 ))
   done < <(_each_item)
-  [[ -n "$filter" && "$count" -eq 0 ]] && printf '0 tasks in %s state\n' "$filter"
+  if [[ "$count" -eq 0 ]]; then
+    if [[ -n "$id_filter" && -n "$filter" ]]; then
+      printf '0 tasks with id #%s in %s state\n' "$id_filter" "$filter"
+    elif [[ -n "$id_filter" ]]; then
+      printf '0 tasks with id #%s\n' "$id_filter"
+    elif [[ -n "$filter" ]]; then
+      printf '0 tasks in %s state\n' "$filter"
+    fi
+  fi
 }
 
 # Run a function while holding an exclusive lock on LOCK_FILE (short-held).

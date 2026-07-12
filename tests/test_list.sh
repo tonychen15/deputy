@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 'deputy list [--<state>]': bare lists all; --<state> filters to that state only
 # (no leakage of other states); unknown flags/args exit 2.
+# 'deputy list #<id>' / 'deputy list <N>' / 'deputy list --id <N>': filter by id.
 source "$(dirname "$0")/lib.sh"
 
 setup_repo
@@ -52,3 +53,60 @@ np="$(bash "$DEPUTY" list done)"
 if printf '%s' "$np" | grep -q "bare-filter waiting item"; then
   TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: list done showed a waiting item\n' >&2
 else TESTS_RUN=$((TESTS_RUN+1)); fi
+
+# ── ID filter ─────────────────────────────────────────────────────────────────
+setup_repo
+bash "$DEPUTY" add "alpha task" --p1 >/dev/null
+bash "$DEPUTY" add "beta task"  --p2 >/dev/null
+bash "$DEPUTY" add "gamma task" --p3 >/dev/null
+# capture assigned IDs from the backlog
+id_alpha="$(bash "$DEPUTY" list | grep 'alpha task' | grep -oE '#[0-9]+' | tr -d '#')"
+id_beta="$(bash "$DEPUTY" list  | grep 'beta task'  | grep -oE '#[0-9]+' | tr -d '#')"
+
+# '#<id>' form (quoted) shows exactly that item
+r_hash="$(bash "$DEPUTY" list "#${id_alpha}")"
+assert_eq "$(printf '%s\n' "$r_hash" | grep -c .)" "1" "list #<id> shows exactly 1 item"
+assert_contains "$r_hash" "alpha task" "list #<id> content"
+# must not leak other items
+if printf '%s' "$r_hash" | grep -q "beta task"; then
+  TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: list #<id> leaked beta task\n' >&2
+else TESTS_RUN=$((TESTS_RUN+1)); fi
+
+# bare integer form
+r_int="$(bash "$DEPUTY" list "$id_beta")"
+assert_eq "$(printf '%s\n' "$r_int" | grep -c .)" "1" "list <N> shows exactly 1 item"
+assert_contains "$r_int" "beta task" "list <N> content"
+
+# --id flag form
+r_flag="$(bash "$DEPUTY" list --id "$id_alpha")"
+assert_contains "$r_flag" "alpha task" "list --id <N> content"
+
+# --id=<N> flag form
+r_flagq="$(bash "$DEPUTY" list "--id=${id_beta}")"
+assert_contains "$r_flagq" "beta task" "list --id=<N> content"
+
+# state + id combo: item IS in that state → shows it
+bash "$DEPUTY" set "$(bash "$DEPUTY" list | grep 'gamma task' | head -1)" running >/dev/null
+id_gamma="$(bash "$DEPUTY" list | grep 'gamma task' | grep -oE '#[0-9]+' | tr -d '#')"
+r_combo="$(bash "$DEPUTY" list --running --id "$id_gamma")"
+assert_eq "$(printf '%s\n' "$r_combo" | grep -c .)" "1" "list --running --id shows the item"
+assert_contains "$r_combo" "gamma task" "list --running --id content"
+
+# state + id combo: item NOT in that state → zero-match message
+out_miss="$(bash "$DEPUTY" list --waiting --id "$id_gamma")"; rc_miss=$?
+assert_eq "$rc_miss" "0" "list --waiting --id <running-item> exits 0"
+assert_contains "$out_miss" "0 tasks with id #${id_gamma} in waiting state" "list --waiting --id zero-match message"
+
+# id-only zero-match: non-existent id
+out_noid="$(bash "$DEPUTY" list 99999)"; rc_noid=$?
+assert_eq "$rc_noid" "0" "list <nonexistent-id> exits 0"
+assert_contains "$out_noid" "0 tasks with id #99999" "list <nonexistent-id> zero-match message"
+
+# error cases
+bash "$DEPUTY" list '#abc'          >/dev/null 2>&1; assert_eq "$?" "2" "list #abc exits 2"
+bash "$DEPUTY" list '#0'            >/dev/null 2>&1; assert_eq "$?" "2" "list #0 (non-positive) exits 2"
+bash "$DEPUTY" list 0               >/dev/null 2>&1; assert_eq "$?" "2" "list 0 (non-positive) exits 2"
+bash "$DEPUTY" list --id            >/dev/null 2>&1; assert_eq "$?" "2" "--id without value exits 2"
+bash "$DEPUTY" list --id abc        >/dev/null 2>&1; assert_eq "$?" "2" "--id abc (non-numeric) exits 2"
+bash "$DEPUTY" list --id=abc        >/dev/null 2>&1; assert_eq "$?" "2" "--id=abc exits 2"
+bash "$DEPUTY" list "$id_alpha" "$id_beta" >/dev/null 2>&1; assert_eq "$?" "2" "duplicate id filter exits 2"
