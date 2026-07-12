@@ -262,17 +262,29 @@ _migrate_trails() {
 }
 
 cmd_list() {
-  # Optional state filter: 'deputy list --<state>' (e.g. --waiting, --running,
-  # --deferred) lists only items in that state. Bare 'deputy list' lists all.
+  # State filter — three equivalent forms (canonical first): a bare '<state>'
+  # ('deputy list waiting'), '--state <state>', or the shorthand '--<state>'
+  # ('deputy list --waiting'). Bare 'deputy list' lists all. (Unified arg grammar:
+  # a bare state word is a state; ids are never listed here.)
   local filter="" arg s
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
+      --state=*)
+        s="${arg#--state=}"
+        if _valid_state "$s"; then filter="$s"; shift
+        else printf 'deputy: list: unknown state: %s\n' "$s" >&2; return 2; fi ;;
+      --state)
+        [[ $# -ge 2 ]] || { printf 'deputy: list: --state requires a <state>\n' >&2; return 2; }
+        if _valid_state "$2"; then filter="$2"; shift 2
+        else printf 'deputy: list: unknown state: %s\n' "$2" >&2; return 2; fi ;;
       --*)
         s="${arg#--}"
         if _valid_state "$s"; then filter="$s"; shift
         else printf 'deputy: list: unknown state filter: %s\n' "$arg" >&2; return 2; fi ;;
-      *) printf 'deputy: list: unexpected argument: %s\n' "$arg" >&2; return 2 ;;
+      *)
+        if _valid_state "$arg"; then filter="$arg"; shift
+        else printf 'deputy: list: unexpected argument: %s (want a <state> or --<state>)\n' "$arg" >&2; return 2; fi ;;
     esac
   done
   _with_lock _allocate_ids
@@ -1067,7 +1079,12 @@ cmd_set() {
   local action="state"
   if [[ "$#" -ge 3 && ( "${1:-}" == "prio" || "${1:-}" == "state" ) ]]; then action="$1"; shift; fi
   local from="${1:-}" newval="${2:-}"
-  [[ -n "$from" && -n "$newval" ]] || { printf 'deputy: set [prio|state] "<line>|<id>" <value>\n' >&2; return 2; }
+  [[ -n "$from" && -n "$newval" ]] || { printf 'deputy: set [prio|state] "<line>|#<id>" <state|pN>\n' >&2; return 2; }
+  # Shape-based unification: a bare value of p0..p4 means a PRIORITY change even without
+  # the explicit 'prio' keyword ('deputy set #5 p0'). Ids are #-prefixed and states are
+  # words, so a pN value is unambiguous. The headless worker whole-line contract always
+  # passes a STATE value (never pN), so this never reinterprets it.
+  if [[ "$action" == "state" && "$newval" =~ ^[pP][0-4]$ ]]; then action="prio"; fi
   # #60: --ready-merge marks a 'surfaced' item as "branch ready for human merge-review"
   # (distinct from a blocked surface) so it's excluded from the blocking-surfaced count.
   local _ready_merge=0 _a
@@ -1606,28 +1623,31 @@ commands:
                                   no flag → default priority P3 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
-  list [--<state>]                print parsed items (state|priority|id|description);
-                                  optional --<state> (e.g. --waiting, --running, --deferred)
-                                  lists only items in that state
+  list [<state>]                  print parsed items (state|priority|id|description);
+                                  optional state filter — bare '<state>' (e.g. 'deputy list
+                                  waiting'), '--state <state>', or '--<state>' shorthand;
+                                  no arg lists all
   status                          counts by state
   watch [--once]                  passive monitor: live-tails a running worker; on quiescence
                                   (runnable→0, items surfaced) beeps 3× + prints a resume digest
                                   once; re-arms after each new worker run; Ctrl-C exits (alias: tail)
-  run [<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
+  run [#<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
                                   (interactive/TTY runs stream output live; --headless or
                                   headed=0 config forces the buffered/cron behavior)
-                                  if <id> given (integer; '#7' also accepted), run that
+                                  if '#<id>' given (bare integer also accepted), run that
                                   specific item bypassing priority order (targeted, one item only)
-  set [prio|state] "<exact line>"|<id> <value>
-                                  change an item's state (default) or priority — by exact-line
-                                  match or item id. e.g. `deputy set 50 waiting`, `set #50 waiting`,
-                                  `set state #50 done`, or `set prio #50 p0` (priority p0..p4;
-                                  prio keeps the current state). Bare form = state, unchanged.
+  set <#id|"<exact line>"> <state|pN>
+                                  change an item's state or priority — target by '#<id>'
+                                  (bare id also accepted) or exact-line match. Value shape
+                                  decides: a state word sets state, 'p0'..'p4' sets priority.
+                                  e.g. `deputy set #50 done`, `deputy set #50 p0`. Explicit
+                                  `set state #50 done` / `set prio #50 p0` forms also accepted.
   cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
-  clean [<id>] [--dry-run] [--state <state>]
+  clean [#<id>|<state>] [--dry-run]
                                   remove items matching the filter:
-                                    <id>           clean one item by its numeric ID (e.g. '7' or '#7')
-                                    --state <s>    remove all items of <state> (default: waiting)
+                                    #<id>          clean one item by id (bare integer also accepted)
+                                    <state>        remove all items of <state> (e.g. 'clean done';
+                                                   '--state <s>' also accepted; default: waiting)
                                   cleanable states: waiting, done, failed, cancelled, duplicate, deferred
                                   refuses running, triaging, surfaced, paused (active/checkpointed/awaiting)
   reflect [--apply]               full queue health report: learnings, untagged items, reprioritization
@@ -2720,7 +2740,10 @@ cmd_run() {
 cmd_clean() {
   local dry=0 filter_state="waiting" filter_id=""
 
-  # Arg parsing: tolerant of order; support --state X and --state=X and positional <id>.
+  # Unified arg grammar (tolerant of order): '#<id>' (canonical) or bare numeric =
+  # one item by id; a bare '<state>' word (canonical, e.g. 'clean done') or the
+  # '--state <s>'/'--state=<s>' alias = all items of that state (default waiting).
+  # The '#' prefix and the pN/state shapes make a single positional unambiguous.
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run)   dry=1; shift ;;
@@ -2732,8 +2755,10 @@ cmd_clean() {
       *)
         if [[ "$1" =~ ^[0-9]+$ ]]; then
           filter_id="$1"; shift
+        elif _valid_state "$1"; then
+          filter_state="$1"; shift
         else
-          printf 'deputy: clean: unexpected argument: %s\n' "$1" >&2; return 2
+          printf 'deputy: clean: unexpected argument: %s (want #<id> or a <state>)\n' "$1" >&2; return 2
         fi ;;
     esac
   done

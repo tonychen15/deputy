@@ -41,3 +41,14 @@ assert_eq "$(printf '%s\n' "$out" | grep -c .)" "0" "filter with no matches prin
 # bad input -> exit 2
 bash "$DEPUTY" list --bogus >/dev/null 2>&1; assert_eq "$?" "2" "unknown state filter exits 2"
 bash "$DEPUTY" list extra   >/dev/null 2>&1; assert_eq "$?" "2" "unexpected positional arg exits 2"
+
+# unified grammar: a bare '<state>' positional filters (canonical), equivalent to
+# '--state <state>' and the '--<state>' shorthand.
+setup_repo
+bash "$DEPUTY" add "bare-filter waiting item" --p2 >/dev/null
+assert_contains "$(bash "$DEPUTY" list waiting)"         "bare-filter waiting item" "list <state> bare positional filters"
+assert_contains "$(bash "$DEPUTY" list --state waiting)" "bare-filter waiting item" "list --state <state> filters"
+np="$(bash "$DEPUTY" list done)"
+if printf '%s' "$np" | grep -q "bare-filter waiting item"; then
+  TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: list done showed a waiting item\n' >&2
+else TESTS_RUN=$((TESTS_RUN+1)); fi

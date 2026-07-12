@@ -235,3 +235,17 @@ printf '+[P1][#1] done item\n<!-- arbitrary comment -->\n' >> "$DEPUTY_ROOT/BACK
 bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" clean --state done
 assert_eq "$(grep -c '<!-- arbitrary comment -->' "$DEPUTY_ROOT/BACKLOG.md")" "1" "non-release HTML comment preserved after clean --state done"
+
+# unified grammar: bare '<state>' cleans that state; '#<id>' cleans one item.
+setup_repo
+bash "$DEPUTY" add "clean-bare done item" >/dev/null
+cid="$(bash "$DEPUTY" list | grep -F 'clean-bare done item' | cut -d'|' -f3)"
+bash "$DEPUTY" set "#$cid" done
+bash "$DEPUTY" clean done
+assert_eq "$(grep -c 'clean-bare done item' "$DEPUTY_ROOT/BACKLOG.md")" "0" "clean <state> bare positional removes that state"
+
+setup_repo
+bash "$DEPUTY" add "clean-by-id hash item" >/dev/null
+cid2="$(bash "$DEPUTY" list | grep -F 'clean-by-id hash item' | cut -d'|' -f3)"
+bash "$DEPUTY" clean "#$cid2"
+assert_eq "$(grep -c 'clean-by-id hash item' "$DEPUTY_ROOT/BACKLOG.md")" "0" "clean #<id> removes one item by id"

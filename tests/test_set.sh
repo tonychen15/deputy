@@ -119,3 +119,13 @@ assert_contains "$out" "set [prio|state]" "set (no args): shows usage"
 # An item whose id we set with a bare 2-arg call still transitions state (not prio).
 bash "$DEPUTY" set "$pid" waiting
 assert_contains "$(bash "$DEPUTY" list)" "waiting|" "set <id> <state> (2-arg) stays the bare state form"
+
+# unified grammar: 'set #<id> pN' reprioritizes by SHAPE (no 'prio' keyword needed);
+# a bare state value still sets state — value shape decides.
+setup_repo
+bash "$DEPUTY" add "shape task" --p3 >/dev/null
+sid="$(bash "$DEPUTY" list | grep -F 'shape task' | cut -d'|' -f3)"
+bash "$DEPUTY" set "#$sid" p0
+assert_contains "$(bash "$DEPUTY" list)" "waiting|P0|" "set #id pN: bare pN value sets priority by shape (state untouched)"
+bash "$DEPUTY" set "#$sid" surfaced
+assert_contains "$(bash "$DEPUTY" list)" "surfaced|P0|" "set #id <state>: bare state value sets state (priority untouched)"
