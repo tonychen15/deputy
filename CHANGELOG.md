@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.3 — 2026-07-12
+
+Patch — `deputy watch` becomes a passive summon-on-quiescence monitor; opt-in merged-branch cleanup.
+
+- **`deputy watch` is now a passive, read-only quiescence monitor (#79).** While a worker
+  runs it live-tails as before; when the backlog goes quiescent — no runnable items left and
+  at least one item surfaced needing input — it beeps 3× (TTY-guarded) and prints a one-time
+  resume digest (each surfaced item with its questions-file path, first-line summary, and a
+  `run /deputy` resume tip), re-arming after each new run. Never mutates queue state; adds a
+  `--once` single-pass seam. The digest resolves the questions file across both slug
+  conventions (`<desc>-<id>` and `<id>-<desc>`) plus legacy flat paths.
+- **Opt-in auto-delete of merged `deputy/<slug>` branches (#77).** New `delete_merged_branch`
+  config (default `0`). When enabled, `_wt_remove` deletes the local branch after a clean
+  merge via `git branch -d` (merged-only, never `-D/-f`), gated on HEAD being the default
+  branch **and** the branch being an ancestor of HEAD — so it fires only on the post-merge
+  success path and safely preserves the branch on surface / ready-merge / conflict-abort.
+  Local only; never touches the remote.
+
 ## v1.3.2 — 2026-06-24
 
 Patch — customer-project upgrade ergonomics.
