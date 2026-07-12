@@ -10,10 +10,10 @@
 
 ## Items
 
-### Running (1)
-@[#96][P3] add one 'set' sub-command for 'deputy cron' to change heartbeat time for cron from original minutes to new minutes like 'deputy cron set 2' for 2 mins
+### Running (0)
 
-### Surfaced (6)
+### Surfaced (7)
+?[#96][P3] add one 'set' sub-command for 'deputy cron' to change heartbeat time for cron from original minutes to new minutes like 'deputy cron set 2' for 2 mins
 ?[#94][P3] Watchdog .bak torn-write recovery (Open-2 defense-in-depth, split from #87). When the #87 watchdog SIGKILLs a worker mid in-place BACKLOG write (#85 path), BACKLOG could be left torn; _backlog_commit's .bak is only restored on a RETURNED write failure, not on an external KILL. #87 mitigates with SIGTERM + grace (a ms-long write almost always finishes first) but a residual window remains. ADD: on deputy startup/recover, detect a leftover _backlog_commit .bak (per _backlog_mktemp: under .deputy/ or repo root, '.backlog.tmp.*.bak') alongside a torn/invalid BACKLOG (empty, or fails the '## Items' structure sanity check) and RESTORE from the .bak. GRILL: torn-detection heuristic; where the .bak lives (STATE_DIR vs repo root); cleanup of stale .bak after clean runs; flock interaction. Low urgency (TERM+grace makes the window very rare).
 ?[#93][P3] Add an opt-in MACHINE-READABLE output to 'deputy list' — e.g. 'deputy list --porcelain' (or '--format=pipe') emits the stable 'state|priority|id|desc' pipe format, while the DEFAULT stays the human BACKLOG.md line format from #84. MOTIVATION: #84 changed 'deputy list' default to BACKLOG format ('@[#1][P0] desc'), nicer for humans but NOT reliably machine-parseable (can't split on a delimiter; descriptions contain brackets/spaces). deputy internals + SKILL don't parse list output, but external scripts that did (e.g. 'deputy list | cut -d"|" -f3') broke, and the SessionStart hook broke too (fixed during #84). SCOPE/GRILL: flag name (--porcelain vs --format=pipe|backlog); BACKLOG format stays default; --porcelain restores the pre-#84 'state|priority|id|desc' (delimiter-split-safe); compose with the state filter and #91's 'list #<id>'; update help + add a test asserting --porcelain yields parseable pipe output. Ref: #84 (contract change), #90 (CLI-consistency), #91 (list by id).
 ?[#92][P3] when 'deputy list <state>' is called, add one empty line between each tasks with <state> state
