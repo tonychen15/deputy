@@ -61,9 +61,16 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    `.review.md` trail; author here is `claude`). No advance without an APPROVED verdict.
 3. `deputy set-step <slug> --step 1 [--expected "<done-condition>"]` → do the work
    inside `.deputy/wt`, following the repo's conventions.
-4. **Quality gate:** run `deputy config test_cmd` (and `lint_cmd`/`build_cmd` if set).
-   Must pass before the protected-path gate and commit. If none configured, note that in
-   your summary — do not silently skip.
+4. **Quality gate (two-phase — #89):** During iteration, run only the **targeted** tests
+   that exercise what you changed — the ones you already ran while developing (e.g. a
+   `cmd_list` edit → `test_list` + `test_cmd_help`), NOT the whole suite on every retry.
+   Then run the **full** suite (`deputy config test_cmd`, else the repo's test runner)
+   **exactly once** as the final gate — right before the last step's commit (i.e. before
+   the merge/surface in step 9). Also run `lint_cmd`/`build_cmd` if set. Tests must pass
+   before the protected-path gate and commit. If no test command is configured, note that
+   in your summary — do not silently skip. *(Rationale: running the full suite on every
+   step/retry made a ~1-line change take ~30 min; targeted-per-iteration + full-once keeps
+   correctness at a fraction of the cost.)*
 5. **Stage all changes** before the gates: `git -C .deputy/wt add -A`. The gates must
    run on a non-empty staged diff — do not skip staging.
 6. **Protected-path gate (mandatory, before EVERY commit):**
@@ -142,7 +149,8 @@ If no coder is available, `deputy cron --reschedule "<reset text>"` — never bu
    - `deputy set-step <slug> --step <n> [--expected "<done-condition>"]`
    - Do the work in `.deputy/wt`.
    - `git -C .deputy/wt add -A` (stage all changes before the gates).
-   - Quality gate → protected-path gate (mandatory) → implementation xReview (§3).
+   - Quality gate (§2a step 4: **targeted** tests this step; the **full** suite only once,
+     before the FINAL step's commit) → protected-path gate (mandatory) → implementation xReview (§3).
    - `deputy commit <slug> --summary "..."` (commits the already-staged changes).
    - **Preemption check:** same as §2a step 8 — after the commit, check `deputy pick`;
      if higher priority exists, `deputy set "<item-line>" paused` and stop.
@@ -248,10 +256,16 @@ counts against the retry budget in §4).
 ### 4. Failure / retry / escalation
 - **Quota / rate limit:** not a failure — reroute (§2a failover) or
   `deputy cron --reschedule`; never burn a retry or mark failed.
-- **Recoverable** (tests fail, xReview NEEDS_CHANGES): retry with the failure as context,
-  up to **2** times. Repeated reviewer `NEEDS_CHANGES` on the **same step** count against
-  this budget — a reviewer↔author standoff can't loop forever. On the 3rd rejection,
-  treat as BLOCKED/exhausted.
+- **Recoverable** (a failed quality-gate/test run, OR an xReview `NEEDS_CHANGES`): retry
+  with the failure as context. **Track a local `retry_count` per step, starting at 0;
+  increment it by 1 on EACH failed attempt** — a failed test/quality-gate run *or* a
+  `NEEDS_CHANGES` from *any* reviewer both count toward the same per-step budget. A
+  reviewer-side error fallback (e.g. codex→claude) does **NOT** reset the count. Retry while
+  `retry_count` < 3; on the **3rd** failed attempt, stop — treat as BLOCKED/exhausted
+  (initial try + 2 retries). The **plan** review and **each implementation step** each get
+  their **own independent** budget (a plan rejection never counts against an implementation
+  step, and vice-versa). This prevents the reviewer↔author standoff that ran **4 rounds in
+  #84** from looping.
 - **Exhausted / BLOCKED / protected-path violation:** for a **complex** item, re-triage
   as complex and **surface** it ("Deputy got stuck here — your call"); for a **simple**
   item, `deputy set "<item-line>" failed` and write the reason + log to
