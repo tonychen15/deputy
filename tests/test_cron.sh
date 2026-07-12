@@ -222,5 +222,34 @@ if [[ "$path_check" -gt 1 ]]; then
 fi
 TESTS_RUN=$((TESTS_RUN + 1))
 
+# ── Test 14: cron status — enabled + scheduled ──
+: > "$STORE"
+bash "$DEPUTY" cron --ensure
+status_out="$(bash "$DEPUTY" cron status)"
+assert_contains "$status_out" "enabled:  yes" "status shows enabled yes after --ensure"
+assert_contains "$status_out" "schedule: */10" "status shows schedule when line is in crontab"
+
+# ── Test 15: cron status — disabled + not scheduled ──
+bash "$DEPUTY" cron --remove
+status_out2="$(bash "$DEPUTY" cron status)"
+assert_contains "$status_out2" "enabled:  no" "status shows enabled no after --remove"
+assert_contains "$status_out2" "schedule: (not scheduled)" "status shows not-scheduled when no crontab line"
+
+# ── Test 16: cron status — last run shows never when no cron.log ──
+assert_contains "$status_out2" "last run: (never)" "status shows never when cron.log absent"
+
+# ── Test 17: cron status — last run shows timestamp when cron.log exists ──
+bash "$DEPUTY" cron --ensure
+touch "$DEPUTY_ROOT/.deputy/cron.log"
+status_out3="$(bash "$DEPUTY" cron status)"
+assert_not_contains() {
+  local haystack="$1" needle="$2" msg="$3"
+  if printf '%s' "$haystack" | grep -qF "$needle"; then
+    TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: %s\n' "$msg" >&2
+  else TESTS_RUN=$((TESTS_RUN+1)); fi
+}
+assert_not_contains "$status_out3" "last run: (never)" "status shows non-never last run when cron.log present"
+assert_contains "$status_out3" "last run:" "status includes last run line"
+
 rm -f "$STORE" "$FAKE"
 rm -rf "$ROOT_B" "$PREFIX_BASE" 2>/dev/null || true

@@ -127,14 +127,14 @@ _bash_risky() {
   done < <(printf '%s\n' "$n" | tr ';|&()' '\n')
 
   # deputy cron lifecycle is user-owned; check EACH segment — a segment touching
-  # `deputy cron` is allowed only if it is --reschedule (the SKILL's quota failover) AND
-  # carries no --ensure/--remove. Per-segment catches chained bypasses
-  # (e.g. `deputy cron --reschedule x; deputy cron --remove`).
+  # `deputy cron` is allowed only if it is --reschedule (the SKILL's quota failover) or
+  # the read-only `status` subcommand, AND carries no --ensure/--remove. Per-segment
+  # catches chained bypasses (e.g. `deputy cron --reschedule x; deputy cron --remove`).
   local _seg
   while IFS= read -r _seg; do
     local _snorm; _snorm="$(_norm "$_seg")"
     printf '%s' "$_snorm" | grep -Eq '^[[:space:]]*deputy +cron' || continue
-    if printf '%s' "$_snorm" | grep -Eq '^[[:space:]]*deputy +cron +--reschedule' \
+    if printf '%s' "$_snorm" | grep -Eq '^[[:space:]]*deputy +cron +(--reschedule|status)' \
        && ! printf '%s' "$_snorm" | grep -Eq -- '--(ensure|remove)'; then
       continue
     fi
