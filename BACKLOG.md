@@ -14,8 +14,7 @@
 
 ### Surfaced (0)
 
-### Waiting (3)
-[#82][P2] add a status to 'deputy cron status' to show the cron status in the current folder
+### Waiting (2)
 [#83][P3] when 'deputy add' command is executed successfully, deputy should show the added task's id as 'deputy: added #<id>: xxxxx'
 [#84][P3] In BACKLOG.md a task is displayed as <state>[#<id>][<priority>] <desc>, but 'deputy list <state>' output is still the 'waiting|P3|83|<desc>' pipe format — make the list output consistent with the BACKLOG.md line format.
 
@@ -29,7 +28,8 @@
 
 ### Failed / Cancelled / Duplicate (0)
 
-### Done (72)
+### Done (73)
++[#82][P2] add a status to 'deputy cron status' to show the cron status in the current folder
 +[#81][P2] if 'deputy list <state>' has 0 task to show, it still need to dispay '0 task in <state> state'
 +[#80][P2] Unify the 'state'/'id' argument syntax across list/set/clean/run. PROBLEM: three inconsistent idioms for one concept — 'list --<state>' (state as flag NAME), 'clean --state <value>' (state as flag VALUE), 'set state #<id> <value>' (keyword+positional). UNIFIED GRAMMAR — disambiguate a positional slot BY SHAPE: '#<num>' = item id (the # makes it an id, canonical everywhere), a bare state word (waiting/surfaced/paused/deferred/...) = a state, 'p0'..'p4' = a priority. So: 'deputy list [<state>]' (bare state filters, no arg = all); 'deputy clean [#<id>|<state>] [--dry-run]' (#id cleans one, bare state cleans that state, default waiting); 'deputy set <#id|"<line>"> <state|pN>' (id or whole line, then state or priority); 'deputy run [#<id>]'. BACK-COMPAT — keep ALL as aliases, nothing breaks: 'list --<state>' + 'list --state <v>'; 'clean --state <v>' + bare-numeric ids (clean 5 / run 5 / set 5 done); 'set state|prio #<id> <v>'; and CRITICALLY the headless worker whole-line contract 'set "<line>" <state>' stays exact. SCOPE: update arg-parsing in cmd_list, cmd_clean, cmd_set, and the run/#id parse to accept the unified canonical forms while preserving every alias; disambiguate positional id-vs-state by the '#' prefix and pN shape; update 'deputy help' general usage lines AND every per-command --help (#72) for list/set/clean/run; update/extend tests (test_list, test_clean, test_set, test_run, test_cmd_help) covering canonical forms + aliases + the worker whole-line contract. RESOLVED 2026-07-12 (grill): positional state everywhere is unambiguous because ids are #-prefixed; keep all old forms as aliases; '#<id>' is the documented id form across commands.
 <!-- release v1.3.3 — 2026-07-12 -->
