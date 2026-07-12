@@ -1642,7 +1642,7 @@ commands:
                                   decides: a state word sets state, 'p0'..'p4' sets priority.
                                   e.g. `deputy set #50 done`, `deputy set #50 p0`. Explicit
                                   `set state #50 done` / `set prio #50 p0` forms also accepted.
-  cron --ensure|--remove|--reschedule "<text>"   manage the safety-net schedule
+  cron --ensure|--remove|--reschedule "<text>"|status   manage the safety-net schedule
   clean [#<id>|<state>] [--dry-run]
                                   remove items matching the filter:
                                     #<id>          clean one item by id (bare integer also accepted)
@@ -1923,7 +1923,35 @@ cmd_cron() {
     --reschedule) local h; h="$(_parse_reset_hour "${2:-}")"
                   if [[ -n "$h" ]]; then _set_cron "0 $h * * *"
                   else _set_cron "0 */2 * * *"; fi ;;
-    *) printf 'deputy: cron needs --ensure|--remove|--reschedule "<text>"\n' >&2; return 2 ;;
+    status)
+      local root marker cron_lines cron_line schedule enabled last_run
+      root="$(resolve_root)"
+      marker="# deputy[$root]"
+      if _cron_enabled; then enabled="yes"; else enabled="no"; fi
+      cron_lines="$(_crontab -l 2>/dev/null || true)"
+      cron_line="$(printf '%s\n' "$cron_lines" | grep -F "$marker" | head -1 || true)"
+      if [[ -n "$cron_line" ]]; then
+        schedule="$(printf '%s\n' "$cron_line" | awk '{print $1,$2,$3,$4,$5}')"
+      else
+        schedule="(not scheduled)"
+      fi
+      if [[ -f "$STATE_DIR/cron.log" ]]; then
+        local mtime
+        mtime="$(stat -c %Y "$STATE_DIR/cron.log" 2>/dev/null \
+                 || stat -f %m "$STATE_DIR/cron.log" 2>/dev/null || true)"
+        if [[ -n "$mtime" ]]; then
+          last_run="$(date -d "@$mtime" '+%Y-%m-%d %H:%M' 2>/dev/null \
+                      || date -r "$mtime" '+%Y-%m-%d %H:%M' 2>/dev/null \
+                      || echo '(unknown)')"
+        else
+          last_run="(unknown)"
+        fi
+      else
+        last_run="(never)"
+      fi
+      printf 'enabled:  %s\nschedule: %s\nlast run: %s\n' "$enabled" "$schedule" "$last_run"
+      ;;
+    *) printf 'deputy: cron needs --ensure|--remove|--reschedule "<text>"|status\n' >&2; return 2 ;;
   esac
 }
 
