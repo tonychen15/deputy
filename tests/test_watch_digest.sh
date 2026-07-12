@@ -37,7 +37,7 @@ setup_repo
 sid2="$(_add_surfaced "beta stuck item" "Design choice needed: pick A or B")"
 out2="$(bash "$DEPUTY" watch --once 2>&1)"
 assert_contains "$out2" "beta stuck item" "digest: item description present"
-assert_contains "$out2" "questions:" "digest: questions path label present"
+assert_contains "$out2" "details:" "digest: questions/details path label present"
 assert_contains "$out2" "Design choice needed" "digest: first line of questions file shown"
 assert_contains "$out2" "resume:" "digest: resume tip present"
 assert_contains "$out2" "/deputy" "digest: resume tip mentions /deputy"
@@ -64,17 +64,29 @@ else
   TESTS_RUN=$((TESTS_RUN+1))
 fi
 
-# 5: proposal surfaces are excluded from the digest
+# 5: proposal surfaces ARE shown, labeled 'proposed', with approve/reject tips
 setup_repo
 DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" add "epsilon proposal item" --p2 >/dev/null
 pid5="$(bash "$DEPUTY" list | grep -F "epsilon proposal item" | cut -d'|' -f3)"
 bash "$DEPUTY" set "$pid5" surfaced >/dev/null 2>&1
-# Mark it as a proposal (the surfaced-but-proposal path)
 mkdir -p "$DEPUTY_ROOT/.deputy"
 printf 'proposed-by-run-pid: 0\nitem: epsilon proposal item\n' > "$DEPUTY_ROOT/.deputy/proposed-$pid5"
 out5="$(bash "$DEPUTY" watch --once 2>&1)"
-# Should see "nothing to watch" (proposal doesn't count as blocking-surfaced)
-assert_contains "$out5" "nothing to watch" "watch --once: proposal surfaces don't count as blocking-surfaced"
+assert_contains "$out5" "epsilon proposal item" "watch --once: proposal surface is shown in the digest"
+assert_contains "$out5" "proposed"              "watch --once: proposal labeled 'proposed'"
+assert_contains "$out5" "approve:"              "watch --once: proposal shows approve/reject tip"
+
+# 5b: ready-merge surfaces ARE shown, labeled 'ready to merge', with a merge command
+setup_repo
+DEPUTY_NO_AUTORUN=1 bash "$DEPUTY" add "zeta merge item" --p2 >/dev/null
+mid="$(bash "$DEPUTY" list | grep -F "zeta merge item" | cut -d'|' -f3)"
+bash "$DEPUTY" set "$mid" surfaced >/dev/null 2>&1
+mkdir -p "$DEPUTY_ROOT/.deputy"
+printf 'ready-merge-at: t\nbranch ready for human merge-review\n' > "$DEPUTY_ROOT/.deputy/ready-merge-$mid"
+out5b="$(bash "$DEPUTY" watch --once 2>&1)"
+assert_contains "$out5b" "zeta merge item" "watch --once: ready-merge surface is shown in the digest"
+assert_contains "$out5b" "ready to merge"  "watch --once: ready-merge labeled 'ready to merge'"
+assert_contains "$out5b" "merge:"          "watch --once: ready-merge shows a merge command"
 
 # 6: totally-empty queue → "nothing to watch" friendly exit
 setup_repo

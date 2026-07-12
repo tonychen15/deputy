@@ -3353,53 +3353,85 @@ _runnable_count() {
   printf '%s' "$n"
 }
 
+# Count ALL surfaced items — needs-input (blocked), ready-to-merge, AND proposals.
+# Every surfaced item awaits some human action (answer / review+merge / approve-reject),
+# so the watch summon fires for any of them. (This is intentionally broader than
+# _blocking_surfaced_count, which excludes ready-merge/proposals for the *scheduling*
+# guard — a different concern.)
+_surfaced_count() {
+  local n=0 raw parsed state
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    [[ "$state" == surfaced ]] && n=$(( n + 1 ))
+  done < <(_each_item)
+  printf '%s' "$n"
+}
+
 # Emit 3 terminal BEL chars ~0.3 s apart. No-op when stdout is not a TTY.
 _watch_beep() {
   [[ -t 1 ]] || return 0
   printf '\a'; sleep 0.3; printf '\a'; sleep 0.3; printf '\a'
 }
 
-# Print the quiescence digest: one entry per surfaced (non-proposal, non-ready-merge) item.
+# Print the quiescence digest: EVERY surfaced item awaiting human action, each labeled
+# by what it needs — 'needs input' (a blocked run), 'ready to merge' (review + git merge;
+# the common case under auto_merge=0), or 'proposed' (approve/reject a worker-suggested
+# task). All three are shown so no surfaced item is silently left off the summon.
 _watch_digest() {
-  local _wd_raw _wd_p _wd_state _wd_rest _wd_prio _wd_id _wd_desc _wd_cand _wd_qf _wd_first _wd_any=0
+  local _wd_raw _wd_p _wd_state _wd_rest _wd_prio _wd_id _wd_desc _wd_cand _wd_qf _wd_slug _wd_first _wd_kind _wd_any=0
   printf '\ndeputy: batch quiescent — surfaced items need your attention:\n'
   while IFS= read -r _wd_raw; do
     _wd_p="$(_parse_item "$_wd_raw")"; _wd_state="${_wd_p%%|*}"
     [[ "$_wd_state" == "surfaced" ]] || continue
     _wd_rest="${_wd_p#*|}"; _wd_prio="${_wd_rest%%|*}"
     _wd_rest="${_wd_rest#*|}"; _wd_id="${_wd_rest%%|*}"; _wd_desc="${_wd_rest#*|}"
-    [[ "$_wd_id" =~ ^[0-9]+$ ]] && { [[ -f "$STATE_DIR/proposed-$_wd_id" ]] || [[ -f "$STATE_DIR/ready-merge-$_wd_id" ]]; } && continue
     _wd_any=1
-    local _wd_hdr="#${_wd_id:-?}"
-    [[ -n "$_wd_prio" ]] && _wd_hdr="${_wd_hdr} [${_wd_prio}]"
-    printf '\n  %s %s\n' "$_wd_hdr" "$_wd_desc"
+    # Classify by marker: ready-merge and proposed carry a .deputy/<kind>-<id> file.
+    _wd_kind="needs input"
     if [[ "$_wd_id" =~ ^[0-9]+$ ]]; then
-      # The slug is orchestrator-chosen, so the questions file may use either the
-      # interactive orchestrator's '<desc>-<id>' (suffix) convention or the runner's
-      # _wp_slug '<id>-<desc>' (prefix) convention. Match BOTH under .deputy/questions/
-      # (#70), then legacy flat .deputy/*.questions.md. First match wins.
-      _wd_qf=""
+      [[ -f "$STATE_DIR/ready-merge-$_wd_id" ]] && _wd_kind="ready to merge"
+      [[ -f "$STATE_DIR/proposed-$_wd_id"    ]] && _wd_kind="proposed"
+    fi
+    printf '\n  #%s [%s] %s  — %s\n' "${_wd_id:-?}" "${_wd_prio:-?}" "$_wd_desc" "$_wd_kind"
+    # Locate the questions file. The slug is orchestrator-chosen, so match BOTH the
+    # '<desc>-<id>' (suffix) and '<id>-<desc>' (prefix) conventions under .deputy/questions/
+    # (#70), then legacy flat .deputy/*.questions.md. First match wins.
+    _wd_qf=""
+    if [[ "$_wd_id" =~ ^[0-9]+$ ]]; then
       for _wd_cand in "$STATE_DIR"/questions/*-"$_wd_id".md "$STATE_DIR"/questions/"$_wd_id"-*.md \
                       "$STATE_DIR"/*-"$_wd_id".questions.md "$STATE_DIR"/"$_wd_id"-*.questions.md; do
         [[ -f "$_wd_cand" ]] && { _wd_qf="$_wd_cand"; break; }
       done
-      if [[ -n "$_wd_qf" ]]; then
-        _wd_first="$(head -1 "$_wd_qf" 2>/dev/null || true)"
-        printf '    questions: %s\n' "$_wd_qf"
-        [[ -n "$_wd_first" ]] && printf '    summary:   %s\n' "$_wd_first"
-      fi
     fi
-    printf '    resume:    run /deputy — it will pick up #%s from its waypoint\n' "${_wd_id:-?}"
+    if [[ -n "$_wd_qf" ]]; then
+      _wd_first="$(head -1 "$_wd_qf" 2>/dev/null || true)"
+      printf '      details: %s\n' "$_wd_qf"
+      [[ -n "$_wd_first" ]] && printf '      summary: %s\n' "$_wd_first"
+    fi
+    # Action tip per kind.
+    case "$_wd_kind" in
+      "ready to merge")
+        _wd_slug=""
+        [[ -n "$_wd_qf" ]] && { _wd_slug="${_wd_qf##*/}"; _wd_slug="${_wd_slug%.md}"; _wd_slug="${_wd_slug%.questions}"; }
+        local _wd_def; _wd_def="$(_default_branch)"; _wd_def="${_wd_def:-<default-branch>}"
+        # Route through the default branch so the merge can't land on the caller's
+        # current branch (matches deputy's surface-note merge instruction).
+        printf '      merge:   git checkout %s && git merge --no-ff deputy/%s\n' "$_wd_def" "${_wd_slug:-<slug>}" ;;
+      "proposed")
+        printf '      approve: deputy set #%s waiting   reject: deputy set #%s cancelled\n' "$_wd_id" "$_wd_id" ;;
+      *)
+        printf '      resume:  run /deputy (resumes #%s from its waypoint)\n' "${_wd_id:-?}" ;;
+    esac
   done < <(_each_item)
-  [[ "$_wd_any" -eq 0 ]] && printf '  (no blocking surfaced items found)\n'
+  [[ "$_wd_any" -eq 0 ]] && printf '  (no surfaced items found)\n'
   printf '\n'
 }
 
 # #63/#79: passive, persistent queue monitor. Modes by queue state on each poll tick:
 #   worker live  → live-tail it (existing path); loop back after tail exits and re-arm.
 #   runnable > 0 → stay quiet, keep polling (work still queued; NOT quiescent yet).
-#   quiescent    → runnable==0 AND blocking-surfaced>0: beep 3× + print digest ONCE;
-#                  _wcanbeep re-arms only after the next worker run completes.
+#   quiescent    → runnable==0 AND surfaced>0 (ANY surfaced — needs-input, ready-to-merge,
+#                  or proposed): beep 3× + print digest ONCE; re-arms after the next run.
 #   empty        → no worker, no surfaced, no runnable: friendly one-shot exit.
 # --once: one poll pass then exit (test/script seam; live-tail still blocks until run ends).
 # Ctrl-C exits; the 'tail' alias is preserved.
@@ -3457,7 +3489,7 @@ cmd_watch() {
 
     # ── poll the queue ────────────────────────────────────────────────────────
     local _wr; _wr="$(_runnable_count)"
-    local _ws; _ws="$(_blocking_surfaced_count)"
+    local _ws; _ws="$(_surfaced_count)"   # ALL surfaced (needs-input + ready-merge + proposed)
 
     # Re-arm if a new run was archived since the last beep (logs/ dir mtime changes
     # on every run-complete; unaffected by human queue edits or status reads).
@@ -3476,7 +3508,7 @@ cmd_watch() {
       sleep "$_wpoll"; continue
     fi
 
-    # Quiescent: runnable==0, blocking-surfaced>0 — beep + digest (once per batch)
+    # Quiescent: runnable==0, surfaced>0 (any kind) — beep + digest (once per batch)
     if [[ "$_wcanbeep" -eq 1 ]]; then
       _watch_beep
       _watch_digest
