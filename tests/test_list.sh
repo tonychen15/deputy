@@ -33,10 +33,10 @@ d="$(bash "$DEPUTY" list --deferred)"
 assert_eq "$(printf '%s\n' "$d" | grep -c .)" "1" "--deferred shows exactly 1"
 assert_contains "$d" "to defer" "--deferred content"
 
-# a state with no items -> no output, clean exit
+# a state with no items -> show '0 tasks in <state> state', clean exit
 out="$(bash "$DEPUTY" list --paused)"; rc=$?
 assert_eq "$rc" "0" "filter with no matches exits 0"
-assert_eq "$(printf '%s\n' "$out" | grep -c .)" "0" "filter with no matches prints nothing"
+assert_contains "$out" "0 tasks in paused state" "filter with no matches prints zero-count message"
 
 # bad input -> exit 2
 bash "$DEPUTY" list --bogus >/dev/null 2>&1; assert_eq "$?" "2" "unknown state filter exits 2"
