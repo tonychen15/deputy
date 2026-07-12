@@ -7,7 +7,7 @@ setup_repo
 # focused help for a public command, exit 0
 out="$(bash "$DEPUTY" set --help 2>&1)"; rc=$?
 assert_eq "$rc" "0" "set --help: exits 0"
-assert_contains "$out" "set [prio|state]" "set --help: shows the set block"
+assert_contains "$out" "<state|pN>" "set --help: shows the set block"
 # focused = ONLY that command's block (no other command's unique text bleeds in)
 if [[ "$out" == *'add "<text>"'* ]]; then
   TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: set --help leaked the add block\n' >&2
@@ -18,7 +18,7 @@ fi
 # -h alias works
 out="$(bash "$DEPUTY" list -h 2>&1)"; rc=$?
 assert_eq "$rc" "0" "list -h: exits 0 (alias)"
-assert_contains "$out" "list [--<state>]" "list -h: shows the list block"
+assert_contains "$out" "list [<state>]" "list -h: shows the list block"
 
 # prefix-collision: 'release --help' must NOT bleed into the 'release-notes' block
 out="$(bash "$DEPUTY" release --help 2>&1)"
