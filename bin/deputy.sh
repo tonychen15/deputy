@@ -490,23 +490,27 @@ _backlog_mktemp() {
 }
 
 # Commit $1 (a temp file) into BACKLOG.md.
-# When the BACKLOG directory is writable: mv is an atomic same-dir rename.
-# When the directory is read-only (bind-mount sandbox where BACKLOG.md is rw):
-#   fall back to an in-place truncating write, safe under _with_lock (flock).
-#   A .bak copy is required before the write so a crash can be diagnosed.
+# Atomic rename (mv) is preferred — torn-free for lock-less readers — BUT it swaps the
+# file's INODE. A sandboxed headless worker bind-mounts BACKLOG.md by inode (#64), so an
+# mv by an UNSANDBOXED writer (human/agent on the main tree) while that worker runs would
+# orphan the worker's handle mid-run and wedge it (#85). So: use mv only when NO run is
+# live (no bind to protect); whenever a run is live — or the dir is read-only (the sandbox
+# itself) — write IN-PLACE, which preserves the inode. In-place is safe under _with_lock
+# (flock); a .bak copy is taken first so a crash can be diagnosed.
 _backlog_commit() {
   local tmp="$1"
   # Guard: tmp must be a non-empty (-s) regular file — prevents replacing
   # BACKLOG.md with truncated/empty output on I/O failure.
   [[ -n "$tmp" && -s "$tmp" && -f "$tmp" ]] || { rm -f "$tmp" 2>/dev/null; return 1; }
   local d; d="$(dirname "$BACKLOG")"
-  if [[ -w "$d" ]]; then
-    # Directory writable: atomic rename (always same filesystem, no partial copy risk).
+  if [[ -w "$d" ]] && ! _active_run_live; then
+    # Dir writable AND no live run to protect: atomic rename (same filesystem, torn-free).
     mv "$tmp" "$BACKLOG" 2>/dev/null && return 0
     rm -f "$tmp" 2>/dev/null || true; return 1
   fi
-  # Directory not writable (bind-mount sandbox): use in-place write when BACKLOG.md
-  # itself is writable; fail loudly for any other failure cause (ENOSPC etc.).
+  # A run is live (preserve the worker's inode-pinned bind) OR the dir is read-only
+  # (bind-mount sandbox): write in-place when BACKLOG.md itself is writable — this keeps
+  # the inode stable. Fail for any other cause (dir ro AND file not writable, ENOSPC, …).
   if [[ -w "$BACKLOG" ]]; then
     local bak="${tmp}.bak"
     cp "$BACKLOG" "$bak" || { rm -f "$tmp"; return 1; }  # backup must succeed
