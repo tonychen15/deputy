@@ -15,7 +15,8 @@
 ### Surfaced (1)
 ?[#81][P2] if 'deputy list <state>' has 0 task to show, it still need to dispay '0 task in <state> state'
 
-### Waiting (0)
+### Waiting (1)
+[P2] add a status to 'deputy cron status' to show the cron status in the current folder
 
 ### Paused (0)
 
