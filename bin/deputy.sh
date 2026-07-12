@@ -1986,13 +1986,21 @@ _wt_remove() {
     git -C "$ROOT" worktree prune 2>/dev/null || true
     # Opt-in cleanup: delete the merged deputy/<slug> branch when configured.
     # Safety: uses 'git branch -d' (merged-only, never -D/-f) — fails silently when
-    # the branch is NOT merged (surface/abort/conflict paths). Also guards that $ROOT
-    # is not itself on a deputy/* branch (invariant: after a clean merge, $ROOT is on
-    # the default branch; this guard catches out-of-order manual calls).
+    # the branch is NOT merged (surface/abort/conflict paths). Require $ROOT to be on
+    # the DEFAULT branch (not merely "not a deputy/* branch"): 'git branch -d' tests
+    # merged-into-HEAD, so deleting must be gated on HEAD being the default branch —
+    # otherwise a manual wt-remove from another feature branch where deputy/<slug>
+    # happens to be merged could delete a branch never merged into the default one.
     local del_cfg; del_cfg="$(_config_get delete_merged_branch)"
     if [[ "${del_cfg:-0}" == "1" && "$removed" == "1" && "$branch" == deputy/* ]]; then
-      local cur_br; cur_br="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-      if [[ "$cur_br" != deputy/* ]]; then
+      local cur_br def_br
+      cur_br="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+      def_br="$(_default_branch)"
+      # Strict containment: 'git branch -d' also accepts "merged into upstream", so a
+      # tracked branch could slip through. Require the branch to be an ancestor of HEAD
+      # (i.e. actually contained in the default branch) before deleting.
+      if [[ -n "$def_br" && "$cur_br" == "$def_br" ]] \
+         && git -C "$ROOT" merge-base --is-ancestor "$branch" HEAD 2>/dev/null; then
         git -C "$ROOT" branch -d "$branch" 2>/dev/null \
           && printf 'deputy: deleted merged branch %s\n' "$branch" >&2 \
           || true
