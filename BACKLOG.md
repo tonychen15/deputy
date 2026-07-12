@@ -14,9 +14,10 @@
 
 ### Surfaced (0)
 
-### Waiting (2)
+### Waiting (3)
 [#83][P3] when 'deputy add' command is executed successfully, deputy should show the added task's id as 'deputy: added #<id>: xxxxx'
 [#84][P3] In BACKLOG.md a task is displayed as <state>[#<id>][<priority>] <desc>, but 'deputy list <state>' output is still the 'waiting|P3|83|<desc>' pipe format — make the list output consistent with the BACKLOG.md line format.
+[P1] BUG (confirmed 2026-07-12 via #82): a running headless worker can't finalize its BACKLOG.md write when a human/agent rewrites BACKLOG.md concurrently — it gets stuck ('BACKLOG.md is not writable') and death-loops, never surfacing. ROOT CAUSE: the bwrap sandbox (#64) bind-mounts BACKLOG.md as a FILE (inode-pinned) while the repo root is --ro-bind; the worker writes in-place (inode-preserving, correct), but an UNSANDBOXED writer (human/agent, repo root writable) uses _backlog_commit's atomic temp+mv path which REPLACES the inode, orphaning the worker's file-bind. NOT a lock-contention problem: _with_lock already uses blocking flock -x, so concurrent writes are safely serialized — a write-retry loop would NOT fix a stale inode. FIX OPTIONS (grill): (a) make ALL BACKLOG writers inode-preserving — always in-place truncate+write, never mv (simple/robust; trade-off: lock-less readers like _each_item could see a torn file mid-write → mitigate by having readers hold the lock, or keep the .bak + -s non-empty guards); (b) change the sandbox so the worker isn't inode-pinned (bind BACKLOG's containing dir rw instead of the file — but repo root is ro by #64, so needs care); (c) worker-aware: the unsandboxed writer uses in-place ONLY when a live headless worker holds the active-run claim, else mv (keeps mv atomicity in the common no-worker case; slightly racy at spawn). SCOPE: adjust _backlog_commit and/or the #64 sandbox bind; preserve the -s non-empty guard + .bak backup; add a regression test simulating an inode-replacing write while a repo-ro (sandboxed-style) writer holds an open handle, asserting the second write still lands. Part of the broader 'human works the queue while a headless worker runs' race.
 
 ### Paused (0)
 
