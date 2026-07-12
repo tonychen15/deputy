@@ -72,6 +72,43 @@ fi
 # adversarial out-of-scope class per the spec threat model (best-effort tripwire).
 _norm() { printf '%s' "$1" | tr '\t' ' ' | tr '\n' ';'; }
 
+# Strip leading shell wrappers and VAR=val env-assignments from a normalized command
+# segment so denylist patterns are prefix-resistant. Grammar matches _git_merge_blocked:
+# flow-control words, common exec wrappers, flags, and VAR=VALUE assignments are removed
+# in a loop until a non-strippable token is reached.
+# Known scope limits (accepted per the best-effort threat model):
+#   - Wrapper operands: `nice -n 10 cmd` strips `nice` + `-n` but leaves `10 cmd` unchecked.
+#   - Quoted env values: `X="a b" cmd` — the space inside quotes is invisible to ${s#* },
+#     so the strip stops at the wrong word boundary.
+# `sudo` is intentionally EXCLUDED: it is itself a denylist entry, so stripping it would
+# prevent `sudo git status` (correctly denied) from being caught by the denylist.
+_strip_cmd_prefixes() {
+  local s="$1" old_s
+  s="${s#"${s%%[![:space:]]*}"}"   # ltrim
+  while :; do
+    old_s="$s"
+    case "$s" in
+      if\ *|then\ *|else\ *|elif\ *|do\ *|while\ *|until\ *|time\ *|env\ *|command\ *|builtin\ *|exec\ *|nice\ *|nohup\ *|stdbuf\ *|ionice\ *) s="${s#* }" ;;
+      '!'\ *)    s="${s#* }" ;;   # shell negation
+      -*\ *)     s="${s#* }" ;;   # wrapper flag (e.g. -p, -i, -n)
+      *=*' '*)
+        # Pre-filter: has '=' and a space (candidate env assignment). Confirm with ERE
+        # that '=' comes directly after identifier chars (no spaces in varname), so
+        # `git -C /path --flag=val` (space before '=') is NOT treated as an assignment.
+        if [[ "$s" =~ ^[A-Za-z_][A-Za-z_0-9]*= ]]; then
+          s="${s#* }"   # strip VAR=value and the following space
+        else
+          break
+        fi
+        ;;
+      *) break ;;
+    esac
+    [[ "$s" == "$old_s" ]] && break    # progress guard
+    s="${s#"${s%%[![:space:]]*}"}"     # ltrim after each strip
+  done
+  printf '%s' "$s"
+}
+
 _bash_risky() {
   local raw_cmd="$1" session_cwd="${2:-}"
   local n; n="$(_norm "$raw_cmd")"
@@ -88,7 +125,10 @@ _bash_risky() {
 
   _check_segment() {
     local s="$1"
-    local bare_s; bare_s="$(printf '%s' "$s" | sed 's/git  *-C  *[^ ]*  */git /g')"
+    s="$(_strip_cmd_prefixes "$s")"    # strip env-assignments and wrappers; see _strip_cmd_prefixes
+    # Strip git -C <path> and git -c <key>=<val> options so the subcommand anchors correctly.
+    # Loop via ':loop; t loop' to handle stacked options (git -c a=b -c c=d push → git push).
+    local bare_s; bare_s="$(printf '%s' "$s" | sed ':loop; s/git  *-[Cc]  *[^ ]*  */git /; t loop')"
     local p
     for p in \
       '^[[:space:]]*git +push' \
@@ -135,9 +175,10 @@ _bash_risky() {
   local _seg
   while IFS= read -r _seg; do
     local _snorm; _snorm="$(_norm "$_seg")"
-    printf '%s' "$_snorm" | grep -Eq '^[[:space:]]*deputy +cron' || continue
-    if printf '%s' "$_snorm" | grep -Eq '^[[:space:]]*deputy +cron +(--)?(reschedule|status)([[:space:]]|$)' \
-       && ! printf '%s' "$_snorm" | grep -Eq -- '--(ensure|remove)|cron +(ensure|remove)([[:space:]]|$)'; then
+    local _stripped; _stripped="$(_strip_cmd_prefixes "$_snorm")"
+    printf '%s' "$_stripped" | grep -Eq '^[[:space:]]*deputy +cron' || continue
+    if printf '%s' "$_stripped" | grep -Eq '^[[:space:]]*deputy +cron +(--)?(reschedule|status)([[:space:]]|$)' \
+       && ! printf '%s' "$_stripped" | grep -Eq -- '--(ensure|remove)|cron +(ensure|remove)([[:space:]]|$)'; then
       continue
     fi
     return 0
@@ -171,15 +212,17 @@ _bash_risky() {
     rseg="$(printf '%s' "$rseg" | sed 's/^ *//;s/ *$//')"
     [[ -z "$rseg" ]] && continue
     local normseg; normseg="$(_norm "$rseg")"
-    # Track cd commands in this segment to update effective_cwd.
+    # Track cd commands in this segment to update effective_cwd (use pre-strip form).
     local cdpath; cdpath="$(printf '%s' "$normseg" | grep -oE '(^|[[:space:]])cd +[^ ]+' | sed 's/^ *cd  *//' | head -1)"
     if [[ -n "$cdpath" ]]; then
       local cdreal; cdreal="$(realpath -m -- "$cdpath" 2>/dev/null)" || cdreal=""
       effective_cwd="$cdreal"
     fi
-    if printf '%s' "$normseg" | grep -Eq '^[[:space:]]*git +[^|;&]*(reset +--hard|clean +-[a-zA-Z]*[fF][a-zA-Z]*)'; then
+    # Strip wrappers before reset/clean check so e.g. `X=1 git reset --hard` is caught.
+    local stripped_seg; stripped_seg="$(_strip_cmd_prefixes "$normseg")"
+    if printf '%s' "$stripped_seg" | grep -Eq '^[[:space:]]*git +[^|;&]*(reset +--hard|clean +-[a-zA-Z]*[fF][a-zA-Z]*)'; then
       # (a) -C path check.
-      local cpath; cpath="$(printf '%s' "$normseg" | grep -oE 'git +-C +[^ ]+' | sed "s/git  *-C  *//;s/^[\"']//;s/[\"']$//")"
+      local cpath; cpath="$(printf '%s' "$stripped_seg" | grep -oE 'git +-C +[^ ]+' | sed "s/git  *-C  *//;s/^[\"']//;s/[\"']$//")"
       if [[ -n "$cpath" && -n "$wt_real" ]]; then
         local creal; creal="$(realpath -m -- "$cpath" 2>/dev/null)" || creal=""
         case "$creal/" in
