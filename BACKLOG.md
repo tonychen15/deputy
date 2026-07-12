@@ -15,7 +15,8 @@
 
 ### Surfaced (0)
 
-### Waiting (0)
+### Waiting (1)
+[P2] if a scheduled task needs human's input, deputy should expose its output for three minutes and give three consecutive beeps before deputy puts it into surfaced state.
 
 ### Paused (0)
 
