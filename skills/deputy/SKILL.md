@@ -345,7 +345,9 @@ states: waiting triaging running surfaced done failed cancelled duplicate paused
 ## CLI quick reference
 
 **Public** (in `deputy help`):
-`deputy add|list|status|run|cron|set|clean|reflect`
+`deputy add|list|status|run|watch|tail|cron|set|clean|reflect`
+
+`deputy watch [--once]` (alias: `deputy tail`) — passive monitor: polls the queue; when the batch drains (runnable→0, blocking-surfaced>0) beeps 3× + prints a resume digest once; re-arms after each new worker run via logs/ dir mtime; `--once` exits after a single poll pass (test/script seam); `Ctrl-C` exits.
 
 **Orchestrator/runner-internal — callable but NOT in `deputy help`:**
 `recover|probe|route|detect` (and the already-noted `claim|pick`, the spine verbs, `wt-create|wt-remove`, `protected`, `config`) are orchestrator/runner-internal commands. They work fine from the shell but are not advertised in `deputy help` because they are plumbing details.
