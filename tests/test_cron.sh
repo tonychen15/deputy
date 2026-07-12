@@ -259,5 +259,43 @@ assert_not_contains() {
 assert_not_contains "$status_out3" "last run: (never)" "status shows non-never last run when cron.log present"
 assert_contains "$status_out3" "last run:" "status includes last run line"
 
+# ── Test 18: cron set — invalid inputs are rejected ──
+bash "$DEPUTY" cron remove 2>/dev/null || true
+rc=0; bash "$DEPUTY" cron set 0   2>/dev/null || rc=$?
+assert_eq "$rc" "2" "cron set 0: rejected (out of range)"
+rc=0; bash "$DEPUTY" cron set 60  2>/dev/null || rc=$?
+assert_eq "$rc" "2" "cron set 60: rejected (out of range)"
+rc=0; bash "$DEPUTY" cron set abc 2>/dev/null || rc=$?
+assert_eq "$rc" "2" "cron set abc: rejected (non-integer)"
+rc=0; bash "$DEPUTY" cron set     2>/dev/null || rc=$?
+assert_eq "$rc" "2" "cron set (no arg): rejected"
+
+# ── Test 19: cron set — updates heartbeat_mins in config (cron disabled) ──
+: > "$STORE"
+bash "$DEPUTY" cron remove 2>/dev/null || true
+bash "$DEPUTY" cron set 5
+assert_eq "$(bash "$DEPUTY" config heartbeat_mins)" "5" "cron set 5: config updated to 5"
+assert_eq "$(grep -c "heartbeat_mins=" "$DEPUTY_ROOT/.deputy/config")" "1" \
+  "cron set 5: no duplicate heartbeat_mins in config"
+assert_eq "$(grep -c "deputy\[$DEPUTY_ROOT\]" "$STORE" 2>/dev/null || true)" "0" \
+  "cron set 5: crontab NOT changed when cron disabled"
+
+# ── Test 20: cron set idempotency — repeated calls don't accumulate lines ──
+bash "$DEPUTY" cron set 3
+bash "$DEPUTY" cron set 7
+assert_eq "$(bash "$DEPUTY" config heartbeat_mins)" "7" "cron set idempotent: last value wins"
+assert_eq "$(grep -c "heartbeat_mins=" "$DEPUTY_ROOT/.deputy/config")" "1" \
+  "cron set idempotent: still exactly one heartbeat_mins line"
+
+# ── Test 21: cron set — updates crontab when cron is enabled ──
+: > "$STORE"
+bash "$DEPUTY" cron ensure  # enables cron (uses current heartbeat_mins=7)
+assert_contains "$(cat "$STORE")" "*/7 * * * *" "cron ensure picks up the set value 7"
+bash "$DEPUTY" cron set 2
+assert_eq "$(bash "$DEPUTY" config heartbeat_mins)" "2" "cron set 2: config updated"
+assert_contains "$(cat "$STORE")" "*/2 * * * *" "cron set 2: crontab rescheduled to */2"
+assert_eq "$(grep -c "deputy\[$DEPUTY_ROOT\]" "$STORE")" "1" \
+  "cron set 2: still exactly one cron entry"
+
 rm -f "$STORE" "$FAKE"
 rm -rf "$ROOT_B" "$PREFIX_BASE" 2>/dev/null || true
