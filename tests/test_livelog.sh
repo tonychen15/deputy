@@ -26,11 +26,11 @@ rm -f "$QORCH"
 
 rm -f "$ORCH"
 
-# 3: 'deputy watch' with no active run -> friendly message + exit 0
+# 3: 'deputy watch' with no active run and empty queue -> "nothing to watch" + exit 0
 setup_repo
 out="$(DEPUTY_ROOT="$DEPUTY_ROOT" bash "$DEPUTY" watch 2>&1; echo "rc=$?")"
-assert_contains "$out" "no worker is running" "watch (idle) prints a friendly message"
-assert_contains "$out" "rc=0" "watch (idle) exits 0"
+assert_contains "$out" "nothing to watch" "watch (idle + empty queue) prints nothing-to-watch message"
+assert_contains "$out" "rc=0" "watch (idle + empty queue) exits 0"
 
 # 4: 'deputy watch' streams the running worker's log, then exits when the run pid ends
 setup_repo
