@@ -1779,9 +1779,13 @@ commands:
                                   decides: a state word sets state, 'p0'..'p4' sets priority.
                                   e.g. `deputy set #50 done`, `deputy set #50 p0`. Explicit
                                   `set state #50 done` / `set prio #50 p0` forms also accepted.
-  cron ensure|remove|status       manage the safety-net schedule (legacy --ensure/--remove
-                                  also accepted). NOTE: 'cron reschedule "<text>"' exists but
-                                  is orchestrator-internal (quota-failover) — not for manual use
+  cron ensure|remove|status|set <N>
+                                  manage the safety-net schedule (legacy --ensure/--remove
+                                  also accepted). 'cron set <N>' changes the heartbeat interval
+                                  to N minutes (1–59): updates .deputy/config and re-applies
+                                  the crontab if cron is already enabled.
+                                  NOTE: 'cron reschedule "<text>"' exists but is
+                                  orchestrator-internal (quota-failover) — not for manual use
   clean [#<id>|<state>] [--dry-run]
                                   remove items matching the filter:
                                     #<id>          clean one item by id (bare integer also accepted)
@@ -1800,7 +1804,7 @@ commands:
 
 config keys (.deputy/config):
   max_items=N                     items started per run cycle (default 1; min 1). MIGRATION: 0 no longer means unlimited — it clamps to 1; set an explicit N for a multi-item drain
-  heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59)
+  heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59); use 'deputy cron set N' to change it live
   human_backoff=1                 back off when an interactive Claude session is busy/recent in this repo (default 1; set 0 to disable)
   human_idle_grace_mins=N         allow cron to run when Claude has been idle this many minutes (default 5)
   waiting_backoff_strikes=N       consecutive 'waiting' heartbeat ticks required before cron proceeds (default 3)
@@ -2060,6 +2064,37 @@ cmd_cron() {
       fi
       ;;
     remove|--remove)     rm -f "$STATE_DIR/cron.enabled" 2>/dev/null || true; _set_cron "" ;;
+    set)
+      local _n="${2:-}"
+      if [[ -n "${3:-}" ]]; then
+        printf 'deputy: cron set takes exactly one argument (got extra: %s)\n' "${3}" >&2; return 2
+      fi
+      if ! [[ "$_n" =~ ^[0-9]+$ ]] || ! (( 10#$_n >= 1 && 10#$_n <= 59 )); then
+        printf 'deputy: cron set requires an integer between 1 and 59 (got: %s)\n' "${_n:-<empty>}" >&2
+        return 2
+      fi
+      local cfg="$STATE_DIR/config" _tmp _gs=0 _was_enabled=0
+      mkdir -p "$STATE_DIR" 2>/dev/null || true
+      [[ -f "$cfg" ]] || touch "$cfg"
+      _tmp="$(mktemp "$STATE_DIR/.config.tmp.XXXXXX")"
+      grep -v '^heartbeat_mins=' "$cfg" > "$_tmp" || _gs=$?
+      if [[ "$_gs" -gt 1 ]]; then
+        rm -f "$_tmp"; printf 'deputy: cron set: config read error\n' >&2; return 1
+      fi
+      printf 'heartbeat_mins=%s\n' "$_n" >> "$_tmp"
+      if _cron_enabled; then _was_enabled=1; fi
+      if [[ "$_was_enabled" -eq 1 ]]; then
+        if ! _set_cron "*/$_n * * * *"; then
+          rm -f "$_tmp"; printf 'deputy: cron set: crontab update failed\n' >&2; return 1
+        fi
+      fi
+      mv "$_tmp" "$cfg"
+      if [[ "$_was_enabled" -eq 1 ]]; then
+        printf 'heartbeat updated to %s min and crontab rescheduled\n' "$_n"
+      else
+        printf 'heartbeat_mins set to %s (cron not enabled; run "deputy cron ensure" to activate)\n' "$_n"
+      fi
+      ;;
     reschedule|--reschedule) local h; h="$(_parse_reset_hour "${2:-}")"
                   if [[ -n "$h" ]]; then _set_cron "0 $h * * *"
                   else _set_cron "0 */2 * * *"; fi ;;
@@ -2091,7 +2126,7 @@ cmd_cron() {
       fi
       printf 'enabled:  %s\nschedule: %s\nlast run: %s\n' "$enabled" "$schedule" "$last_run"
       ;;
-    *) printf 'deputy: cron needs ensure|remove|status (legacy --ensure/--remove also accepted)\n' >&2; return 2 ;;
+    *) printf 'deputy: cron needs ensure|remove|status|set (legacy --ensure/--remove also accepted)\n' >&2; return 2 ;;
   esac
 }
 
