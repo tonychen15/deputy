@@ -53,3 +53,33 @@ assert_contains "$out" "usage: deputy <command>" "regex-shaped cmd falls back to
 # public aliases resolve to their documented command's block
 assert_contains "$(bash "$DEPUTY" review --help 2>&1)" "what needs me" "review --help: shows the watch block (alias)"
 assert_contains "$(bash "$DEPUTY" tail --help 2>&1)"   "passive monitor"    "tail --help: shows the watch block (alias, new passive-monitor description)"
+
+# #101: --full flag hides/shows config key documentation
+# default (-h) must NOT show config keys section or any specific key
+out_default="$(bash "$DEPUTY" -h 2>&1)"
+if [[ "$out_default" == *'config keys (.deputy/config)'* ]]; then
+  TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: deputy -h leaked config keys section heading\n' >&2
+else
+  TESTS_RUN=$((TESTS_RUN+1))
+fi
+if [[ "$out_default" == *'auto_merge=1'* ]]; then
+  TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: deputy -h leaked auto_merge=1\n' >&2
+else
+  TESTS_RUN=$((TESTS_RUN+1))
+fi
+assert_contains "$out_default" "--full" "deputy -h: shows --full hint"
+
+# deputy help (alias) also hides config keys by default
+out_help="$(bash "$DEPUTY" help 2>&1)"
+if [[ "$out_help" == *'auto_merge=1'* ]]; then
+  TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: deputy help leaked auto_merge=1\n' >&2
+else
+  TESTS_RUN=$((TESTS_RUN+1))
+fi
+
+# --full reveals config keys
+assert_contains "$(bash "$DEPUTY" -h --full 2>&1)" "auto_merge=1" "deputy -h --full: shows auto_merge=1"
+assert_contains "$(bash "$DEPUTY" help --full 2>&1)" "auto_merge=1" "deputy help --full: shows auto_merge=1"
+
+# plumbing fallback with --full also reveals config keys
+assert_contains "$(bash "$DEPUTY" claim --help --full 2>&1)" "auto_merge=1" "claim --help --full: plumbing fallback shows config keys"

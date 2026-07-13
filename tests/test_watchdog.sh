@@ -47,4 +47,4 @@ fi
 rm -f "$FAST" "$FAST2"
 
 # D) documented in help
-assert_contains "$(bash "$DEPUTY" help 2>&1)" "watchdog_mins" "watchdog_mins documented in deputy help"
+assert_contains "$(bash "$DEPUTY" help --full 2>&1)" "watchdog_mins" "watchdog_mins documented in deputy help --full"

@@ -71,4 +71,4 @@ assert_eq "$(grep -c 'orphaned process pid' /tmp/orph_err.txt)" "0" "no in-repo 
 cleanup
 
 # 5: config key documented in deputy help.
-assert_contains "$(bash "$DEPUTY" help 2>&1)" "orphan_warn_mins" "orphan_warn_mins documented in deputy help"
+assert_contains "$(bash "$DEPUTY" help --full 2>&1)" "orphan_warn_mins" "orphan_warn_mins documented in deputy help --full"
