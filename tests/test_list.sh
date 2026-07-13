@@ -20,11 +20,15 @@ assert_eq "$(printf '%s\n' "$all" | grep -c .)" "4" "bare list shows all items"
 
 # --waiting shows exactly the two waiting items and nothing else
 w="$(bash "$DEPUTY" list --waiting)"
-assert_eq "$(printf '%s\n' "$w" | grep -c .)"            "2" "--waiting shows exactly 2 items"
-assert_eq "$(printf '%s\n' "$w" | grep -cv '^[@?+!%=^;~]')" "2" "--waiting: both lines are waiting"
-assert_eq "$(printf '%s\n' "$w" | grep -c '^[@?+!%=^;~]')"  "0" "--waiting: no non-waiting lines leak"
+assert_eq "$(printf '%s\n' "$w" | grep -c .)"                        "2" "--waiting shows exactly 2 items"
+assert_eq "$(printf '%s\n' "$w" | grep -v '^$' | grep -cv '^[@?+!%=^;~]')" "2" "--waiting: both lines are waiting"
+assert_eq "$(printf '%s\n' "$w" | grep -c '^[@?+!%=^;~]')"           "0" "--waiting: no non-waiting lines leak"
 assert_contains "$w" "wait one" "--waiting includes wait one"
 assert_contains "$w" "wait two" "--waiting includes wait two"
+# blank separator between items: exactly one blank line, no leading or trailing blank
+assert_eq "$(printf '%s\n' "$w" | grep -c '^$')"         "1" "--waiting: exactly 1 blank separator line"
+assert_eq "$(printf '%s\n' "$w" | head -1 | grep -c .)"  "1" "--waiting: no leading blank line"
+assert_eq "$(printf '%s\n' "$w" | tail -1 | grep -c .)"  "1" "--waiting: no trailing blank line"
 
 # --running / --deferred each match exactly one
 r="$(bash "$DEPUTY" list --running)"

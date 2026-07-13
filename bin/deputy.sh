@@ -325,6 +325,9 @@ cmd_list() {
     _li="${_lrest%%|*}"; _ld="${_lrest#*|}"
     [[ -n "$filter"    && "$_ls" != "$filter"    ]] && continue
     [[ -n "$id_filter" && "$_li" != "$id_filter" ]] && continue
+    # #92: blank line between items when a state filter is active (after the filters, so
+    # skipped items never produce a phantom separator; count>0 means we already printed one).
+    [[ -n "$filter" && "$count" -gt 0 ]] && printf '\n'
     printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
     count=$(( count + 1 ))
   done < <(_each_item)
