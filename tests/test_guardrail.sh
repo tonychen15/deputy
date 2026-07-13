@@ -125,6 +125,31 @@ assert_eq "$(bash_cmd 'echo "remember to git reset --hard later"')" "0" "git res
 assert_eq "$(bash_cmd 'deputy commit --summary "use git reset --hard to undo"')" "0" "git reset --hard in commit summary allowed"
 assert_eq "$(bash_cmd 'echo "pass --git-dir to git"')" "0" "--git-dir as echo data allowed"
 
+# --- #95: prefix-bypass hardening — env-assignments and wrappers before risky commands ---
+# Deny: leading VAR=val env assignment before a risky command.
+assert_eq "$(bash_cmd 'X=1 git push origin main')" "2" "#95: env-assignment prefix before git push denied"
+assert_eq "$(bash_cmd 'GUARD=0 git push')" "2" "#95: env-assignment prefix (no value) before git push denied"
+assert_eq "$(bash_cmd 'env rm -rf /tmp/x')" "2" "#95: env wrapper before rm -rf denied"
+assert_eq "$(bash_cmd 'command git branch -D deputy/x')" "2" "#95: command wrapper before git branch -D denied"
+assert_eq "$(bash_cmd 'DEPUTY_ROOT=/tmp deputy cron remove')" "2" "#95: env-assignment prefix before deputy cron remove denied"
+assert_eq "$(bash_cmd 'builtin git push')" "2" "#95: builtin wrapper before git push denied"
+# Allow: benign commands are not affected by prefix stripping.
+assert_eq "$(bash_cmd 'X=1 git status')" "0" "#95: env-assignment prefix before benign git status allowed"
+assert_eq "$(bash_cmd 'VERBOSE=1 deputy set x done')" "0" "#95: env-assignment prefix before benign deputy set allowed"
+# Allow: env-assignment reschedule still permitted through the deputy cron check.
+assert_eq "$(bash_cmd 'RETRY=1 deputy cron reschedule "5pm reset"')" "0" "#95: env-assignment prefix before deputy cron reschedule allowed"
+# Allow: git -c config options before a benign subcommand (not env assignments, and bare_s normalization strips -c).
+assert_eq "$(bash_cmd 'git -c foo=bar status')" "0" "#95: git -c option before benign subcommand allowed"
+assert_eq "$(bash_cmd 'git -c http.proxy=http://host:8080 status')" "0" "#95: git -c URL-value option before benign subcommand allowed"
+# Deny: git -c with a risky subcommand is caught after bare_s strips the -c option.
+assert_eq "$(bash_cmd 'git -c foo=bar push')" "2" "#95: git -c option before risky git push denied"
+assert_eq "$(bash_cmd 'git -c a=b -c c=d push')" "2" "#95: stacked git -c options before git push denied"
+# Deny: chained and multiple-prefix forms.
+assert_eq "$(bash_cmd 'X=1 command git push')" "2" "#95: env-assign + command wrapper before git push denied"
+assert_eq "$(bash_cmd 'env FOO=1 git push')" "2" "#95: env wrapper + assignment before git push denied"
+assert_eq "$(bash_cmd 'time X=1 git push')" "2" "#95: time wrapper + env-assign before git push denied"
+assert_eq "$(bash_cmd '! git push')" "2" "#95: negation prefix before git push denied"
+
 # --- regression: false-positive fixes (Fix 2 — cwd-aware reset/clean) ---
 # reset --hard with no -C BUT cwd is inside the worktree (session already cd'd in) — ALLOW.
 assert_eq "$(bash_cwd 'git reset --hard HEAD' "$WT")" "0" "reset --hard with cwd=WT allowed (cwd FP)"
