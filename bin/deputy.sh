@@ -345,14 +345,24 @@ cmd_list() {
     fi
     count=$(( count + 1 ))
   done < <(_each_item)
-  # 0-tasks message is human-only — suppressed under --porcelain (#93).
-  if [[ "$count" -eq 0 && "$porcelain" -eq 0 ]]; then
-    if [[ -n "$id_filter" && -n "$filter" ]]; then
-      printf '0 tasks with id #%s in %s state\n' "$id_filter" "$filter"
-    elif [[ -n "$id_filter" ]]; then
-      printf '0 tasks with id #%s\n' "$id_filter"
+  # Task-count summary is human-only — suppressed under --porcelain (#93).
+  if [[ "$porcelain" -eq 0 ]]; then
+    if [[ "$count" -eq 0 ]]; then
+      if [[ -n "$id_filter" && -n "$filter" ]]; then
+        printf '0 tasks with id #%s in %s state\n' "$id_filter" "$filter"
+      elif [[ -n "$id_filter" ]]; then
+        printf '0 tasks with id #%s\n' "$id_filter"
+      elif [[ -n "$filter" ]]; then
+        printf '0 tasks in %s state\n' "$filter"
+      fi
     elif [[ -n "$filter" ]]; then
-      printf '0 tasks in %s state\n' "$filter"
+      local _word; _word="$( [[ "$count" -eq 1 ]] && printf 'task' || printf 'tasks' )"
+      printf '\n'
+      if [[ -n "$id_filter" ]]; then
+        printf '%d %s with id #%s in %s state\n' "$count" "$_word" "$id_filter" "$filter"
+      else
+        printf '%d %s in %s state\n' "$count" "$_word" "$filter"
+      fi
     fi
   fi
   return 0

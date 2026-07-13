@@ -21,19 +21,19 @@ assert_eq "$(bash "$DEPUTY" list --porcelain | grep -c .)" "4" "bare list shows 
 
 # --waiting shows exactly the two waiting items and nothing else
 w="$(bash "$DEPUTY" list --waiting)"
-assert_eq "$(printf '%s\n' "$w" | grep -c .)"                        "2" "--waiting shows exactly 2 items"
-assert_eq "$(printf '%s\n' "$w" | grep -v '^$' | grep -cv '^[@?+!%=^;~]')" "2" "--waiting: both lines are waiting"
+assert_eq "$(bash "$DEPUTY" list --waiting --porcelain | grep -c .)" "2" "--waiting shows exactly 2 items"
+assert_eq "$(printf '%s\n' "$w" | grep -v '^$' | grep -cv '^[@?+!%=^;~0-9]')" "2" "--waiting: both lines are waiting"
 assert_eq "$(printf '%s\n' "$w" | grep -c '^[@?+!%=^;~]')"           "0" "--waiting: no non-waiting lines leak"
 assert_contains "$w" "wait one" "--waiting includes wait one"
 assert_contains "$w" "wait two" "--waiting includes wait two"
-# blank separator between items: exactly one blank line, no leading or trailing blank
-assert_eq "$(printf '%s\n' "$w" | grep -c '^$')"         "1" "--waiting: exactly 1 blank separator line"
+# blank lines: N-1 separators between N items + 1 blank before count summary = N total for N items
+assert_eq "$(printf '%s\n' "$w" | grep -c '^$')"         "2" "--waiting: 2 blank lines (1 separator + 1 before count)"
 assert_eq "$(printf '%s\n' "$w" | head -1 | grep -c .)"  "1" "--waiting: no leading blank line"
 assert_eq "$(printf '%s\n' "$w" | tail -1 | grep -c .)"  "1" "--waiting: no trailing blank line"
 
 # --running / --deferred each match exactly one
 r="$(bash "$DEPUTY" list --running)"
-assert_eq "$(printf '%s\n' "$r" | grep -c .)" "1" "--running shows exactly 1"
+assert_eq "$(bash "$DEPUTY" list --running --porcelain | grep -c .)" "1" "--running shows exactly 1"
 assert_contains "$r" "to run" "--running content"
 d="$(bash "$DEPUTY" list --deferred)"
 # deferred is an attention state → its item now carries a detail block; count headers via --porcelain
@@ -44,6 +44,22 @@ assert_contains "$d" "to defer" "--deferred content"
 out="$(bash "$DEPUTY" list --paused)"; rc=$?
 assert_eq "$rc" "0" "filter with no matches exits 0"
 assert_contains "$out" "0 tasks in paused state" "filter with no matches prints zero-count message"
+
+# state filter with matching items -> count summary at bottom (#100)
+w2="$(bash "$DEPUTY" list --waiting)"
+assert_contains "$w2" "2 tasks in waiting state" "--waiting with items prints count summary"
+r2="$(bash "$DEPUTY" list --running)"
+assert_contains "$r2" "1 task in running state" "--running with 1 item prints singular count summary"
+# bare list (no state filter) -> no count summary appended
+all2="$(bash "$DEPUTY" list)"
+if printf '%s' "$all2" | grep -qE '^[0-9]+ tasks in'; then
+  TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: bare list should not print count summary\n' >&2
+else TESTS_RUN=$((TESTS_RUN+1)); fi
+# --porcelain suppresses count summary even with state filter
+pr_wait="$(bash "$DEPUTY" list --waiting --porcelain)"
+if printf '%s' "$pr_wait" | grep -qE '^[0-9]+ tasks in'; then
+  TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: --porcelain should suppress count summary\n' >&2
+else TESTS_RUN=$((TESTS_RUN+1)); fi
 
 # bad input -> exit 2
 bash "$DEPUTY" list --bogus >/dev/null 2>&1; assert_eq "$?" "2" "unknown state filter exits 2"
@@ -91,12 +107,13 @@ assert_contains "$r_flag" "alpha task" "list --id <N> content"
 r_flagq="$(bash "$DEPUTY" list "--id=${id_beta}")"
 assert_contains "$r_flagq" "beta task" "list --id=<N> content"
 
-# state + id combo: item IS in that state → shows it
+# state + id combo: item IS in that state → shows it + count summary (#100)
 bash "$DEPUTY" set "$(bash "$DEPUTY" list | grep 'gamma task' | head -1)" running >/dev/null
 id_gamma="$(bash "$DEPUTY" list | grep 'gamma task' | grep -oE '#[0-9]+' | tr -d '#')"
 r_combo="$(bash "$DEPUTY" list --running --id "$id_gamma")"
-assert_eq "$(printf '%s\n' "$r_combo" | grep -c .)" "1" "list --running --id shows the item"
+assert_eq "$(printf '%s\n' "$r_combo" | grep -v '^$' | grep -c .)" "2" "list --running --id shows the item + count line"
 assert_contains "$r_combo" "gamma task" "list --running --id content"
+assert_contains "$r_combo" "1 task with id #${id_gamma} in running state" "list --running --id count summary singular"
 
 # state + id combo: item NOT in that state → zero-match message
 out_miss="$(bash "$DEPUTY" list --waiting --id "$id_gamma")"; rc_miss=$?
