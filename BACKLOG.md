@@ -10,10 +10,10 @@
 
 ## Items
 
-### Running (1)
-@[#100][P3] when user runs 'deputy list <state>', if there is 3 tasks, then at the bottom, print out <num> tasks in <state>. This is consistent with 0 task case.
+### Running (0)
 
-### Surfaced (1)
+### Surfaced (2)
+?[#100][P3] when user runs 'deputy list <state>', if there is 3 tasks, then at the bottom, print out <num> tasks in <state>. This is consistent with 0 task case.
 ?[#95][P2] GUARDRAIL HARDENING: the risky-op guardrail (hooks/guardrail.sh) only matches when the command is the FIRST token, so shell-valid prefixes bypass EVERY pattern — 'DEPUTY_ROOT=/tmp deputy cron remove', 'X=1 git push', 'command git branch -D', 'env rm -rf ...'. Systemic (affects git push, rm -rf, git branch -d/-f, crontab, cron ensure/remove, etc.), pre-existing (surfaced by codex during #82 + #88 reviews). FIX: normalize ONCE in _norm (or a shared prefix-strip) — strip leading 'VAR=val ' env-assignments and 'command'/'env' wrappers before pattern-matching, so all deny patterns become prefix-resistant. GRILL: exact prefix grammar (env-assignments, command/env, builtins like 'exec'); keep it from over-stripping legit args; add tests per bypass form for a few representative patterns. Ref: #82/#88 guardrail reviews.
 
 ### Waiting (0)
