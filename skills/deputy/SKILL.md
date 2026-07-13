@@ -97,8 +97,12 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    repo code read-only to you, so a merge into the main tree fails. Instead write *"branch
    `deputy/<slug>` READY FOR MERGE REVIEW — merge: `git checkout <default-branch> && git merge
    --no-ff deputy/<slug>`"* to `.deputy/<slug>.questions.md`, run `deputy set "<item-line>"
-   surfaced --ready-merge` (the `--ready-merge` marker keeps it out of the blocking-surfaced
-   count, like a proposal), then **`deputy wt-remove`** and STOP — do **not** call `deputy done`.
+   surfaced --ready-merge --branch="deputy/<slug>"` (the `--ready-merge` marker keeps it out of
+   the blocking-surfaced count, like a proposal; **`--branch` is REQUIRED** — it records the exact
+   branch so the runner can auto-merge it. Do NOT rely on the runner reading `.deputy/wt`: on a
+   resumed run you may never have re-created the worktree, so the branch would go unrecorded and
+   the item would sit surfaced forever instead of auto-merging). Then **`deputy wt-remove`** and
+   STOP — do **not** call `deputy done`.
    What happens next: if `auto_merge=1`, the **unsandboxed runner** (`cmd_run`, #97) merges the
    `deputy/<slug>` branch into the default branch after you exit (clean tree + on default branch),
    marks the item done, and cleans up; if `auto_merge=0`, a human reviews + merges. Only an

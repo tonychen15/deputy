@@ -1151,13 +1151,27 @@ cmd_set() {
   if [[ "$action" == "state" && "$newval" =~ ^[pP][0-4]$ ]]; then action="prio"; fi
   # #60: --ready-merge marks a 'surfaced' item as "branch ready for human merge-review"
   # (distinct from a blocked surface) so it's excluded from the blocking-surfaced count.
-  local _ready_merge=0 _a
+  local _ready_merge=0 _rm_branch="" _rm_branch_seen=0 _a
   for _a in "${@:3}"; do          # flags only AFTER <line> <value> — never the line/desc itself
     case "$_a" in
       --ready-merge) _ready_merge=1 ;;
+      # #97: the worker records the EXACT branch it built (deputy/<slug>) — deterministic and
+      # independent of whether .deputy/wt is still live at surface time (a resumed run that
+      # skips wt-create has no live worktree, so a rev-parse would silently record nothing).
+      --branch) printf 'deputy: set: --branch requires a value (use --branch=<ref>)\n' >&2; return 2 ;;
+      --branch=*) _rm_branch="${_a#--branch=}"; _rm_branch_seen=1 ;;
       *) printf 'deputy: set: unknown argument: %s\n' "$_a" >&2; return 2 ;;
     esac
   done
+  # #98: an EXPLICIT --branch must be valid — fail fast (return 2) rather than silently
+  # recording a no-branch marker that would sit surfaced forever. Gate on _rm_branch_seen (not
+  # -n "$_rm_branch") so an explicit empty --branch= is rejected too, not treated as absent.
+  # (The live-worktree fallback below, used only when NO --branch is passed, stays best-effort —
+  # the runner's unique-branch recovery covers it.) Validate before any state flip.
+  if [[ "$_rm_branch_seen" -eq 1 ]]; then
+    [[ "$_rm_branch" == deputy/* ]] || { printf 'deputy: set: --branch must be a deputy/* ref: %s\n' "$_rm_branch" >&2; return 2; }
+    git -C "$ROOT" show-ref --verify --quiet "refs/heads/$_rm_branch" 2>/dev/null || { printf 'deputy: set: --branch does not exist: %s\n' "$_rm_branch" >&2; return 2; }
+  fi
   if [[ "$action" == "prio" ]]; then
     [[ "$newval" =~ ^[pP][0-4]$ ]] || { printf 'deputy: set: invalid priority: %s (expected p0..p4)\n' "$newval" >&2; return 2; }
   else
@@ -1207,11 +1221,18 @@ cmd_set() {
     # never sees a 'surfaced' item without its marker (no blocking-count race window).
     if [[ "$_id" =~ ^[0-9]+$ ]]; then
       if [[ "$_eff_state" == "surfaced" && "$_ready_merge" == "1" ]]; then
-        # Record the EXACT branch (#97) so the runner's auto-merge never has to guess it from
-        # a slug glob: at ready-merge time the worker is still on .deputy/wt's deputy/<slug>.
-        local _rm_br; _rm_br="$(git -C "$(_wt_path)" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        # Record the EXACT branch (#97) so the runner's auto-merge never has to guess it. Prefer
+        # the branch the worker passed explicitly (--branch=deputy/<slug>) — deterministic and
+        # valid even when .deputy/wt is gone (e.g. a resumed run that skipped wt-create). Fall
+        # back to the live worktree's HEAD only when no branch was passed (older callers). A
+        # recorded branch must both look like deputy/* AND actually exist as a local ref.
+        local _rm_br="$_rm_branch"   # explicit --branch: already validated above (deputy/* + ref exists)
+        if [[ -z "$_rm_br" ]]; then  # no --branch: best-effort read from the live worktree, validated
+          _rm_br="$(git -C "$(_wt_path)" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+          [[ "$_rm_br" == deputy/* ]] && git -C "$ROOT" show-ref --verify --quiet "refs/heads/$_rm_br" 2>/dev/null || _rm_br=""
+        fi
         { printf 'ready-merge-at: %s\nbranch ready for human merge-review\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          [[ "$_rm_br" == deputy/* ]] && printf 'branch: %s\n' "$_rm_br"; } > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
+          [[ -n "$_rm_br" ]] && printf 'branch: %s\n' "$_rm_br"; } > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
       elif [[ "$_eff_state" != "surfaced" ]]; then
         rm -f "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
       fi
@@ -2668,10 +2689,24 @@ _auto_merge_ready() {
   [[ "$(_config_get auto_merge)" == "1" ]] || return 1
   marker="$STATE_DIR/ready-merge-$id"
   [[ -f "$marker" ]] || return 1                       # not ready (blocking surface / not applicable)
-  # Use the EXACT branch recorded in the marker at surface time — never guess from a slug
-  # glob (an id can appear in another item's slug). No recorded branch → don't auto-merge.
+  # Prefer the EXACT branch recorded in the marker at surface time (the worker passes
+  # --branch=deputy/<slug>). If none was recorded (a pre-#97 marker, or a resumed run whose
+  # worktree was already gone at surface time so the branch couldn't be read), recover ONLY
+  # from a UNIQUE local deputy/*-<id> branch. Refuse on zero or ambiguity (≥2 — e.g. a
+  # duplicate-branch re-run): guessing the wrong branch is worse than leaving it for a human.
   branch="$(sed -n 's/^branch: //p' "$marker" 2>/dev/null | head -1)"
-  [[ "$branch" == deputy/* ]] || { printf 'deputy: auto_merge: no branch recorded in marker for #%s — left surfaced\n' "$id" >&2; return 1; }
+  if [[ "$branch" != deputy/* ]]; then
+    local _cands _n
+    _cands="$(git -C "$ROOT" branch --list "deputy/*-$id" --format='%(refname:short)' 2>/dev/null)"
+    _n="$(printf '%s\n' "$_cands" | grep -c .)"
+    if [[ "$_n" -eq 1 ]]; then
+      branch="$_cands"
+      printf 'deputy: auto_merge: no branch in marker for #%s — recovered unique branch %s\n' "$id" "$branch" >&2
+    else
+      printf 'deputy: auto_merge: #%s has no recorded branch and %s candidate deputy/*-%s branches — left surfaced for a human\n' "$id" "$_n" "$id" >&2
+      return 1
+    fi
+  fi
   git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || { printf 'deputy: auto_merge: branch %s missing for #%s — left surfaced\n' "$branch" "$id" >&2; return 1; }
   def="$(_default_branch)"; cur="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   [[ -n "$def" && "$cur" == "$def" ]] || { printf 'deputy: auto_merge: not on default branch (%s) — #%s left surfaced\n' "$cur" "$id" >&2; return 1; }
