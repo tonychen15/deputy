@@ -24,11 +24,11 @@ ONLY through the `deputy` CLI — never hand-edit `BACKLOG.md` or `.deputy/waypo
   `@[P0] Fix the login bug`). You MUST pass this exact string back to
   `deputy set "<item-line>" <state>` — it is matched whole-line.
 - **Interactive — work the backlog:** the human typed `/deputy` or "work the backlog".
-  Run `deputy status` and `deputy reflect`, then drive the loop below, engaging the human
-  at the gates.
+  Run `deputy status` and `deputy watch --once` (the queue overview + attention digest;
+  formerly `deputy reflect`), then drive the loop below, engaging the human at the gates.
 - **Interactive — read-only query:** the human asked only to *see* state (`/deputy status`,
   `/deputy list`, "what's the status", "list the backlog"). This is **read-only**: run the
-  matching command, report the result, and **stop**. Do NOT run `deputy reflect`, do NOT
+  matching command, report the result, and **stop**. Do NOT run `deputy watch`, do NOT
   drive the loop, and do NOT append a "defer / leave waiting / start one now?" prompt or
   otherwise solicit an action. The action gates (triage, grill, pick-and-run) fire only
   when the human asks to *work / run / start* something — never inferred from a status or
@@ -144,7 +144,7 @@ If no coder is available, `deputy cron --reschedule "<reset text>"` — never bu
 - Otherwise (no human reachable / headless): draft the clarifying questions + a proposed
   plan + affected files + risk into `.deputy/<slug>.questions.md`, then
   `deputy set "<item-line>" surfaced` and **stop**. Do not block.
-- When the human engages (via `deputy reflect`): **grill** them to nail every fuzzy part,
+- When the human engages (via `deputy watch` / `deputy pickup #<id>`): **grill** them to nail every fuzzy part,
   then **plan review** (xReview of the full N-step plan, §3), then a **design review**
   if the item produces a design artifact, then get **plan approval**. Then:
   - `mode = auto` (default): drive the spine loop below in `.deputy/wt`; xReview at each
@@ -385,9 +385,13 @@ states: waiting triaging running surfaced done failed cancelled duplicate paused
 ## CLI quick reference
 
 **Public** (in `deputy help`):
-`deputy add|list|status|run|watch|tail|cron|set|clean|reflect`
+`deputy add|list|status|slug|pickup|run|watch|tail|cron|set|clean`
 
-`deputy watch [--once]` (alias: `deputy tail`) — passive monitor: polls the queue; when the batch drains (runnable→0, blocking-surfaced>0) beeps 3× + prints a resume digest once; re-arms after each new worker run via logs/ dir mtime; `--once` exits after a single poll pass (test/script seam); `Ctrl-C` exits.
+`deputy watch [--once] [--apply]` (aliases: `deputy tail`, `deputy review`; replaces the former `deputy reflect`) — the "what needs me" command: prints the queue OVERVIEW (learnings, untagged items, reprioritization review, duplicate candidates, status) then runs as a passive monitor — live-tails a running worker and, on quiescence (runnable→0 with a surfaced/failed/deferred item), beeps 3× + prints the attention digest (each item's next action → `deputy pickup #<id>`); re-arms after each new worker run via logs/ dir mtime. `--once` = overview + one poll then exit (test/script seam); `--apply` = overview + write `.deputy/learnings.md` then exit; `Ctrl-C` exits.
+
+`deputy list [<state>] [--porcelain]` — items in BACKLOG format; for attention states (surfaced/failed/deferred/paused/cancelled) each item is followed by a detail block (status/details/summary/action). `--porcelain` emits stable `state|prio|id|desc` lines (no detail) for scripts.
+
+`deputy pickup #<id>` — bring up ONE attention task and ACT: surfaced ready-to-merge → merge into the default branch (→ done); proposed → approve (→ waiting); needs-input → resume via `/deputy`; failed/cancelled/deferred/paused → requeue (→ waiting). Local/safe only (never pushes).
 
 **Orchestrator/runner-internal — callable but NOT in `deputy help`:**
 `recover|probe|route|detect` (and the already-noted `claim|pick`, the spine verbs, `wt-create|wt-remove`, `protected`, `config`) are orchestrator/runner-internal commands. They work fine from the shell but are not advertised in `deputy help` because they are plumbing details.

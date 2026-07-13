@@ -14,4 +14,4 @@ surfaced="$(DEPUTY_ROOT="$ROOT" "$DEP" list | awk '/^\?/{print "  " $0}')"
 [[ -n "$surfaced" ]] || exit 0
 
 counts="$(DEPUTY_ROOT="$ROOT" "$DEP" status | tr '\n' ' ')"
-printf '⚠️  Deputy: items need your input\n%s\n[%s]\nRun: deputy reflect\n' "$surfaced" "$counts"
+printf '⚠️  Deputy: items need your input\n%s\n[%s]\nRun: deputy watch  (or act on one: deputy pickup #<id>)\n' "$surfaced" "$counts"

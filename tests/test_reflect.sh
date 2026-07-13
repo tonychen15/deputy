@@ -9,7 +9,8 @@ reflect() { DEPUTY_NO_PATH_FIX=1 bash "$DEPUTY" reflect "$@"; }
 
 setup_repo
 out="$(reflect)"
-assert_contains "$out" "=== Deputy Reflect ===" "empty: header present"
+# 'reflect' is now a back-compat alias that runs 'deputy watch --once' (the overview).
+assert_contains "$out" "=== Deputy Queue Overview ===" "empty: overview header present"
 assert_contains "$out" "no done items" "empty: no done items"
 assert_contains "$out" "no waiting items" "empty: no waiting items"
 assert_contains "$out" "none" "empty: no surfaced items"

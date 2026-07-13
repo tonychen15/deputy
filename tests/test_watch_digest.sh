@@ -39,8 +39,8 @@ out2="$(bash "$DEPUTY" watch --once 2>&1)"
 assert_contains "$out2" "beta stuck item" "digest: item description present"
 assert_contains "$out2" "details:" "digest: questions/details path label present"
 assert_contains "$out2" "Design choice needed" "digest: first line of questions file shown"
-assert_contains "$out2" "resume:" "digest: resume tip present"
-assert_contains "$out2" "/deputy" "digest: resume tip mentions /deputy"
+assert_contains "$out2" "action:" "digest: action tip present (unified detail block)"
+assert_contains "$out2" "/deputy" "digest: needs-input action mentions /deputy"
 
 # 3: quiescence edge — blocking-surfaced item with runnable==0 triggers digest
 setup_repo
@@ -74,7 +74,8 @@ printf 'proposed-by-run-pid: 0\nitem: epsilon proposal item\n' > "$DEPUTY_ROOT/.
 out5="$(bash "$DEPUTY" watch --once 2>&1)"
 assert_contains "$out5" "epsilon proposal item" "watch --once: proposal surface is shown in the digest"
 assert_contains "$out5" "proposed"              "watch --once: proposal labeled 'proposed'"
-assert_contains "$out5" "approve:"              "watch --once: proposal shows approve/reject tip"
+assert_contains "$out5" "approve"               "watch --once: proposal action mentions approve"
+assert_contains "$out5" "pickup #$pid5"         "watch --once: proposal action is deputy pickup"
 
 # 5b: ready-merge surfaces ARE shown, labeled 'ready to merge', with a merge command
 setup_repo
@@ -86,7 +87,8 @@ printf 'ready-merge-at: t\nbranch ready for human merge-review\n' > "$DEPUTY_ROO
 out5b="$(bash "$DEPUTY" watch --once 2>&1)"
 assert_contains "$out5b" "zeta merge item" "watch --once: ready-merge surface is shown in the digest"
 assert_contains "$out5b" "ready to merge"  "watch --once: ready-merge labeled 'ready to merge'"
-assert_contains "$out5b" "merge:"          "watch --once: ready-merge shows a merge command"
+assert_contains "$out5b" "merges"          "watch --once: ready-merge action describes the merge"
+assert_contains "$out5b" "pickup #$mid"    "watch --once: ready-merge action is deputy pickup"
 
 # 6: totally-empty queue → "nothing to watch" friendly exit
 setup_repo

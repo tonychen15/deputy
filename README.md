@@ -160,11 +160,18 @@ deputy run [--once]    # work the backlog (triage → do / surface), until empty
                        # interactive (TTY): streams the worker's output live; cron/no-TTY: buffered
 deputy run --headless  # force buffered output even interactively (or set headed=0 in .deputy/config)
 deputy run <id>        # targeted run: bypass priority order and run a specific item by id
-deputy watch [--once]  # passive monitor: beeps 3× + prints a resume digest when the batch
-                       # drains (runnable→0, blocking-surfaced>0); re-arms after each run;
-                       # --once: one poll cycle then exit (useful in scripts/tests);
-                       # Ctrl-C exits without stopping the worker (alias: deputy tail)
-deputy reflect         # re-triage report: learnings, untagged items, reprioritization, duplicates
+deputy watch [--once] [--apply]
+                       # the "what needs me" command (replaces the former 'deputy reflect'):
+                       # prints the queue OVERVIEW (learnings, untagged, reprioritization,
+                       # duplicates, status) then monitors — live-tails a running worker and,
+                       # on quiescence (runnable→0 with a surfaced/failed/deferred item),
+                       # beeps 3× + prints the attention digest (each item's action →
+                       # 'deputy pickup #<id>'); --once: overview + one poll then exit;
+                       # --apply: overview + write .deputy/learnings.md; Ctrl-C exits
+                       # (aliases: deputy tail, deputy review)
+deputy pickup <id>     # bring up ONE attention task and act: ready-to-merge → merge (→ done);
+                       # proposed → approve; needs-input → /deputy; failed/cancelled/deferred/
+                       # paused → requeue. Local/safe only (never pushes)
 deputy release [version] # mark a release boundary: insert a dated delimiter at the top of Done
                        # (version defaults to ./VERSION); tasks above the last marker = next release
 deputy clean [<id>] [--dry-run] [--state <state>]
@@ -225,7 +232,7 @@ surfaced · `+` done · `!` failed · `%` cancelled · `=` duplicate · `^` paus
 **Priority tag:** `[P0] > [P1] > [P2] > [P3] > [P4]`; untagged items default to `[P3]`
 at numbering time; FIFO within a lane. Use `--p0`/`--p1`/`--p2`/`--p3`/`--p4` flags
 with `deputy add` to assign a lane explicitly.
-**Item IDs** `[#N]` are assigned automatically on first reference (e.g., `list`, `run`, `reflect`); use
+**Item IDs** `[#N]` are assigned automatically on first reference (e.g., `list`, `run`, `watch`); use
 `deputy run <id>` to target a specific item directly.
 The parser reads everything after `## Items`, skipping `###` section headers and release
 delimiter comments.

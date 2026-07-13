@@ -1590,7 +1590,7 @@ cmd_recover() {
   return "$_rec_rc"
 }
 
-cmd_review() { cmd_reflect "$@"; }
+cmd_review() { cmd_watch --once "$@"; }   # 'review' is an alias for the watch overview
 
 # #65: Manual diagnostic: check if the main working tree has uncommitted changes outside
 # BACKLOG.md and .deputy. Always prints status (clean or dirty). For automated recovery
@@ -1759,9 +1759,15 @@ commands:
                                   (→ waiting); needs-input → point to /deputy; failed/cancelled/
                                   deferred/paused → requeue (→ waiting). Local/safe only (never
                                   pushes). See candidates with 'deputy list <state>'
-  watch [--once]                  passive monitor: live-tails a running worker; on quiescence
-                                  (runnable→0, items surfaced) beeps 3× + prints a resume digest
-                                  once; re-arms after each new worker run; Ctrl-C exits (alias: tail)
+  watch [--once] [--apply]        the "what needs me" command: prints the queue OVERVIEW
+                                  (learnings, untagged items, reprioritization review, duplicate
+                                  candidates, status) then runs as a passive monitor — live-tails
+                                  a running worker and, on quiescence (runnable→0 with a surfaced/
+                                  failed/deferred item), beeps 3× + prints the attention digest
+                                  (each item's next action → 'deputy pickup #<id>'). --once:
+                                  overview + one poll then exit. --apply: overview + write
+                                  .deputy/learnings.md then exit. Ctrl-C exits. (aliases: tail,
+                                  review; replaces the former 'reflect')
   run [#<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
                                   (interactive/TTY runs stream output live; --headless or
                                   headed=0 config forces the buffered/cron behavior)
@@ -1783,10 +1789,6 @@ commands:
                                                    '--state <s>' also accepted; default: waiting)
                                   cleanable states: waiting, done, failed, cancelled, duplicate, deferred
                                   refuses running, triaging, surfaced, paused (active/checkpointed/awaiting)
-  reflect [--apply]               full queue health report: learnings, untagged items, reprioritization
-                                  list, surfaced items + question files, duplicate candidates, status
-                                  digest; --apply writes .deputy/learnings.md
-                                  (alias: review)
   release [version]               mark a release boundary in Done: insert a dated
                                   `<!-- release vX — YYYY-MM-DD -->` delimiter at the top
                                   of the Done section (version defaults to ./VERSION)
@@ -1825,8 +1827,8 @@ EOF
 # fall back to the full usage.
 _cmd_help() {
   local cmd="$1" block
-  # public aliases resolve to their documented command's block (review→reflect, tail→watch)
-  case "$cmd" in review) cmd=reflect ;; tail) cmd=watch ;; esac
+  # public aliases resolve to their documented command's block (review/reflect/tail → watch)
+  case "$cmd" in review|reflect|tail) cmd=watch ;; esac
   block="$(usage | awk -v c="$cmd" '
     # literal prefix match ("  <cmd> ") — never interpret cmd as a regex, so a
     # regex-shaped unknown command falls back to usage instead of matching a block.
@@ -3293,12 +3295,16 @@ _reflect_find_duplicates() {
 # Show a structured reflect report: learnings (done items), items needing re-triage
 # (untagged), full reprioritization list, surfaced items, and potential duplicates.
 # --apply: also writes .deputy/learnings.md (fresh snapshot of done items).
-cmd_reflect() {
+# The queue overview — learnings, untagged items, reprioritization review, potential
+# duplicates, status digest (formerly 'deputy reflect', now folded into 'deputy watch').
+# --apply writes the learnings snapshot. The actionable attention items (surfaced/failed/
+# deferred) are shown separately by _attention_digest, so this omits a surfaced dump.
+_queue_overview() {
   _with_lock _allocate_ids
   local apply=0
   while [[ $# -gt 0 ]]; do case "$1" in
     --apply) apply=1; shift ;;
-    *) printf 'deputy: reflect: unexpected arg: %s\n' "$1" >&2; return 2 ;;
+    *) printf 'deputy: watch: unexpected arg: %s\n' "$1" >&2; return 2 ;;
   esac; done
 
   local raw parsed state prio desc _rrest _rid
@@ -3317,7 +3323,7 @@ cmd_reflect() {
     esac
   done < <(_each_item)
 
-  printf '%s\n\n' "=== Deputy Reflect ==="
+  printf '%s\n\n' "=== Deputy Queue Overview ==="
 
   # 1. Learnings — what has been shipped
   printf '%s\n' "-- Learnings (${#done_items[@]} done) --"
@@ -3356,24 +3362,7 @@ cmd_reflect() {
   fi
   printf '\n'
 
-  # 4. Surfaced — pending human response + question files
-  printf '%s\n' "-- Surfaced items (awaiting human response) --"
-  if [[ "${#surfaced_items[@]}" -eq 0 ]]; then
-    printf '  (none)\n'
-  else
-    for item in "${surfaced_items[@]}"; do
-      printf '  ? %s\n' "${item#*|}"
-    done
-  fi
-  shopt -s nullglob
-  local qf
-  # #70: new subfolder layout first, then any not-yet-migrated flat files (dual-read).
-  for qf in "$STATE_DIR"/questions/*.md "$STATE_DIR"/*.questions.md; do
-    printf '\n  --- %s ---\n' "$(basename "$qf")"
-    sed 's/^/  /' "$qf"
-  done
-  shopt -u nullglob
-  printf '\n'
+  # (Surfaced/failed/deferred attention items are shown by _attention_digest above.)
 
   # 5. Potential duplicates — pairs sharing ≥3 significant words (operator reviews).
   # All comparisons happen inside a single awk process (no per-pair forks).
@@ -3911,71 +3900,59 @@ _watch_beep() {
   printf '\a'; sleep 0.3; printf '\a'; sleep 0.3; printf '\a'
 }
 
-# Print the quiescence digest: EVERY surfaced item awaiting human action, each labeled
-# by what it needs — 'needs input' (a blocked run), 'ready to merge' (review + git merge;
-# the common case under auto_merge=0), or 'proposed' (approve/reject a worker-suggested
-# task). All three are shown so no surfaced item is silently left off the summon.
-_watch_digest() {
-  local _wd_raw _wd_p _wd_state _wd_rest _wd_prio _wd_id _wd_desc _wd_cand _wd_qf _wd_slug _wd_first _wd_kind _wd_any=0
-  printf '\ndeputy: batch quiescent — surfaced items need your attention:\n'
-  while IFS= read -r _wd_raw; do
-    _wd_p="$(_parse_item "$_wd_raw")"; _wd_state="${_wd_p%%|*}"
-    [[ "$_wd_state" == "surfaced" ]] || continue
-    _wd_rest="${_wd_p#*|}"; _wd_prio="${_wd_rest%%|*}"
-    _wd_rest="${_wd_rest#*|}"; _wd_id="${_wd_rest%%|*}"; _wd_desc="${_wd_rest#*|}"
-    _wd_any=1
-    # Classify by marker: ready-merge and proposed carry a .deputy/<kind>-<id> file.
-    _wd_kind="needs input"
-    if [[ "$_wd_id" =~ ^[0-9]+$ ]]; then
-      [[ -f "$STATE_DIR/ready-merge-$_wd_id" ]] && _wd_kind="ready to merge"
-      [[ -f "$STATE_DIR/proposed-$_wd_id"    ]] && _wd_kind="proposed"
-    fi
-    printf '\n  #%s [%s] %s  — %s\n' "${_wd_id:-?}" "${_wd_prio:-?}" "$_wd_desc" "$_wd_kind"
-    # Locate the questions file. The slug is orchestrator-chosen, so match BOTH the
-    # '<desc>-<id>' (suffix) and '<id>-<desc>' (prefix) conventions under .deputy/questions/
-    # (#70), then legacy flat .deputy/*.questions.md. First match wins.
-    _wd_qf=""
-    if [[ "$_wd_id" =~ ^[0-9]+$ ]]; then
-      for _wd_cand in "$STATE_DIR"/questions/*-"$_wd_id".md "$STATE_DIR"/questions/"$_wd_id"-*.md \
-                      "$STATE_DIR"/*-"$_wd_id".questions.md "$STATE_DIR"/"$_wd_id"-*.questions.md; do
-        [[ -f "$_wd_cand" ]] && { _wd_qf="$_wd_cand"; break; }
-      done
-    fi
-    if [[ -n "$_wd_qf" ]]; then
-      _wd_first="$(head -1 "$_wd_qf" 2>/dev/null || true)"
-      printf '      details: %s\n' "$_wd_qf"
-      [[ -n "$_wd_first" ]] && printf '      summary: %s\n' "$_wd_first"
-    fi
-    # Action tip per kind.
-    case "$_wd_kind" in
-      "ready to merge")
-        _wd_slug=""
-        [[ -n "$_wd_qf" ]] && { _wd_slug="${_wd_qf##*/}"; _wd_slug="${_wd_slug%.md}"; _wd_slug="${_wd_slug%.questions}"; }
-        local _wd_def; _wd_def="$(_default_branch)"; _wd_def="${_wd_def:-<default-branch>}"
-        # Route through the default branch so the merge can't land on the caller's
-        # current branch (matches deputy's surface-note merge instruction).
-        printf '      merge:   git checkout %s && git merge --no-ff deputy/%s\n' "$_wd_def" "${_wd_slug:-<slug>}" ;;
-      "proposed")
-        printf '      approve: deputy set #%s waiting   reject: deputy set #%s cancelled\n' "$_wd_id" "$_wd_id" ;;
-      *)
-        printf '      resume:  run /deputy (resumes #%s from its waypoint)\n' "${_wd_id:-?}" ;;
-    esac
+# States that warrant a human's attention — what 'deputy watch' monitors and summons for.
+_ATTENTION_STATES="surfaced failed deferred"
+# Count items in any attention state (surfaced/failed/deferred).
+_attention_count() {
+  local n=0 raw parsed state
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    case " $_ATTENTION_STATES " in *" $state "*) n=$(( n + 1 )) ;; esac
   done < <(_each_item)
-  [[ "$_wd_any" -eq 0 ]] && printf '  (no surfaced items found)\n'
+  printf '%s' "$n"
+}
+
+# Print the attention digest: every surfaced/failed/deferred item, each followed by the shared
+# detail block (status/details/summary/action → 'deputy pickup #<id>'). This is what the watch
+# quiescence summon prints; the header names the trigger.
+_attention_digest() {
+  local raw p state rest prio id desc any=0
+  printf '\ndeputy: batch quiescent — these items need your attention:\n'
+  while IFS= read -r raw; do
+    p="$(_parse_item "$raw")"; state="${p%%|*}"
+    case " $_ATTENTION_STATES " in *" $state "*) ;; *) continue ;; esac
+    rest="${p#*|}"; prio="${rest%%|*}"; rest="${rest#*|}"; id="${rest%%|*}"; desc="${rest#*|}"
+    any=1
+    printf '\n  #%s [%s] %s  — %s\n' "${id:-?}" "${prio:-?}" "$desc" "$state"
+    _item_detail_block "$state" "$id"
+  done < <(_each_item)
+  [[ "$any" -eq 0 ]] && printf '  (no attention items found)\n'
   printf '\n'
 }
 
-# #63/#79: passive, persistent queue monitor. Modes by queue state on each poll tick:
+# #63/#79: the one "what needs me" command. Prints the queue OVERVIEW once (learnings,
+# untagged, reprioritization review, duplicates, status — formerly 'deputy reflect'), then runs
+# as a passive, persistent monitor. Per poll tick:
 #   worker live  → live-tail it (existing path); loop back after tail exits and re-arm.
 #   runnable > 0 → stay quiet, keep polling (work still queued; NOT quiescent yet).
-#   quiescent    → runnable==0 AND surfaced>0 (ANY surfaced — needs-input, ready-to-merge,
-#                  or proposed): beep 3× + print digest ONCE; re-arms after the next run.
-#   empty        → no worker, no surfaced, no runnable: friendly one-shot exit.
-# --once: one poll pass then exit (test/script seam; live-tail still blocks until run ends).
+#   quiescent    → runnable==0 AND an attention item exists (surfaced / failed / deferred):
+#                  beep 3× + print the attention digest ONCE; re-arms after the next run.
+#   empty        → no worker, no attention, no runnable: friendly one-shot exit.
+# --once: print overview + one poll pass, then exit (test/script seam; live-tail still blocks
+# until the run ends). --apply: print overview + write the learnings snapshot, then exit.
 # Ctrl-C exits; the 'tail' alias is preserved.
 cmd_watch() {
-  local _wonce=0
-  [[ "${1:-}" == "--once" ]] && _wonce=1
+  local _wonce=0 _wapply=0 _wa
+  for _wa in "$@"; do case "$_wa" in
+    --once)  _wonce=1 ;;
+    --apply) _wapply=1 ;;
+    *) printf 'deputy: watch: unknown argument: %s\n' "$_wa" >&2; return 2 ;;
+  esac; done
+
+  # Queue overview once at start (the former 'deputy reflect'). --apply also writes the
+  # learnings snapshot and is a one-shot (no monitor loop).
+  if [[ "$_wapply" -eq 1 ]]; then _queue_overview --apply; return $?; fi
+  _queue_overview
 
   local d="$ACTIVE_RUN_DIR"
   local _wpoll=5 _wcanbeep=1 _wprevlive=0
@@ -4027,7 +4004,7 @@ cmd_watch() {
 
     # ── poll the queue ────────────────────────────────────────────────────────
     local _wr; _wr="$(_runnable_count)"
-    local _ws; _ws="$(_surfaced_count)"   # ALL surfaced (needs-input + ready-merge + proposed)
+    local _ws; _ws="$(_attention_count)"   # surfaced + failed + deferred (all attention states)
 
     # Re-arm if a new run was archived since the last beep (logs/ dir mtime changes
     # on every run-complete; unaffected by human queue edits or status reads).
@@ -4036,7 +4013,7 @@ cmd_watch() {
 
     # Totally empty — friendly exit
     if [[ "$_wr" -eq 0 && "$_ws" -eq 0 ]]; then
-      printf 'deputy: nothing to watch (queue empty — no running worker, no surfaced or runnable items).\n'
+      printf 'deputy: nothing to watch (queue empty — no running worker, no attention or runnable items).\n'
       return 0
     fi
 
@@ -4046,10 +4023,10 @@ cmd_watch() {
       sleep "$_wpoll"; continue
     fi
 
-    # Quiescent: runnable==0, surfaced>0 (any kind) — beep + digest (once per batch)
+    # Quiescent: runnable==0, an attention item exists — beep + attention digest (once per batch)
     if [[ "$_wcanbeep" -eq 1 ]]; then
       _watch_beep
-      _watch_digest
+      _attention_digest
       _wcanbeep=0
       _wbeep_logdir_mtime="$_wcur_logdir_mtime"  # snapshot logs/ mtime at beep for re-arm
     fi
@@ -4096,9 +4073,11 @@ main() {
     claim) shift; cmd_claim "$@"; return $? ;;
     recover) cmd_recover; return $? ;;   # propagate recovery failure (#47 rc-propagation)
     doctor) cmd_doctor; return 0 ;;
-    review) cmd_review; return 0 ;;
+    review) shift; cmd_review "$@"; return $? ;;
     clean) shift; cmd_clean "$@"; return $? ;;
-    reflect) shift; cmd_reflect "$@"; return $? ;;
+    reflect) shift   # #removed: 'reflect' folded into 'watch'; kept as a back-compat alias
+      printf 'deputy: "reflect" is now part of "deputy watch" — use "deputy watch".\n' >&2
+      cmd_watch --once "$@"; return $? ;;
     release) shift; cmd_release "$@"; return $? ;;
     release-notes) cmd_release_notes; return $? ;;
     detect) shift; _detect_outcome "${1:-}" "${2:-0}" "${3:-/dev/null}"; return 0 ;;

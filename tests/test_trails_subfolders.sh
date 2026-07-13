@@ -20,8 +20,9 @@ assert_eq "$([ -f "$DEPUTY_ROOT/.deputy/questions/legacy-3.md" ] && echo yes || 
 assert_eq "$([ -f "$DEPUTY_ROOT/.deputy/reviews/legacy-3.md" ] && echo yes || echo no)"   "yes" "migration: review moved to subfolder"
 assert_eq "$([ -f "$DEPUTY_ROOT/.deputy/fails/legacy-3.md" ] && echo yes || echo no)"     "yes" "migration: fail moved to subfolder"
 
-# reflect reads questions from the subfolder (dual-read)
-assert_contains "$(bash "$DEPUTY" reflect 2>&1)" "legacy-3.md" "reflect lists migrated questions trail"
+# (migration into the subfolder is verified by the assertions above; the former 'reflect
+# dumps questions files' behavior was removed when reflect folded into watch — the watch
+# attention digest resolves a questions file per surfaced item by id, covered in test_watch_digest.)
 
 # #70 collision: a stale flat write landing over an already-migrated subfolder trail —
 # the newer content wins and the flat file is swept (no duplicate left for reflect).

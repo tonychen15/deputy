@@ -51,5 +51,5 @@ out="$(bash "$DEPUTY" 's.t' --help 2>&1)"
 assert_contains "$out" "usage: deputy <command>" "regex-shaped cmd falls back to usage (no regex match)"
 
 # public aliases resolve to their documented command's block
-assert_contains "$(bash "$DEPUTY" review --help 2>&1)" "reflect [--apply]" "review --help: shows the reflect block (alias)"
+assert_contains "$(bash "$DEPUTY" review --help 2>&1)" "what needs me" "review --help: shows the watch block (alias)"
 assert_contains "$(bash "$DEPUTY" tail --help 2>&1)"   "passive monitor"    "tail --help: shows the watch block (alias, new passive-monitor description)"
