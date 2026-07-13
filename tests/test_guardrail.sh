@@ -150,6 +150,25 @@ assert_eq "$(bash_cmd 'env FOO=1 git push')" "2" "#95: env wrapper + assignment 
 assert_eq "$(bash_cmd 'time X=1 git push')" "2" "#95: time wrapper + env-assign before git push denied"
 assert_eq "$(bash_cmd '! git push')" "2" "#95: negation prefix before git push denied"
 
+# --- #95-fix (security review): the prefix-strip must NOT create new bypasses ---
+# #1 REGRESSION FIX: GIT_DIR=/GIT_WORK_TREE= must NOT be stripped — the denylist rule stays live.
+assert_eq "$(bash_cmd 'GIT_DIR=/other/.git git commit -am x')" "2" "#95-fix: GIT_DIR= env-redirect still denied (not stripped)"
+assert_eq "$(bash_cmd 'GIT_WORK_TREE=/tmp/x git checkout .')"  "2" "#95-fix: GIT_WORK_TREE= env-redirect still denied"
+assert_eq "$(bash_cmd 'X=1 GIT_DIR=/other git status')"       "2" "#95-fix: GIT_DIR= after a benign assignment still denied"
+# a plain benign env-assignment is still stripped (no over-block)
+assert_eq "$(bash_cmd 'X=1 git status')"                       "0" "#95-fix: benign env-assignment still stripped (git status allowed)"
+# #3 GAP FIX: benign git global paginator flags before a risky subcommand are stripped so it anchors.
+assert_eq "$(bash_cmd 'git --no-pager push')"                  "2" "#95-fix: git --no-pager push denied"
+assert_eq "$(bash_cmd 'git --paginate push')"                  "2" "#95-fix: git --paginate push denied"
+assert_eq "$(bash_cmd 'git -P push')"                          "2" "#95-fix: git -P push denied"
+assert_eq "$(bash_cmd 'git --no-pager status')"                "0" "#95-fix: git --no-pager status still allowed (benign)"
+# reset/clean cwd-scoping stays consistent when a paginator flag precedes -C (no false-positive).
+assert_eq "$(bash_cmd "git --no-pager -C $WT reset --hard HEAD")"     "0" "#95-fix: --no-pager before -C=WT reset still allowed"
+assert_eq "$(bash_cmd "git --no-pager -C /tmp/outside reset --hard HEAD")" "2" "#95-fix: --no-pager before -C=outside reset still denied"
+# multiple -C: git honors the last → fail closed (can't reliably scope), even if the first is WT.
+assert_eq "$(bash_cmd "git -C $WT -C /tmp/outside reset --hard HEAD")" "2" "#95-fix: multiple -C reset fails closed (denied) even with first=WT"
+assert_eq "$(bash_cmd "git -C $WT reset --hard HEAD")"                "0" "#95-fix: single -C=WT reset still allowed (no over-block)"
+
 # --- regression: false-positive fixes (Fix 2 — cwd-aware reset/clean) ---
 # reset --hard with no -C BUT cwd is inside the worktree (session already cd'd in) — ALLOW.
 assert_eq "$(bash_cwd 'git reset --hard HEAD' "$WT")" "0" "reset --hard with cwd=WT allowed (cwd FP)"

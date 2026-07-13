@@ -92,10 +92,15 @@ _strip_cmd_prefixes() {
       '!'\ *)    s="${s#* }" ;;   # shell negation
       -*\ *)     s="${s#* }" ;;   # wrapper flag (e.g. -p, -i, -n)
       *=*' '*)
+        # #95-fix: NEVER strip GIT_DIR=/GIT_WORK_TREE= — the '^GIT_(DIR|WORK_TREE)=' denylist
+        # rule runs on the STRIPPED command, so stripping these would neuter it (an
+        # env-redirected `GIT_DIR=/other git …` would then evade the block).
+        if [[ "$s" =~ ^(GIT_DIR|GIT_WORK_TREE)= ]]; then
+          break
         # Pre-filter: has '=' and a space (candidate env assignment). Confirm with ERE
         # that '=' comes directly after identifier chars (no spaces in varname), so
         # `git -C /path --flag=val` (space before '=') is NOT treated as an assignment.
-        if [[ "$s" =~ ^[A-Za-z_][A-Za-z_0-9]*= ]]; then
+        elif [[ "$s" =~ ^[A-Za-z_][A-Za-z_0-9]*= ]]; then
           s="${s#* }"   # strip VAR=value and the following space
         else
           break
@@ -126,9 +131,12 @@ _bash_risky() {
   _check_segment() {
     local s="$1"
     s="$(_strip_cmd_prefixes "$s")"    # strip env-assignments and wrappers; see _strip_cmd_prefixes
-    # Strip git -C <path> and git -c <key>=<val> options so the subcommand anchors correctly.
-    # Loop via ':loop; t loop' to handle stacked options (git -c a=b -c c=d push → git push).
-    local bare_s; bare_s="$(printf '%s' "$s" | sed ':loop; s/git  *-[Cc]  *[^ ]*  */git /; t loop')"
+    # Strip git global options so the subcommand anchors correctly: '-C <path>', '-c <k=v>',
+    # and the benign paginator flags '--no-pager'/'--paginate'/'-P' (#95-fix — else
+    # `git --no-pager push` evades '^git +push'). NOTE: '--git-dir'/'--work-tree' are NOT
+    # stripped — they are themselves denied (line below), and their rule tolerates leading opts.
+    # Loop (':loop; t loop') to handle stacked options (git -c a=b -c c=d push → git push).
+    local bare_s; bare_s="$(printf '%s' "$s" | sed -E ':loop; s/(^|[[:space:]])git[[:space:]]+(-[Cc][[:space:]]+[^ ]+|--no-pager|--paginate|-P)[[:space:]]+/\1git /; t loop')"
     local p
     for p in \
       '^[[:space:]]*git +push' \
@@ -218,9 +226,17 @@ _bash_risky() {
       local cdreal; cdreal="$(realpath -m -- "$cdpath" 2>/dev/null)" || cdreal=""
       effective_cwd="$cdreal"
     fi
-    # Strip wrappers before reset/clean check so e.g. `X=1 git reset --hard` is caught.
-    local stripped_seg; stripped_seg="$(_strip_cmd_prefixes "$normseg")"
+    # Strip wrappers before reset/clean check so e.g. `X=1 git reset --hard` is caught. Also
+    # strip the benign paginator flags (--no-pager/--paginate/-P) so a `-C <path>` that follows
+    # them still lands right after `git` for the cpath extraction below (#95-fix — keeps the
+    # cwd-in-worktree allow consistent whether the flag precedes or follows -C).
+    local stripped_seg; stripped_seg="$(_strip_cmd_prefixes "$normseg" | sed -E ':loop; s/(^|[[:space:]])git[[:space:]]+(--no-pager|--paginate|-P)[[:space:]]+/\1git /; t loop')"
     if printf '%s' "$stripped_seg" | grep -Eq '^[[:space:]]*git +[^|;&]*(reset +--hard|clean +-[a-zA-Z]*[fF][a-zA-Z]*)'; then
+      # Fail closed on MULTIPLE -C: git applies them cumulatively and honors the LAST, but the
+      # extraction below resolves only the first — so `git -C $WT -C /outside reset --hard`
+      # could evade the cwd scope. If there's more than one -C, we can't reliably scope → deny.
+      local _ncc; _ncc="$(printf '%s' "$stripped_seg" | grep -oE '[[:space:]]-C[[:space:]]' | wc -l | tr -d ' ')"
+      [[ "${_ncc:-0}" -gt 1 ]] && return 0
       # (a) -C path check.
       local cpath; cpath="$(printf '%s' "$stripped_seg" | grep -oE 'git +-C +[^ ]+' | sed "s/git  *-C  *//;s/^[\"']//;s/[\"']$//")"
       if [[ -n "$cpath" && -n "$wt_real" ]]; then
