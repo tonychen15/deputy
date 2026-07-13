@@ -10,7 +10,8 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[#91][P3] add one more option for list command. Now, 'deputy list <state>' will list all items which are in <state>. I want to add 'deputy list #<id>' to only list the task with id as <id>
 
 ### Surfaced (7)
 ?[#92][P3] when 'deputy list <state>' is called, add one empty line between each tasks with <state> state
@@ -21,8 +22,7 @@
 ?[#95][P2] GUARDRAIL HARDENING: the risky-op guardrail (hooks/guardrail.sh) only matches when the command is the FIRST token, so shell-valid prefixes bypass EVERY pattern — 'DEPUTY_ROOT=/tmp deputy cron remove', 'X=1 git push', 'command git branch -D', 'env rm -rf ...'. Systemic (affects git push, rm -rf, git branch -d/-f, crontab, cron ensure/remove, etc.), pre-existing (surfaced by codex during #82 + #88 reviews). FIX: normalize ONCE in _norm (or a shared prefix-strip) — strip leading 'VAR=val ' env-assignments and 'command'/'env' wrappers before pattern-matching, so all deny patterns become prefix-resistant. GRILL: exact prefix grammar (env-assignments, command/env, builtins like 'exec'); keep it from over-stripping legit args; add tests per bypass form for a few representative patterns. Ref: #82/#88 guardrail reviews.
 ?[#97][P1] AUTO_MERGE FIX — move the merge to the UNSANDBOXED runner. ROOT CAUSE (found via the auto_merge test on #96, 2026-07-12): auto_merge=1 is a no-op while sandbox=1 (the #64 default) — the headless worker runs 'git merge --no-ff deputy/<slug>' into the MAIN tree, but bwrap makes the repo CODE read-only to the worker, so the merge can't write bin/deputy.sh/tests and fails; the worker surfaces with a 'sandbox read-only' note instead of merging. auto_merge + sandbox are mutually exclusive as currently designed. FIX: the headless worker ALWAYS surfaces --ready-merge on completion (never merges itself); the RUNNER (cmd_run — UNSANDBOXED, already on the default branch per the run guard) performs the merge after the worker returns, WHEN auto_merge=1 AND a .deputy/ready-merge-<id> marker exists AND the main tree is clean + on the default branch: derive branch deputy/<slug> from the item's waypoint dir (glob by id), 'git merge --no-ff', on success set the item done + rm the ready-merge marker + wt-remove (+ delete_merged_branch if set); on conflict 'git merge --abort' + leave surfaced with a note; dirty/off-branch → leave surfaced. The interactive orchestrator (unsandboxed) still merges directly. A blocking surface (no ready-merge marker) is NEVER merged. SCOPE: cmd_run post-worker processing; SKILL 9 (headless always surfaces, runner auto-merges); tests (mock worker → ready-merge branch → auto_merge=1 runner merges to master + item done; auto_merge=0 stays surfaced; conflict aborts+surfaces; no-marker not merged). Ref #64 sandbox, #60 surface-not-merge, #82.
 
-### Waiting (1)
-[#91][P3] add one more option for list command. Now, 'deputy list <state>' will list all items which are in <state>. I want to add 'deputy list #<id>' to only list the task with id as <id>
+### Waiting (0)
 
 ### Paused (0)
 
