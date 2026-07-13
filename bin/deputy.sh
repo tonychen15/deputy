@@ -1816,7 +1816,8 @@ cmd_review_log() {
 }
 
 usage() {
-  cat <<'EOF'
+  local full="${1:-}"
+  cat <<'COMMANDS'
 usage: deputy <command> [args]
 
   Task IDs: pass a BARE integer (e.g. 42) — an unquoted '#42' is a shell comment, so it
@@ -1894,8 +1895,11 @@ commands:
                                   as a CHANGELOG-ready bullet list (done-since-last-release);
                                   if no delimiter exists, prints all Done items
   version                         print the installed deputy version (also --version, -V)
-  help                            show this message
+  help [--full]                   show this message (--full: include config key documentation)
 
+COMMANDS
+  if [[ "$full" == "--full" ]]; then
+    cat <<'CONFIG'
 config keys (.deputy/config)  — set with 'deputy config <key> <value>':
   # autonomy (a spawned headless worker reads ONLY .deputy/config — NOT the interactive
   #  Claude terminal's auto-mode, which is ephemeral + invisible to workers; wire intent here):
@@ -1919,9 +1923,14 @@ config keys (.deputy/config)  — set with 'deputy config <key> <value>':
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
+CONFIG
+  else
+    printf 'Run "deputy help --full" for config key documentation.\n\n'
+  fi
+  cat <<'FOOTER'
 states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
 symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancelled ==duplicate ^=paused ;=deferred  (legacy #=done >=deferred still read and auto-migrated)
-EOF
+FOOTER
 }
 
 # #72: focused per-command help. Slices the command's block out of usage() — the SINGLE
@@ -1930,7 +1939,7 @@ EOF
 # section header, or blank. Commands without a documented block (internal/plumbing verbs)
 # fall back to the full usage.
 _cmd_help() {
-  local cmd="$1" block
+  local cmd="$1" full="${2:-}" block
   # public aliases resolve to their documented command's block (review/reflect/tail → watch)
   case "$cmd" in review|reflect|tail) cmd=watch ;; esac
   block="$(usage | awk -v c="$cmd" '
@@ -1946,7 +1955,7 @@ _cmd_help() {
   if [[ -n "$block" ]]; then
     printf '%s\n' "$block"
   else
-    usage
+    usage "$full"
   fi
 }
 
@@ -4229,11 +4238,13 @@ main() {
   case "$cmd" in
     -h|--help|help) ;;
     *)
-      local _ha
+      local _ha _hfull="" _hhelp=0
       for _ha in "${@:2}"; do
         [[ "$_ha" == "--" ]] && break   # respect the `--` escape (e.g. `add -- "--desc"`)
-        case "$_ha" in -h|--help) _cmd_help "$cmd"; return 0 ;; esac
-      done ;;
+        [[ "$_ha" == "--full" ]] && _hfull="--full"
+        [[ "$_ha" == "-h" || "$_ha" == "--help" ]] && _hhelp=1
+      done
+      (( _hhelp )) && { _cmd_help "$cmd" "$_hfull"; return 0; } ;;
   esac
   _migrate_trails   # #70: one-shot sweep of any flat runtime trails into subfolders (no-op once done)
   # #67: keep the agent's claim heartbeat fresh whenever the orchestrator drives a
@@ -4243,7 +4254,10 @@ main() {
     wt-create|wt-remove|start|done|plan|steps|set-step|resume|commit) _active_run_refresh ;;
   esac
   case "$cmd" in
-    help|-h|--help) usage; return 0 ;;
+    help|-h|--help)
+      local _hfull="" _ha2
+      for _ha2 in "${@:2}"; do [[ "$_ha2" == "--full" ]] && _hfull="--full" && break; done
+      usage "$_hfull"; return 0 ;;
     version|--version|-V) cmd_version; return $? ;;
     _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
     list) shift; cmd_list "$@"; return $? ;;

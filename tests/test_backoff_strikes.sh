@@ -84,5 +84,5 @@ assert_eq "$(item_state)" "done" "waiting_backoff_strikes=2 -> proceeds at the 2
 cleanup
 
 # ── 7: the config key is documented in `deputy help` ────────────────────────────
-assert_contains "$(bash "$DEPUTY" help 2>&1)" "waiting_backoff_strikes" \
-  "waiting_backoff_strikes config key documented in deputy help"
+assert_contains "$(bash "$DEPUTY" help --full 2>&1)" "waiting_backoff_strikes" \
+  "waiting_backoff_strikes config key documented in deputy help --full"

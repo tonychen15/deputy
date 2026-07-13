@@ -44,6 +44,6 @@ if command -v script >/dev/null 2>&1; then
 fi
 
 # 6: notify_on_spawn documented in deputy help.
-assert_contains "$(bash "$DEPUTY" help 2>&1)" "notify_on_spawn" "notify_on_spawn documented in deputy help"
+assert_contains "$(bash "$DEPUTY" help --full 2>&1)" "notify_on_spawn" "notify_on_spawn documented in deputy help --full"
 
 rm -f "$ORCH"
