@@ -338,6 +338,10 @@ cmd_list() {
       printf '%s|%s|%s|%s\n' "$_ls" "$_lp" "$_li" "$_ld"
     else
       printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
+      # For attention states (surfaced/failed/deferred/paused/cancelled), print the indented
+      # detail block (status/details/summary/action) beneath the item; no-op otherwise, and
+      # skipped under --porcelain so machine output stays clean.
+      _item_detail_block "$_ls" "$_li"
     fi
     count=$(( count + 1 ))
   done < <(_each_item)
@@ -1750,6 +1754,11 @@ commands:
                                   prio and id are empty strings when unset); composes with
                                   all state filters; use 'cut -d"|" -f4-' to extract desc
   status                          counts by state
+  pickup <#id>                    bring up ONE attention task and ACT on it: ready-to-merge →
+                                  merge into the default branch (→ done); proposed → approve
+                                  (→ waiting); needs-input → point to /deputy; failed/cancelled/
+                                  deferred/paused → requeue (→ waiting). Local/safe only (never
+                                  pushes). See candidates with 'deputy list <state>'
   watch [--once]                  passive monitor: live-tails a running worker; on quiescence
                                   (runnable→0, items surfaced) beeps 3× + prints a resume digest
                                   once; re-arms after each new worker run; Ctrl-C exits (alias: tail)
@@ -2711,66 +2720,112 @@ _run_orchestrator_logged() {
 # done-write-failed (marker kept for retry) — so the caller skips retry-budget/failure handling
 # and never fails an already-merged item. Returns 1 only when NO merge occurred (no-op / skip
 # / conflict-aborted).
-_auto_merge_ready() {
-  local item="$1" id marker branch def cur
-  id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
-  [[ "$id" =~ ^[0-9]+$ ]] || return 1
-  [[ "$(_config_get auto_merge)" == "1" ]] || return 1
-  marker="$STATE_DIR/ready-merge-$id"
-  [[ -f "$marker" ]] || return 1                       # not ready (blocking surface / not applicable)
-  # Prefer the EXACT branch recorded in the marker at surface time (the worker passes
-  # --branch=deputy/<slug>). If none was recorded (a pre-#97 marker, or a resumed run whose
-  # worktree was already gone at surface time so the branch couldn't be read), recover ONLY
-  # from a UNIQUE local deputy/*-<id> branch. Refuse on zero or ambiguity (≥2 — e.g. a
-  # duplicate-branch re-run): guessing the wrong branch is worse than leaving it for a human.
-  branch="$(sed -n 's/^branch: //p' "$marker" 2>/dev/null | head -1)"
-  if [[ "$branch" != deputy/* ]]; then
-    # #99: prefer the DETERMINISTIC canonical branch (deputy/<deputy slug id>) — no glob, no
-    # ambiguity. Only if that ref doesn't exist (a legacy branch predating #99) fall back to a
-    # UNIQUE deputy/*-<id> match, refusing on 0 or >=2 (a duplicate-branch re-run).
-    local _canon; _canon="deputy/$(cmd_slug "$id" 2>/dev/null || true)"
-    if [[ "$_canon" != "deputy/" && "$_canon" == deputy/* ]] && git -C "$ROOT" show-ref --verify --quiet "refs/heads/$_canon" 2>/dev/null; then
-      branch="$_canon"
-      printf 'deputy: auto_merge: no branch in marker for #%s — using canonical branch %s\n' "$id" "$branch" >&2
-    else
-      local _cands _n
-      _cands="$(git -C "$ROOT" branch --list "deputy/*-$id" --format='%(refname:short)' 2>/dev/null)"
-      _n="$(printf '%s\n' "$_cands" | grep -c .)"
-      if [[ "$_n" -eq 1 ]]; then
-        branch="$_cands"
-        printf 'deputy: auto_merge: no branch in marker for #%s — recovered unique branch %s\n' "$id" "$branch" >&2
-      else
-        printf 'deputy: auto_merge: #%s has no recorded branch and %s candidate deputy/*-%s branches — left surfaced for a human\n' "$id" "$_n" "$id" >&2
-        return 1
-      fi
-    fi
-  fi
-  git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || { printf 'deputy: auto_merge: branch %s missing for #%s — left surfaced\n' "$branch" "$id" >&2; return 1; }
+# Merge a resolved deputy/<slug> branch into the default branch. UNSANDBOXED callers only
+# (the runner's cmd_run and the interactive 'deputy pickup') — a sandboxed worker can't write
+# the repo. Shared by _auto_merge_ready and cmd_pickup so the merge/done/cleanup is identical.
+# Preconditions (checked here): branch exists, HEAD on the default branch, main tree clean
+# (excluding deputy-owned BACKLOG.md/.deputy). On success: item→done, ready-merge/proposed
+# markers cleared, opt-in merged-branch delete. Status text is printed to stdout (callers route
+# it). rc: 0 = merge happened (item done, OR merged-but-done-write-failed → marker kept so it's
+# never falsely failed); 1 = precondition failed (no merge); 2 = conflict (aborted, note written).
+_merge_ready_branch() {
+  local id="$1" branch="$2" def cur marker="$STATE_DIR/ready-merge-$id"
+  git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || { printf 'branch %s is missing\n' "$branch"; return 1; }
   def="$(_default_branch)"; cur="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  [[ -n "$def" && "$cur" == "$def" ]] || { printf 'deputy: auto_merge: not on default branch (%s) — #%s left surfaced\n' "$cur" "$id" >&2; return 1; }
-  [[ -z "$(git -C "$ROOT" status --porcelain -- . ':!BACKLOG.md' ':!.deputy' 2>/dev/null)" ]] || { printf 'deputy: auto_merge: main tree dirty — #%s left surfaced\n' "$id" >&2; return 1; }
-  if ! git -C "$ROOT" merge --no-ff "$branch" -m "deputy: auto-merge $branch (#$id)" >/dev/null 2>&1; then
+  [[ -n "$def" && "$cur" == "$def" ]] || { printf 'not on the default branch (on %s; need %s) — merge manually: git checkout %s && git merge --no-ff %s\n' "${cur:-?}" "${def:-?}" "${def:-<default>}" "$branch"; return 1; }
+  [[ -z "$(git -C "$ROOT" status --porcelain -- . ':!BACKLOG.md' ':!.deputy' 2>/dev/null)" ]] || { printf 'the main tree is dirty — commit/stash, then: git merge --no-ff %s\n' "$branch"; return 1; }
+  if ! git -C "$ROOT" merge --no-ff "$branch" -m "deputy: merge $branch (#$id)" >/dev/null 2>&1; then
     git -C "$ROOT" merge --abort 2>/dev/null || true
-    printf 'deputy: auto_merge: %s conflicts with %s — aborted; #%s left surfaced for manual merge\n' "$branch" "$def" "$id" >&2
     local note; note="$(_trail_path questions "${branch#deputy/}")"; mkdir -p "$(dirname "$note")" 2>/dev/null || true
-    printf 'AUTO-MERGE CONFLICT (#97): %s does not merge cleanly into %s. Resolve manually: git checkout %s && git merge --no-ff %s\n' "$branch" "$def" "$def" "$branch" >> "$note" 2>/dev/null || true
-    return 1
+    printf 'MERGE CONFLICT: %s does not merge cleanly into %s. Resolve manually: git checkout %s && git merge --no-ff %s\n' "$branch" "$def" "$def" "$branch" >> "$note" 2>/dev/null || true
+    printf '%s conflicts with %s — aborted; resolve manually (see %s)\n' "$branch" "$def" "$note"; return 2
   fi
-  # Merge succeeded. Only clear the marker + delete the branch if the done-write succeeds,
-  # so a failed BACKLOG write leaves the marker for a retry rather than a lost item.
+  # Merge succeeded. Clear markers + delete the branch ONLY if the done-write succeeds, so a
+  # failed BACKLOG write leaves the marker for retry rather than losing the item.
   local cur_line; cur_line="$(grep -F "[#$id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
   if [[ -n "$cur_line" ]] && cmd_set "$cur_line" done >/dev/null 2>&1; then
     rm -f "$marker" "$STATE_DIR/proposed-$id" 2>/dev/null || true
     if [[ "$(_config_get delete_merged_branch)" == "1" ]] && git -C "$ROOT" merge-base --is-ancestor "$branch" HEAD 2>/dev/null; then
       git -C "$ROOT" branch -d "$branch" >/dev/null 2>&1 || true
     fi
-    printf 'deputy: auto-merged %s into %s — #%s done\n' "$branch" "$def" "$id" >&2
-    return 0
+    printf 'merged %s into %s — #%s done\n' "$branch" "$def" "$id"; return 0
   fi
-  # Merge HAPPENED but the done-write failed: keep the marker (so it's visible/retryable) and
-  # still return 0 — the item must NOT fall through to retry-budget handling and be failed.
-  printf 'deputy: auto_merge: merged %s but failed to mark #%s done — marker kept; resolve manually\n' "$branch" "$id" >&2
-  return 0
+  printf 'merged %s into %s but failed to mark #%s done — marker kept; resolve manually\n' "$branch" "$def" "$id"; return 0
+}
+
+# #97/#98/#99: runner-side auto-merge. A headless worker surfaces its branch ready-merge (it
+# CAN'T merge — the #64 sandbox makes the repo read-only to it); the UNSANDBOXED runner merges
+# here after the worker returns, WHEN auto_merge=1. No-op unless: auto_merge=1, a ready-merge
+# marker exists (so a blocking surface is never merged), and the branch resolves (#98/#99).
+# Returns 0 whenever a MERGE HAPPENED (so the caller skips retry-budget and never fails an
+# already-merged item); 1 for every no-op / precondition-miss / conflict.
+_auto_merge_ready() {
+  local item="$1" id branch
+  id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  [[ "$(_config_get auto_merge)" == "1" ]] || return 1
+  [[ -f "$STATE_DIR/ready-merge-$id" ]] || return 1     # not ready (blocking surface / n/a)
+  branch="$(_ready_merge_branch "$id" || true)"
+  [[ "$branch" == deputy/* ]] || { printf 'deputy: auto_merge: #%s has no resolvable branch (none recorded / ambiguous) — left surfaced for a human\n' "$id" >&2; return 1; }
+  local _msg _rc=0
+  # '|| _rc=$?' so a non-zero merge result doesn't trip set -e before we capture/print it.
+  _msg="$(_merge_ready_branch "$id" "$branch")" || _rc=$?
+  printf 'deputy: auto_merge: %s\n' "$_msg" >&2
+  [[ "$_rc" -eq 0 ]]     # 0 = merge happened (skip retry-budget); 1/2 = no merge
+}
+
+# 'deputy pickup #<id>' — bring up ONE task and ACT on it (the interactive counterpart to the
+# read-only 'deputy list' detail and the passive 'deputy watch' summon). Works on a task in an
+# ATTENTION state; shows the item + its detail, then performs the safe action:
+#   surfaced · ready-to-merge → merge into the default branch (→ done)
+#   surfaced · proposed       → approve (→ waiting)
+#   surfaced · needs-input    → point to /deputy (a conversation can't be auto-resumed)
+#   failed / cancelled / deferred / paused → requeue (→ waiting)
+# Safe/local only — never pushes or deletes anything outward.
+cmd_pickup() {
+  local id="$1"
+  [[ -n "$id" ]] || { printf 'deputy: pickup requires an <id> (e.g. deputy pickup #%s)\n' "42" >&2; return 2; }
+  id="${id#\#}"
+  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: pickup: invalid id: %s\n' "$id" >&2; return 2; }
+  _with_lock _allocate_ids
+  # Anchor the id tag to the line start (after an optional 1-char status prefix) so a "[#id]"
+  # mention in another task's description can't be matched instead.
+  local line pi state
+  line="$(grep -E "^[^[]?\[#${id}\]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+  [[ -n "$line" ]] || { printf 'deputy: pickup: no task #%s found\n' "$id" >&2; return 1; }
+  pi="$(_parse_item "$line")"; state="${pi%%|*}"
+  printf '%s\n' "$line"
+  _item_detail_block "$state" "$id"
+  printf '\n'
+  case "$state" in
+    surfaced)
+      local kind; kind="$(_surfaced_kind "$id")"
+      case "$kind" in
+        "ready to merge")
+          local branch _msg _rc=0; branch="$(_ready_merge_branch "$id" || true)"
+          [[ "$branch" == deputy/* ]] || { printf 'deputy: pickup: #%s is ready-to-merge but its branch is unresolvable (none recorded / ambiguous) — resolve manually.\n' "$id" >&2; return 1; }
+          # '|| _rc=$?' so a non-zero merge result doesn't trip set -e before we print the reason.
+          _msg="$(_merge_ready_branch "$id" "$branch")" || _rc=$?
+          printf 'deputy: pickup: %s\n' "$_msg"
+          [[ "$_rc" -eq 0 ]] && return 0
+          return 1 ;;
+        "proposed")
+          if cmd_set "$line" waiting >/dev/null 2>&1; then
+            rm -f "$STATE_DIR/proposed-$id" 2>/dev/null || true
+            printf 'deputy: pickup: approved proposal #%s → waiting (runs in priority order).\n' "$id"; return 0
+          fi
+          printf 'deputy: pickup: failed to approve #%s\n' "$id" >&2; return 1 ;;
+        *)  # needs input — cannot auto-resume a conversation
+          printf 'deputy: pickup: #%s needs your input — run /deputy to resume it from its waypoint (details above).\n' "$id"; return 0 ;;
+      esac ;;
+    failed|cancelled|deferred|paused)
+      if cmd_set "$line" waiting >/dev/null 2>&1; then
+        printf 'deputy: pickup: #%s (%s) → waiting (requeued; runs in priority order).\n' "$id" "$state"; return 0
+      fi
+      printf 'deputy: pickup: failed to requeue #%s\n' "$id" >&2; return 1 ;;
+    *)
+      printf 'deputy: pickup: #%s is %s — pickup only acts on surfaced/failed/cancelled/paused/deferred tasks.\n' "$id" "$state" >&2; return 2 ;;
+  esac
 }
 
 # One tick: claim the top item and hand it to the orchestrator. --once = no loop.
@@ -3743,6 +3798,90 @@ _spawnfail_bump()  { local n; n=$(( $(_spawnfail_count "$1") + 1 )); printf '%s\
 _spawnfail_reset() { rm -f "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 
 # Count waiting+paused items (the runnable set cmd_pick draws from).
+# ── Attention-item detail (shared by list / watch / pickup) ───────────────────
+# Locate a task's questions file across the #70 subfolder layout AND the legacy flat layout,
+# matching BOTH slug conventions (<desc>-<id> suffix and <id>-<desc> prefix). First match wins.
+_questions_file() {
+  local id="$1" cand
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  for cand in "$STATE_DIR"/questions/*-"$id".md "$STATE_DIR"/questions/"$id"-*.md \
+              "$STATE_DIR"/*-"$id".questions.md "$STATE_DIR"/"$id"-*.questions.md; do
+    [[ -f "$cand" ]] && { printf '%s' "$cand"; return 0; }
+  done
+  return 1
+}
+# Same, for a task's failure-context (.fail.md) file.
+_fail_file() {
+  local id="$1" cand
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  for cand in "$STATE_DIR"/fails/*-"$id".md "$STATE_DIR"/fails/"$id"-*.md \
+              "$STATE_DIR"/*-"$id".fail.md "$STATE_DIR"/"$id"-*.fail.md; do
+    [[ -f "$cand" ]] && { printf '%s' "$cand"; return 0; }
+  done
+  return 1
+}
+# Resolve the deputy/<slug> branch for a ready-merge item — mirrors _auto_merge_ready's
+# resolution so what 'list'/'pickup' show matches what the runner would merge: (1) the branch
+# recorded in the marker (#98); (2) the deterministic canonical branch (#99) if it exists;
+# (3) a UNIQUE legacy deputy/*-<id> branch. Empty if none / ambiguous.
+_ready_merge_branch() {
+  local id="$1" br cands n
+  br="$(sed -n 's/^branch: //p' "$STATE_DIR/ready-merge-$id" 2>/dev/null | head -1)"
+  [[ "$br" == deputy/* ]] && { printf '%s' "$br"; return 0; }
+  br="deputy/$(cmd_slug "$id" 2>/dev/null || true)"
+  [[ "$br" != "deputy/" && "$br" == deputy/* ]] && git -C "$ROOT" show-ref --verify --quiet "refs/heads/$br" 2>/dev/null \
+    && { printf '%s' "$br"; return 0; }
+  cands="$(git -C "$ROOT" branch --list "deputy/*-$id" --format='%(refname:short)' 2>/dev/null)"
+  n="$(printf '%s\n' "$cands" | grep -c .)"
+  [[ "$n" -eq 1 ]] && { printf '%s' "$cands"; return 0; }
+  return 1
+}
+# Classify a surfaced item by its marker: needs-input (default), ready-to-merge, or proposed.
+_surfaced_kind() {
+  local id="$1" kind="needs input"
+  if [[ "$id" =~ ^[0-9]+$ ]]; then
+    [[ -f "$STATE_DIR/ready-merge-$id" ]] && kind="ready to merge"
+    [[ -f "$STATE_DIR/proposed-$id"    ]] && kind="proposed"
+  fi
+  printf '%s' "$kind"
+}
+# Print the indented per-task detail block for an ATTENTION item (surfaced / failed /
+# deferred / paused / cancelled). Shared by 'list', 'watch', and 'pickup' so the shown detail
+# and the suggested command never drift. Prints nothing for non-attention states. Lines are
+# indented, so a leading serialized item line stays greppable above this block.
+_item_detail_block() {
+  local state="$1" id="$2" kind qf ff first slug def
+  case "$state" in
+    surfaced)
+      kind="$(_surfaced_kind "$id")"
+      printf '      status:  %s\n' "$kind"
+      if qf="$(_questions_file "$id")"; then
+        printf '      details: %s\n' "$qf"
+        first="$(head -1 "$qf" 2>/dev/null || true)"
+        [[ -n "$first" ]] && printf '      summary: %s\n' "$first"
+      fi
+      case "$kind" in
+        "ready to merge")
+          slug="$(_ready_merge_branch "$id" || true)"
+          def="$(_default_branch)"; def="${def:-<default-branch>}"
+          printf '      action:  deputy pickup #%s   (merges %s into %s)\n' "$id" "${slug:-deputy/<slug>}" "$def" ;;
+        "proposed")
+          printf '      action:  deputy pickup #%s   (approve → waiting; or deputy set #%s cancelled to reject)\n' "$id" "$id" ;;
+        *)
+          printf '      action:  deputy pickup #%s   (resume via /deputy from its waypoint)\n' "$id" ;;
+      esac ;;
+    failed)
+      if ff="$(_fail_file "$id")"; then
+        printf '      details: %s\n' "$ff"
+        first="$(head -1 "$ff" 2>/dev/null || true)"
+        [[ -n "$first" ]] && printf '      reason:  %s\n' "$first"
+      fi
+      printf '      action:  deputy pickup #%s   (requeue → waiting)\n' "$id" ;;
+    deferred|paused|cancelled)
+      printf '      action:  deputy pickup #%s   (revive → waiting)\n' "$id" ;;
+  esac
+}
+
 _runnable_count() {
   local n=0 raw parsed state
   while IFS= read -r raw; do
@@ -3952,6 +4091,7 @@ main() {
     status) cmd_status; return 0 ;;
     watch|tail) shift; cmd_watch "$@"; return $? ;;
     pick) cmd_pick; return 0 ;;
+    pickup) shift; cmd_pickup "${1:-}"; return $? ;;
     set) shift; cmd_set "$@"; return $? ;;
     claim) shift; cmd_claim "$@"; return $? ;;
     recover) cmd_recover; return $? ;;   # propagate recovery failure (#47 rc-propagation)

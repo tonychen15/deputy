@@ -15,9 +15,9 @@ lof() { grep -F -- "$1" "$DEPUTY_ROOT/BACKLOG.md" | head -1; }
 bash "$DEPUTY" set "$(lof 'to run')"   running  >/dev/null
 bash "$DEPUTY" set "$(lof 'to defer')" deferred >/dev/null
 
-# bare list shows all four
+# bare list shows all four (count via --porcelain: one line per item, no detail blocks)
 all="$(bash "$DEPUTY" list)"
-assert_eq "$(printf '%s\n' "$all" | grep -c .)" "4" "bare list shows all items"
+assert_eq "$(bash "$DEPUTY" list --porcelain | grep -c .)" "4" "bare list shows all items"
 
 # --waiting shows exactly the two waiting items and nothing else
 w="$(bash "$DEPUTY" list --waiting)"
@@ -36,7 +36,8 @@ r="$(bash "$DEPUTY" list --running)"
 assert_eq "$(printf '%s\n' "$r" | grep -c .)" "1" "--running shows exactly 1"
 assert_contains "$r" "to run" "--running content"
 d="$(bash "$DEPUTY" list --deferred)"
-assert_eq "$(printf '%s\n' "$d" | grep -c .)" "1" "--deferred shows exactly 1"
+# deferred is an attention state → its item now carries a detail block; count headers via --porcelain
+assert_eq "$(bash "$DEPUTY" list --deferred --porcelain | grep -c .)" "1" "--deferred shows exactly 1"
 assert_contains "$d" "to defer" "--deferred content"
 
 # a state with no items -> show '0 tasks in <state> state', clean exit
