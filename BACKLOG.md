@@ -15,7 +15,8 @@
 ### Surfaced (1)
 ?[#95][P2] GUARDRAIL HARDENING: the risky-op guardrail (hooks/guardrail.sh) only matches when the command is the FIRST token, so shell-valid prefixes bypass EVERY pattern — 'DEPUTY_ROOT=/tmp deputy cron remove', 'X=1 git push', 'command git branch -D', 'env rm -rf ...'. Systemic (affects git push, rm -rf, git branch -d/-f, crontab, cron ensure/remove, etc.), pre-existing (surfaced by codex during #82 + #88 reviews). FIX: normalize ONCE in _norm (or a shared prefix-strip) — strip leading 'VAR=val ' env-assignments and 'command'/'env' wrappers before pattern-matching, so all deny patterns become prefix-resistant. GRILL: exact prefix grammar (env-assignments, command/env, builtins like 'exec'); keep it from over-stripping legit args; add tests per bypass form for a few representative patterns. Ref: #82/#88 guardrail reviews.
 
-### Waiting (0)
+### Waiting (1)
+[#101][P3] when I run 'deputy -h', it showes all the config key information which is too noisy. Use a --full to guard these config key information. Without it, it should only display all commands help tips.
 
 ### Paused (0)
 
