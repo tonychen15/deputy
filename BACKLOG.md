@@ -10,10 +10,10 @@
 
 ## Items
 
-### Running (1)
-@[#101][P3] when I run 'deputy -h', it showes all the config key information which is too noisy. Use a --full to guard these config key information. Without it, it should only display all commands help tips.
+### Running (0)
 
-### Surfaced (0)
+### Surfaced (1)
+?[#101][P3] when I run 'deputy -h', it showes all the config key information which is too noisy. Use a --full to guard these config key information. Without it, it should only display all commands help tips.
 
 ### Waiting (0)
 
