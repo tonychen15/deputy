@@ -222,10 +222,10 @@ author. The order depends on who authored:
 This replaces the old Gemini-only gate that bare-`wait`ed (and deadlocked) when Gemini was
 down. Two special returns:
 - `self` — only the author is up (both peers down). Degrade per the project's
-  `auto_mode` config (`deputy config auto_mode`):
-  - `auto_mode=1` → **self-review with a loud WARNING** recorded in the trail
+  `self_review_fallback` config (`deputy config self_review_fallback`):
+  - `self_review_fallback=1` → **self-review with a loud WARNING** recorded in the trail
     (`author == reviewer`, degraded); proceed only if it finds nothing blocking.
-  - otherwise (**default**, `auto_mode` unset/`0`) → **surface** the item
+  - otherwise (**default**, `self_review_fallback` unset/`0`) → **surface** the item
     (`.deputy/<slug>.questions.md`: "no peer reviewer available — your call"),
     `deputy set "<item-line>" surfaced`, and stop.
 - `wait` — no provider up at all → treat as quota: `deputy cron --reschedule "<text>"`;
@@ -308,7 +308,7 @@ counts against the retry budget in §4).
 - **Author ≠ reviewer.** The reviewer is an author-aware non-author peer (claude-first
   when codex/gemini authored; codex-first when claude authored) and never wrote the
   artifact it reviews. `deputy route review` enforces this; the only exception is a
-  recorded degraded self-review (only the author up + `auto_mode=1`).
+  recorded degraded self-review (only the author up + `self_review_fallback=1`).
 - **No plan/step/design advances without an APPROVED verdict**, logged to
   `.deputy/<slug>.review.md`.
 - **Worker-proposed tasks need human approval.** When *you* (a headless worker) run

@@ -29,7 +29,7 @@ genuinely hard calls, and never blocks the queue while it waits on you.
 > **v1.1.0**, where the xReview gate became **Codex-default and author-aware**: the
 > reviewer is chosen by `deputy route review` (author-aware: claude-first when codex/gemini
 > authored, codex-first when claude authored), so a dead or rate-limited reviewer no longer deadlocks the spine, plus a
-> per-project `auto_mode` no-peer degradation policy and an append-only
+> per-project `self_review_fallback` no-peer degradation policy and an append-only
 > `.deputy/reviews/<slug>.md` audit trail (`deputy review-log`). The repo's own
 > `BACKLOG.md` is the project's task queue — Deputy dogfoods itself.
 
@@ -184,6 +184,26 @@ deputy clean [<id>] [--dry-run] [--state <state>]
 `-i` important (`P2`), none = defaults to P3 at numbering (P4 is the lowest lane).
 `--p0/--p1/--p2/--p3/--p4` also accepted. Use `--` before a description that starts with `-`.
 
+### Autonomy controls
+
+**A spawned headless worker reads its autonomy ONLY from `.deputy/config`.** The interactive
+Claude terminal's "auto-mode" is Claude Code *session* state — ephemeral and **invisible** to
+workers — so it does **not** propagate to a cron/headless run. To make headless runs
+autonomous, set the config explicitly (with the `deputy config` setter — no more hand-editing):
+
+```bash
+deputy config auto_merge 1             # let a completed worker's branch be merged locally
+                                       #   (the unsandboxed runner merges it); 0 = surface for review
+deputy config self_review_fallback 1   # if no peer xReviewer is up, self-review + proceed;
+                                       #   0 = surface the item instead
+deputy config autonomy on              # shorthand: sets BOTH of the above at once (off = both 0)
+```
+
+These are two **independent** risk knobs (merge-safety vs review-quality); `autonomy on|off`
+is just a convenience that flips both. **Push is never automatic** regardless — `auto_merge`
+governs only the *local* merge; publishing is always your explicit call. *(The former key name
+`auto_mode` is still read as an alias for `self_review_fallback`.)*
+
 ---
 
 ## The backlog file (`BACKLOG.md`)
@@ -261,7 +281,7 @@ delimiter comments.
   `deputy route review` (author-aware, author-excluded): claude authored → **codex** then
   gemini; codex authored → **claude** then gemini; gemini authored → **claude** then codex
   — so a dead or rate-limited reviewer no longer deadlocks the gate. If only the author is
-  up, the gate degrades per the project's `auto_mode` config (`auto_mode=1` → self-review
+  up, the gate degrades per the project's `self_review_fallback` config (`self_review_fallback=1` → self-review
   with a warning; default → surface the item). The routing infrastructure also supports a
   `codex` simple-coding failover path, but step execution still runs inline with `claude`.
   On full quota exhaustion, Deputy skips the blocked item and retries on the next

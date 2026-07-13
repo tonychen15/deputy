@@ -1872,6 +1872,11 @@ commands:
                                                    '--state <s>' also accepted; default: waiting)
                                   cleanable states: waiting, done, failed, cancelled, duplicate, deferred
                                   refuses running, triaging, surfaced, paused (active/checkpointed/awaiting)
+  config [<key> [value]]          read or set a .deputy/config key. No args / one arg = read;
+                                  'config <key> <value>' upserts it (atomic; one line per key).
+                                  'config autonomy on|off' is a shorthand that sets BOTH
+                                  autonomy knobs at once (auto_merge + self_review_fallback).
+                                  e.g. 'deputy config auto_merge 1', 'deputy config autonomy on'
   release [version]               mark a release boundary in Done: insert a dated
                                   `<!-- release vX — YYYY-MM-DD -->` delimiter at the top
                                   of the Done section (version defaults to ./VERSION)
@@ -1881,7 +1886,14 @@ commands:
   version                         print the installed deputy version (also --version, -V)
   help                            show this message
 
-config keys (.deputy/config):
+config keys (.deputy/config)  — set with 'deputy config <key> <value>':
+  # autonomy (a spawned headless worker reads ONLY .deputy/config — NOT the interactive
+  #  Claude terminal's auto-mode, which is ephemeral + invisible to workers; wire intent here):
+  auto_merge=1                    allow a spawned (headless) worker's branch to be merged to the default branch (the unsandboxed runner does the merge); default 0 = surface the branch for human review
+  self_review_fallback=1          when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead (legacy name 'auto_mode' is still read)
+  # 'deputy config autonomy on|off' sets BOTH of the above at once. NOTE: push is NEVER
+  #  automatic — auto_merge governs only the LOCAL merge.
+  # scheduling / other:
   max_items=N                     items started per run cycle (default 1; min 1). MIGRATION: 0 no longer means unlimited — it clamps to 1; set an explicit N for a multi-item drain
   heartbeat_mins=N                cron heartbeat interval in minutes (default 10; 1–59); use 'deputy cron set N' to change it live
   human_backoff=1                 back off when an interactive Claude session is busy/recent in this repo (default 1; set 0 to disable)
@@ -1894,7 +1906,6 @@ config keys (.deputy/config):
   delete_merged_branch=1          after a successful wt-remove following a clean merge, delete the local deputy/<slug> branch (uses 'git branch -d', merged-only safe delete, NEVER -D/-f); default 0 = leave the branch for manual cleanup
   notify_on_spawn=0               silence the notification + cron.log '===SPAWN===' line emitted when the heartbeat autonomously spawns a worker; default 1 = announce every autonomous pickup (never silent)
   sandbox=0                       disable the bwrap read-only sandbox around the headless worker (default 1 = repo code is OS-read-only to the worker, only .deputy/+BACKLOG.md+worktree writable); 0 falls back to cwd-pinning only
-  auto_mode=1                     when xReview has no peer reviewer (both Codex+Gemini down), self-review with a warning and proceed; default 0 = surface the item for the user instead
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
@@ -2225,8 +2236,56 @@ _config_get() {
     v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
     if [[ "$k" == "$key" ]]; then val="$v"; seen=1; fi
   done < "$cfg"
-  (( seen )) && printf '%s\n' "$val"
+  (( seen )) && { printf '%s\n' "$val"; return 0; }
+  # #90 back-compat: 'auto_mode' was renamed to 'self_review_fallback'. If the new key is
+  # unset, transparently fall back to the legacy key so existing .deputy/config keeps working.
+  [[ "$key" == "self_review_fallback" ]] && _config_get auto_mode
   return 0
+}
+
+# Write a single key to .deputy/config as an ATOMIC UPSERT (#90): drop any existing 'key='
+# lines (tolerating spaces around '=', which _config_get also trims), append 'key=value',
+# temp+rename. One line per key — the file never accumulates duplicates. An empty value writes
+# 'key=' (an explicit disable that overrides a prior value).
+_config_set() {
+  local key="$1" val="${2:-}" cfg="$STATE_DIR/config" tmp _grc=0
+  [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { printf 'deputy: config: invalid key: %s\n' "$key" >&2; return 2; }
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  tmp="$(mktemp "$STATE_DIR/.config.tmp.XXXXXX")" || return 1
+  if [[ -f "$cfg" ]]; then
+    # '|| _grc=$?' keeps set -e from tripping on grep's no-match (rc 1); rc>1 is a real read
+    # error — don't replace a possibly-good config with a truncated one.
+    grep -v "^[[:space:]]*${key}[[:space:]]*=" "$cfg" > "$tmp" || _grc=$?
+    [[ "$_grc" -gt 1 ]] && { rm -f "$tmp"; printf 'deputy: config: cannot read %s\n' "$cfg" >&2; return 1; }
+  fi
+  printf '%s=%s\n' "$key" "$val" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$cfg" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# 'deputy config'            — list the current (non-comment) config lines
+# 'deputy config <key>'      — read one key
+# 'deputy config <key> <v>'  — upsert-write ('autonomy on|off' sets BOTH autonomy knobs at once)
+cmd_config() {
+  if [[ $# -eq 0 ]]; then
+    [[ -f "$STATE_DIR/config" ]] && grep -vE '^[[:space:]]*(#|$)' "$STATE_DIR/config" || true
+    return 0
+  fi
+  local key="$1"
+  [[ $# -eq 1 ]] && { _config_get "$key"; return 0; }
+  [[ $# -gt 2 ]] && { printf 'deputy: config: too many arguments (expected: config <key> [value])\n' >&2; return 2; }
+  local val="$2"
+  if [[ "$key" == "autonomy" ]]; then
+    local v
+    case "$val" in on|1|true|yes) v=1 ;; off|0|false|no) v=0 ;;
+      *) printf 'deputy: config autonomy expects on|off (got: %s)\n' "$val" >&2; return 2 ;;
+    esac
+    _config_set auto_merge "$v" && _config_set self_review_fallback "$v" || return 1
+    printf 'autonomy %s → auto_merge=%s, self_review_fallback=%s\n' "$val" "$v" "$v"
+    return 0
+  fi
+  _config_set "$key" "$val" || return $?   # propagate rc (e.g. 2 for an invalid key)
+  printf '%s=%s\n' "$key" "$val"
 }
 
 # True (0) if any path (newline-separated, from $1) matches a glob in
@@ -4203,7 +4262,7 @@ main() {
     cron) shift; cmd_cron "$@"; return $? ;;
     _resethour) shift; _parse_reset_hour "${1:-}"; return 0 ;;
     _resetsecs) shift; _parse_reset_secs "${1:-}"; return 0 ;;
-    config) shift; _config_get "${1:-}"; return 0 ;;
+    config) shift; cmd_config "$@"; return $? ;;
     protected) shift
       if [[ "${1:-}" == "--stdin" ]]; then _protected_violation "$(cat)"; else _protected_violation "${1:-}"; fi
       return $? ;;
