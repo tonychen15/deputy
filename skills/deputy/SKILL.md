@@ -45,10 +45,15 @@ Read the item's description and the repo. Decide **simple** or **complex**.
 - A *simple* item is a well-specified, low-risk, single-concern change (a clear bug fix,
   a small addition with an obvious approach). Everything else is *complex*.
 
-Derive a **slug** from the description: kebab-case, ~6 words max.  If the item has an
-`[#N]` ID tag, append it as a suffix for guaranteed uniqueness (e.g. `fix-login-bug-7`).
-If the item has no ID, append a short hash instead (e.g. `fix-login-bug-a1b2`).  Use the
-slug for the branch name and all state files (questions, fail, etc.).
+Get the task's **slug** from the runner — **never invent one**:
+`slug="$(deputy slug <id>)"` (the item's `[#N]` id). The runner returns a canonical slug
+`<id>-<hash>-<desc>` that is **frozen at add time from the immutable user description**, so
+every resume/rerun of this task resolves to the **same** slug → the **same** branch
+`deputy/<slug>` → the **same** worktree. This is what makes a task idempotent: you never
+fork a second branch by slugifying the description differently, and a later refinement of
+the description (during grilling) does not move the branch. Use this slug for the branch and
+all state files (questions, fail, review, etc.). (Only if `deputy slug` is unavailable —
+a very old runner — fall back to kebab-casing the description with the `-<id>` suffix.)
 
 ### 2a. Simple → spine loop (1 step)
 

@@ -908,7 +908,10 @@ cmd_add() {
       # never revisit this line — meaning we must apply the P3 default now, exactly as
       # _allocate_ids would for an un-prioritized item.
       local _nid _pprio; _nid="$(_next_id)"; _pprio="${prio:-P3}"
-      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")" || return 1
+      # #99: freeze the immutable user_desc + canonical slug FIRST (required) — a task must
+      # never exist without its frozen slug. Roll the meta back if the append then fails.
+      _write_task_meta "$_nid" "$text" || { printf 'deputy: add: could not persist task metadata (#%s) — not added\n' "$_nid" >&2; return 1; }
+      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
       mkdir -p "$STATE_DIR" 2>/dev/null || true
       {
         printf 'proposed-by-run-pid: %s\n' "${DEPUTY_ACTIVE_RUN_PID:-}"
@@ -925,7 +928,9 @@ cmd_add() {
     # exactly as _allocate_ids would for an un-prioritized item.
     local _nid _pprio; _nid="$(_next_id)"; _pprio="${prio:-P3}"
     [[ "$_nid" =~ ^[0-9]+$ ]] || { printf 'deputy: id allocation failed\n' >&2; return 1; }
-    _append_item "$(_serialize_item waiting "$_pprio" "$_nid" "$text")" || return 1
+    # #99: freeze the immutable user_desc + canonical slug FIRST (required); roll back on append fail.
+    _write_task_meta "$_nid" "$text" || { printf 'deputy: add: could not persist task metadata (#%s) — not added\n' "$_nid" >&2; return 1; }
+    _append_item "$(_serialize_item waiting "$_pprio" "$_nid" "$text")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
     printf 'deputy: added #%s: %s\n' "$_nid" "$text"
   }
   local _add_rc=0
@@ -1716,6 +1721,10 @@ commands:
                                   no flag → default priority P3 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
+  slug <#id>                      print a task's canonical, frozen branch slug
+                                  (<id>-<hash>-<desc>, fixed at add-time from the immutable
+                                  user description). The orchestrator uses this so every
+                                  resume/rerun of a task reuses the SAME branch/worktree
   list [<state>]                  print items in BACKLOG.md format (e.g. '@[#1][P0] desc');
                                   optional state filter — bare '<state>' (e.g. 'deputy list
                                   waiting'), '--state <state>', or '--<state>' shorthand;
@@ -2696,15 +2705,24 @@ _auto_merge_ready() {
   # duplicate-branch re-run): guessing the wrong branch is worse than leaving it for a human.
   branch="$(sed -n 's/^branch: //p' "$marker" 2>/dev/null | head -1)"
   if [[ "$branch" != deputy/* ]]; then
-    local _cands _n
-    _cands="$(git -C "$ROOT" branch --list "deputy/*-$id" --format='%(refname:short)' 2>/dev/null)"
-    _n="$(printf '%s\n' "$_cands" | grep -c .)"
-    if [[ "$_n" -eq 1 ]]; then
-      branch="$_cands"
-      printf 'deputy: auto_merge: no branch in marker for #%s — recovered unique branch %s\n' "$id" "$branch" >&2
+    # #99: prefer the DETERMINISTIC canonical branch (deputy/<deputy slug id>) — no glob, no
+    # ambiguity. Only if that ref doesn't exist (a legacy branch predating #99) fall back to a
+    # UNIQUE deputy/*-<id> match, refusing on 0 or >=2 (a duplicate-branch re-run).
+    local _canon; _canon="deputy/$(cmd_slug "$id" 2>/dev/null || true)"
+    if [[ "$_canon" != "deputy/" && "$_canon" == deputy/* ]] && git -C "$ROOT" show-ref --verify --quiet "refs/heads/$_canon" 2>/dev/null; then
+      branch="$_canon"
+      printf 'deputy: auto_merge: no branch in marker for #%s — using canonical branch %s\n' "$id" "$branch" >&2
     else
-      printf 'deputy: auto_merge: #%s has no recorded branch and %s candidate deputy/*-%s branches — left surfaced for a human\n' "$id" "$_n" "$id" >&2
-      return 1
+      local _cands _n
+      _cands="$(git -C "$ROOT" branch --list "deputy/*-$id" --format='%(refname:short)' 2>/dev/null)"
+      _n="$(printf '%s\n' "$_cands" | grep -c .)"
+      if [[ "$_n" -eq 1 ]]; then
+        branch="$_cands"
+        printf 'deputy: auto_merge: no branch in marker for #%s — recovered unique branch %s\n' "$id" "$branch" >&2
+      else
+        printf 'deputy: auto_merge: #%s has no recorded branch and %s candidate deputy/*-%s branches — left surfaced for a human\n' "$id" "$_n" "$id" >&2
+        return 1
+      fi
     fi
   fi
   git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || { printf 'deputy: auto_merge: branch %s missing for #%s — left surfaced\n' "$branch" "$id" >&2; return 1; }
@@ -3530,6 +3548,96 @@ _wp_slug() {
   printf '%s' "${slug:0:64}"
 }
 
+# --- #99: deterministic, idempotent per-task branch/slug -------------------------------
+# The slug (→ branch deputy/<slug> → worktree) is FROZEN at add time from the IMMUTABLE
+# user-input description, so every resume/rerun of a task lands on the SAME branch. This
+# replaces the old model where the LLM orchestrator re-derived a slug from a (mutable,
+# possibly-refined) description each run — which produced drift and duplicate branches
+# (e.g. #96's cron-set-heartbeat-96 vs deputy-cron-set-heartbeat-96).
+
+# Short, stable content fingerprint (8 hex). Dependency-light: sha256sum, else shasum,
+# else cksum (weaker, but always present). Deterministic for a given input string.
+_short_hash() {
+  local s="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$s" | sha256sum | cut -c1-8
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$s" | shasum -a 256 | cut -c1-8
+  else
+    printf '%s' "$s" | cksum | awk '{printf "%08x", $1}' | cut -c1-8
+  fi
+}
+
+# Canonical slug for a task: <id>-<hash8>-<descslug>. Derived ONLY from (id, user_desc);
+# same inputs → same slug forever, independent of any later description refinement.
+_canonical_slug() {
+  local id="$1" user_desc="$2" h ds
+  h="$(_short_hash "$user_desc")"
+  ds="$(printf '%s' "$user_desc" | tr -cs 'a-zA-Z0-9' '-' | tr 'A-Z' 'a-z' | sed 's/-\+/-/g; s/^-//; s/-$//')"
+  ds="${ds:0:40}"; ds="${ds%-}"     # cap the readable part; never end on a dash
+  printf '%s-%s-%s' "$id" "$h" "$ds"
+}
+
+_meta_dir()  { printf '%s' "$STATE_DIR/meta"; }
+_meta_path() { printf '%s/%s.meta' "$(_meta_dir)" "$1"; }
+# Read one `key: value` field from a task's meta file (empty + rc1 if absent).
+_meta_get() {
+  local f; f="$(_meta_path "$1")"
+  [[ -f "$f" ]] || return 1
+  sed -n "s/^$2: //p" "$f" 2>/dev/null | head -1
+}
+# Write a task's meta ONCE (immutable): the original user description + the frozen slug.
+# Never overwrites existing meta — the user_desc/slug must stay stable for the task's life.
+# Atomic (temp + rename) and status-returning: rc0 = written or already present; rc1 = could
+# NOT persist. `add` treats rc1 as fatal (a task must never exist without its frozen slug);
+# the backfill path treats it as best-effort (cmd_slug still derives a deterministic slug).
+_write_task_meta() {  # <id> <user_desc>
+  local id="$1" ud="$2" f md tmp
+  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  md="$(_meta_dir)"; mkdir -p "$md" 2>/dev/null || return 1
+  f="$(_meta_path "$id")"
+  if [[ -f "$f" ]]; then
+    # Existing meta with the SAME user_desc → already frozen, keep it (immutable). A DIFFERENT
+    # user_desc can only be a stale orphan: callers always pass a fresh _next_id (or backfill a
+    # live item that had no meta), so no live task shares this id — the orphan is from an add
+    # interrupted between meta-rename and append. Fall through to overwrite it.
+    local _existing; _existing="$(sed -n 's/^user_desc: //p' "$f" 2>/dev/null | head -1)"
+    [[ "$_existing" == "$ud" ]] && return 0
+  fi
+  tmp="$f.tmp.$$"
+  { printf 'user_desc: %s\n' "$ud"
+    printf 'slug: %s\n' "$(_canonical_slug "$id" "$ud")"
+    printf 'created-at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  return 0
+}
+
+# `deputy slug <id>` — print the task's canonical (frozen) slug. Single source of truth for
+# the orchestrator, wt-create, resume, and the runner: never invent a slug, always ask this.
+# Legacy items (added before meta existed) are backfilled from their current description and
+# frozen on first call, so they too become stable from then on.
+cmd_slug() {
+  local id="$1"
+  [[ -n "$id" ]] || { printf 'deputy: slug requires an <id>\n' >&2; return 2; }
+  id="${id#\#}"
+  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: slug: invalid id: %s\n' "$id" >&2; return 2; }
+  local s; s="$(_meta_get "$id" slug || true)"
+  if [[ -n "$s" ]]; then printf '%s\n' "$s"; return 0; fi
+  # Backfill: freeze from the current BACKLOG description (best available user_desc). Anchor the
+  # id tag to the line start (after an optional 1-char status prefix) so a description that merely
+  # mentions "[#<id>]" can't hijack the match — the id tag always leads the line.
+  local line pi desc
+  line="$(grep -E "^[^[]?\[#${id}\]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+  [[ -n "$line" ]] || { printf 'deputy: slug: no task #%s found\n' "$id" >&2; return 1; }
+  pi="$(_parse_item "$line")"; desc="${pi#*|}"; desc="${desc#*|}"; desc="${desc#*|}"
+  _write_task_meta "$id" "$desc"
+  s="$(_meta_get "$id" slug || true)"
+  [[ -n "$s" ]] && { printf '%s\n' "$s"; return 0; }
+  # Meta unwritable (e.g. read-only .deputy): still return a deterministic slug so callers work.
+  _canonical_slug "$id" "$desc"; printf '\n'
+}
+
 # Return 0 (true) if the retry budget is exhausted for item <id>.
 # Budget is exhausted if resume_attempts >= _WP_RETRY_BUDGET AND no new step committed.
 _wp_retry_budget_exhausted() {
@@ -3820,6 +3928,7 @@ main() {
     list) shift; cmd_list "$@"; return $? ;;
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
+    slug) shift; cmd_slug "${1:-}"; return $? ;;
     status) cmd_status; return 0 ;;
     watch|tail) shift; cmd_watch "$@"; return $? ;;
     pick) cmd_pick; return 0 ;;
