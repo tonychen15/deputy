@@ -1754,7 +1754,9 @@ commands:
                                   prio and id are empty strings when unset); composes with
                                   all state filters; use 'cut -d"|" -f4-' to extract desc
   status                          counts by state
-  pickup <#id>                    bring up ONE attention task and ACT on it: ready-to-merge →
+  pickup <id>                     (use a bare integer, e.g. 'deputy pickup 42' — an unquoted
+                                  '#42' is a shell comment; quote it as '#42' if you prefer)
+                                  bring up ONE attention task and ACT on it: ready-to-merge →
                                   merge into the default branch (→ done); proposed → approve
                                   (→ waiting); needs-input → point to /deputy; failed/cancelled/
                                   deferred/paused → requeue (→ waiting). Local/safe only (never
@@ -2821,7 +2823,9 @@ _auto_merge_ready() {
 # Safe/local only — never pushes or deletes anything outward.
 cmd_pickup() {
   local id="$1"
-  [[ -n "$id" ]] || { printf 'deputy: pickup requires an <id> (e.g. deputy pickup #%s)\n' "42" >&2; return 2; }
+  # NOTE: prefer the bare-integer form — an UNQUOTED '#42' is a shell comment, so
+  # `deputy pickup #42` reaches deputy with no args. Use `deputy pickup 42` or quote: '#42'.
+  [[ -n "$id" ]] || { printf 'deputy: pickup requires an <id> — e.g. "deputy pickup 42" (a bare #42 is a shell comment; quote it as "#42")\n' >&2; return 2; }
   id="${id#\#}"
   [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: pickup: invalid id: %s\n' "$id" >&2; return 2; }
   _with_lock _allocate_ids

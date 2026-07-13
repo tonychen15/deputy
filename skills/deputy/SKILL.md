@@ -391,7 +391,7 @@ states: waiting triaging running surfaced done failed cancelled duplicate paused
 
 `deputy list [<state>] [--porcelain]` — items in BACKLOG format; for attention states (surfaced/failed/deferred/paused/cancelled) each item is followed by a detail block (status/details/summary/action). `--porcelain` emits stable `state|prio|id|desc` lines (no detail) for scripts.
 
-`deputy pickup #<id>` — bring up ONE attention task and ACT: surfaced ready-to-merge → merge into the default branch (→ done); proposed → approve (→ waiting); needs-input → resume via `/deputy`; failed/cancelled/deferred/paused → requeue (→ waiting). Local/safe only (never pushes).
+`deputy pickup <id>` — bring up ONE attention task and ACT: surfaced ready-to-merge → merge into the default branch (→ done); proposed → approve (→ waiting); needs-input → resume via `/deputy`; failed/cancelled/deferred/paused → requeue (→ waiting). Local/safe only (never pushes). **Use a bare integer** (`deputy pickup 42`) — an unquoted `#42` is a shell comment and reaches deputy as no args; quote it (`'#42'`) if you prefer the hash form.
 
 **Orchestrator/runner-internal — callable but NOT in `deputy help`:**
 `recover|probe|route|detect` (and the already-noted `claim|pick`, the spine verbs, `wt-create|wt-remove`, `protected`, `config`) are orchestrator/runner-internal commands. They work fine from the shell but are not advertised in `deputy help` because they are plumbing details.
