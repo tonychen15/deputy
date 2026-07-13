@@ -13,6 +13,12 @@ queue pattern. Its distinguishing trait versus blind backlog-drainers is
 **discernment**: it decides *whether* and *how hard* to do each item, escalates the
 genuinely hard calls, and never blocks the queue while it waits on you.
 
+> **v1.5.0** — the **"what needs me" UX**: three clear commands — **`list`** (per-task
+> detail), **`watch`** (queue overview + beep-summon; absorbs `reflect`), and **`pickup <id>`**
+> (act on one attention task) (#99); **deterministic, idempotent per-task branches** frozen at
+> add-time (#98/#99); **`auto_merge` now actually works** — the unsandboxed runner performs the
+> merge (#97/#98); a **`deputy config` setter** + `autonomy on|off` (#90); `list --porcelain`
+> + `list <id>` (#93/#91); `cron set N` (#96); security-reviewed **guardrail hardening** (#95).
 > **v1.3.0** — **backlog cleared to zero open items**: repo-wide *atomic* write-path
 > hardening so a partial write can't corrupt `BACKLOG.md` (#47); the **agent-claim race
 > protocol** — the interactive agent now holds the active-run claim so the cron heartbeat
@@ -144,7 +150,7 @@ it never overwrites your `BACKLOG.md` or existing config:
 ./inst_deputy.sh cron           # or: deputy cron --ensure
 ```
 
-**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.4.0`).
+**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.5.0`).
 
 ---
 
@@ -333,7 +339,7 @@ templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)
 BACKLOG.md               # Deputy's own task queue
-VERSION                  # 1.4.0
+VERSION                  # 1.5.0
 ```
 
 Run the test suite with `bash tests/run.sh`.

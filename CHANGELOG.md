@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.5.0 — 2026-07-12
+
+Minor — the "what needs me" UX (list / watch / pickup), deterministic task branches, a
+working `auto_merge`, and CLI/config ergonomics (12 backlog items).
+
+**New commands & flags**
+- **`deputy pickup <id>` (#99).** Bring up ONE attention task and act on it: ready-to-merge →
+  merge into the default branch (→ done); proposed → approve; needs-input → resume via
+  `/deputy`; failed/cancelled/deferred/paused → requeue. Local/safe only (never pushes).
+- **`deputy config <key> <value>` setter + `autonomy on|off` (#90).** `config` was read-only;
+  it now upserts `.deputy/config` atomically. `autonomy on|off` flips both autonomy knobs at
+  once. Renamed `auto_mode` → `self_review_fallback` (back-compat alias kept).
+- **`deputy list --porcelain` + `list <id>` (#93/#91).** Stable `state|prio|id|desc` machine
+  output; filter by id. Plus a blank line between items (#92) and a count summary (#100).
+- **`deputy cron set <N>` (#96).** Change the heartbeat interval live (crontab-first, atomic).
+- **`deputy -h --full` (#101).** Config keys are hidden from the default help; `--full` shows them.
+
+**The "what needs me" consolidation (#99)**
+- Three clear roles — **`list`** (LOOK: per-task detail for surfaced/failed/deferred/…),
+  **`watch`** (ALERT: queue overview + 3-beep summon; monitors surfaced/failed/deferred),
+  **`pickup`** (ACT). `deputy reflect` is folded into `watch` (kept as an alias).
+
+**Deterministic, idempotent task branches (#98/#99)**
+- A task's branch/worktree slug is frozen at add-time from the immutable user description
+  (`<id>-<hash>-<desc>`, via `deputy slug <id>`), so every resume/rerun reuses the SAME
+  branch — no more duplicate branches from re-slugging a description.
+
+**Fixes**
+- **`auto_merge` actually works (#97/#98).** The merge moved to the UNSANDBOXED runner (the
+  #64 sandbox made the worker's in-tree merge impossible); the ready-merge branch is recorded
+  deterministically so resumed runs merge too.
+- **Guardrail hardening (#95).** Deny patterns now resist `VAR=val` / `command` / `env` /
+  wrapper prefixes; `GIT_DIR=`/`GIT_WORK_TREE=` env-redirects and multiple-`-C` are handled;
+  `git --no-pager push` is anchored. Security-reviewed.
+- **Watchdog `.bak` torn-write recovery (#94).**
+
 ## v1.4.0 — 2026-07-12
 
 Minor — autonomy hardening + CLI consistency (10 backlog items + follow-up fixes).
