@@ -166,7 +166,7 @@ deputy watch [--once] [--apply]
                        # duplicates, status) then monitors — live-tails a running worker and,
                        # on quiescence (runnable→0 with a surfaced/failed/deferred item),
                        # beeps 3× + prints the attention digest (each item's action →
-                       # 'deputy pickup #<id>'); --once: overview + one poll then exit;
+                       # 'deputy pickup <id>'); --once: overview + one poll then exit;
                        # --apply: overview + write .deputy/learnings.md; Ctrl-C exits
                        # (aliases: deputy tail, deputy review)
 deputy pickup <id>     # bring up ONE attention task and act: ready-to-merge → merge (→ done);
@@ -175,7 +175,7 @@ deputy pickup <id>     # bring up ONE attention task and act: ready-to-merge →
 deputy release [version] # mark a release boundary: insert a dated delimiter at the top of Done
                        # (version defaults to ./VERSION); tasks above the last marker = next release
 deputy clean [<id>] [--dry-run] [--state <state>]
-                       # <id>: remove one item by its numeric id (e.g. '7' or '#7')
+                       # <id>: remove one item by its numeric id (bare, e.g. 7)
                        # --state: remove all items of <state> (default: waiting = untouched)
                        # cleanable: waiting, done, failed, cancelled, duplicate, deferred
 ```

@@ -75,7 +75,7 @@ out5="$(bash "$DEPUTY" watch --once 2>&1)"
 assert_contains "$out5" "epsilon proposal item" "watch --once: proposal surface is shown in the digest"
 assert_contains "$out5" "proposed"              "watch --once: proposal labeled 'proposed'"
 assert_contains "$out5" "approve"               "watch --once: proposal action mentions approve"
-assert_contains "$out5" "pickup #$pid5"         "watch --once: proposal action is deputy pickup"
+assert_contains "$out5" "pickup $pid5"         "watch --once: proposal action is deputy pickup"
 
 # 5b: ready-merge surfaces ARE shown, labeled 'ready to merge', with a merge command
 setup_repo
@@ -88,7 +88,7 @@ out5b="$(bash "$DEPUTY" watch --once 2>&1)"
 assert_contains "$out5b" "zeta merge item" "watch --once: ready-merge surface is shown in the digest"
 assert_contains "$out5b" "ready to merge"  "watch --once: ready-merge labeled 'ready to merge'"
 assert_contains "$out5b" "merges"          "watch --once: ready-merge action describes the merge"
-assert_contains "$out5b" "pickup #$mid"    "watch --once: ready-merge action is deputy pickup"
+assert_contains "$out5b" "pickup $mid"    "watch --once: ready-merge action is deputy pickup"
 
 # 6: totally-empty queue → "nothing to watch" friendly exit
 setup_repo

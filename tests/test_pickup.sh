@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/test_pickup.sh — 'deputy pickup #<id>' brings up ONE attention task and ACTS on it:
+# tests/test_pickup.sh — 'deputy pickup <id>' brings up ONE attention task and ACTS on it:
 # failed/cancelled/deferred/paused → waiting (requeue); surfaced proposed → waiting (approve,
 # marker cleared); surfaced needs-input → stays surfaced (points to /deputy); surfaced
 # ready-to-merge → merges into the default branch (item done). Validation for bad/wrong states.

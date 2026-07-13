@@ -17,7 +17,7 @@ out="$(D list surfaced)"
 assert_contains "$out" "status:  needs input" "needs-input: status label"
 assert_contains "$out" "details: $DEPUTY_ROOT/.deputy/questions/decide-approach-$ni.md" "needs-input: details path"
 assert_contains "$out" "summary: Should we use OAuth or SAML?" "needs-input: summary (first line of questions)"
-assert_contains "$out" "action:  deputy pickup #$ni" "needs-input: action is pickup"
+assert_contains "$out" "action:  deputy pickup $ni" "needs-input: action is pickup"
 
 # surfaced · ready-to-merge (has a ready-merge marker)
 D add "mergeable change" >/dev/null; rm_id="$(_id 'mergeable change')"
@@ -25,7 +25,7 @@ printf 'branch ready for human merge-review\n' > "$DEPUTY_ROOT/.deputy/ready-mer
 D set "#$rm_id" surfaced >/dev/null
 out="$(D list surfaced)"
 assert_contains "$out" "status:  ready to merge" "ready-merge: status label"
-assert_contains "$out" "action:  deputy pickup #$rm_id" "ready-merge: action is pickup"
+assert_contains "$out" "action:  deputy pickup $rm_id" "ready-merge: action is pickup"
 
 # surfaced · proposed (has a proposed marker)
 D add "worker suggested followup" >/dev/null; pr_id="$(_id 'worker suggested followup')"
@@ -40,12 +40,12 @@ D set "#$f_id" failed >/dev/null
 out="$(D list failed)"
 assert_contains "$out" "details: $DEPUTY_ROOT/.deputy/fails/broken-build-$f_id.md" "failed: details path"
 assert_contains "$out" "reason:  tests failed: assertion in login_test" "failed: reason (first line of fail file)"
-assert_contains "$out" "action:  deputy pickup #$f_id   (requeue" "failed: action is pickup requeue"
+assert_contains "$out" "action:  deputy pickup $f_id   (requeue" "failed: action is pickup requeue"
 
 # deferred → revive action
 D add "someday maybe task" >/dev/null; d_id="$(_id 'someday maybe task')"
 D set "#$d_id" deferred >/dev/null
-assert_contains "$(D list deferred)" "action:  deputy pickup #$d_id   (revive" "deferred: action is pickup revive"
+assert_contains "$(D list deferred)" "action:  deputy pickup $d_id   (revive" "deferred: action is pickup revive"
 
 # non-attention (waiting) → NO detail block
 D add "plain waiting task" >/dev/null; w_id="$(_id 'plain waiting task')"

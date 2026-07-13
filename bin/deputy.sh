@@ -318,7 +318,7 @@ cmd_list() {
         else printf 'deputy: list: invalid id: %s (must be a positive integer)\n' "$arg" >&2; return 2; fi ;;
       *)
         if _valid_state "$arg"; then filter="$arg"; shift
-        else printf 'deputy: list: unexpected argument: %s (want a <state>, --<state>, or #<id>)\n' "$arg" >&2; return 2; fi ;;
+        else printf 'deputy: list: unexpected argument: %s (want a <state>, --<state>, or <id>)\n' "$arg" >&2; return 2; fi ;;
     esac
   done
   _with_lock _allocate_ids
@@ -1240,7 +1240,7 @@ cmd_set() {
   local action="state"
   if [[ "$#" -ge 3 && ( "${1:-}" == "prio" || "${1:-}" == "state" ) ]]; then action="$1"; shift; fi
   local from="${1:-}" newval="${2:-}"
-  [[ -n "$from" && -n "$newval" ]] || { printf 'deputy: set [prio|state] "<line>|#<id>" <state|pN>\n' >&2; return 2; }
+  [[ -n "$from" && -n "$newval" ]] || { printf 'deputy: set [prio|state] <id|"<line>"> <state|pN>\n' >&2; return 2; }
   # Shape-based unification: a bare value of p0..p4 means a PRIORITY change even without
   # the explicit 'prio' keyword ('deputy set #5 p0'). Ids are #-prefixed and states are
   # words, so a pN value is unambiguous. The headless worker whole-line contract always
@@ -1809,13 +1809,17 @@ usage() {
   cat <<'EOF'
 usage: deputy <command> [args]
 
+  Task IDs: pass a BARE integer (e.g. 42) — an unquoted '#42' is a shell comment, so it
+  reaches deputy as no args. Quote it as '#42' if you prefer the hash form. This applies
+  everywhere an <id> is accepted: list / slug / pickup / run / set / clean.
+
 commands:
   add "<text>" [-ui|-u|-i]        add a waiting item and run it immediately if idle
                                   (-ui=P0 -u=P1 -i=P2; --p0/--p1/--p2/--p3/--p4 also accepted;
                                   no flag → default priority P3 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
-  slug <#id>                      print a task's canonical, frozen branch slug
+  slug <id>                       print a task's canonical, frozen branch slug
                                   (<id>-<hash>-<desc>, fixed at add-time from the immutable
                                   user description). The orchestrator uses this so every
                                   resume/rerun of a task reuses the SAME branch/worktree
@@ -1829,9 +1833,7 @@ commands:
                                   prio and id are empty strings when unset); composes with
                                   all state filters; use 'cut -d"|" -f4-' to extract desc
   status                          counts by state
-  pickup <id>                     (use a bare integer, e.g. 'deputy pickup 42' — an unquoted
-                                  '#42' is a shell comment; quote it as '#42' if you prefer)
-                                  bring up ONE attention task and ACT on it: ready-to-merge →
+  pickup <id>                     bring up ONE attention task and ACT on it: ready-to-merge →
                                   merge into the default branch (→ done); proposed → approve
                                   (→ waiting); needs-input → point to /deputy; failed/cancelled/
                                   deferred/paused → requeue (→ waiting). Local/safe only (never
@@ -1841,21 +1843,21 @@ commands:
                                   candidates, status) then runs as a passive monitor — live-tails
                                   a running worker and, on quiescence (runnable→0 with a surfaced/
                                   failed/deferred item), beeps 3× + prints the attention digest
-                                  (each item's next action → 'deputy pickup #<id>'). --once:
+                                  (each item's next action → 'deputy pickup <id>'). --once:
                                   overview + one poll then exit. --apply: overview + write
                                   .deputy/learnings.md then exit. Ctrl-C exits. (aliases: tail,
                                   review; replaces the former 'reflect')
-  run [#<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
+  run [<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
                                   (interactive/TTY runs stream output live; --headless or
                                   headed=0 config forces the buffered/cron behavior)
-                                  if '#<id>' given (bare integer also accepted), run that
-                                  specific item bypassing priority order (targeted, one item only)
-  set <#id|"<exact line>"> <state|pN>
-                                  change an item's state or priority — target by '#<id>'
-                                  (bare id also accepted) or exact-line match. Value shape
-                                  decides: a state word sets state, 'p0'..'p4' sets priority.
-                                  e.g. `deputy set #50 done`, `deputy set #50 p0`. Explicit
-                                  `set state #50 done` / `set prio #50 p0` forms also accepted.
+                                  if an <id> is given, run that specific item bypassing
+                                  priority order (targeted, one item only)
+  set <id|"<exact line>"> <state|pN>
+                                  change an item's state or priority — target by <id> or
+                                  exact-line match. Value shape decides: a state word sets
+                                  state, 'p0'..'p4' sets priority. e.g. `deputy set 50 done`,
+                                  `deputy set 50 p0`. Explicit `set state 50 done` /
+                                  `set prio 50 p0` forms also accepted.
   cron ensure|remove|status|set <N>
                                   manage the safety-net schedule (legacy --ensure/--remove
                                   also accepted). 'cron set <N>' changes the heartbeat interval
@@ -1863,9 +1865,9 @@ commands:
                                   the crontab if cron is already enabled.
                                   NOTE: 'cron reschedule "<text>"' exists but is
                                   orchestrator-internal (quota-failover) — not for manual use
-  clean [#<id>|<state>] [--dry-run]
+  clean [<id>|<state>] [--dry-run]
                                   remove items matching the filter:
-                                    #<id>          clean one item by id (bare integer also accepted)
+                                    <id>           clean one item by id
                                     <state>        remove all items of <state> (e.g. 'clean done';
                                                    '--state <s>' also accepted; default: waiting)
                                   cleanable states: waiting, done, failed, cancelled, duplicate, deferred
@@ -3238,7 +3240,7 @@ cmd_clean() {
         elif _valid_state "$1"; then
           filter_state="$1"; shift
         else
-          printf 'deputy: clean: unexpected argument: %s (want #<id> or a <state>)\n' "$1" >&2; return 2
+          printf 'deputy: clean: unexpected argument: %s (want <id> or a <state>)\n' "$1" >&2; return 2
         fi ;;
     esac
   done
@@ -3967,11 +3969,11 @@ _item_detail_block() {
         "ready to merge")
           slug="$(_ready_merge_branch "$id" || true)"
           def="$(_default_branch)"; def="${def:-<default-branch>}"
-          printf '      action:  deputy pickup #%s   (merges %s into %s)\n' "$id" "${slug:-deputy/<slug>}" "$def" ;;
+          printf '      action:  deputy pickup %s   (merges %s into %s)\n' "$id" "${slug:-deputy/<slug>}" "$def" ;;
         "proposed")
-          printf '      action:  deputy pickup #%s   (approve → waiting; or deputy set #%s cancelled to reject)\n' "$id" "$id" ;;
+          printf '      action:  deputy pickup %s   (approve → waiting; or deputy set %s cancelled to reject)\n' "$id" "$id" ;;
         *)
-          printf '      action:  deputy pickup #%s   (resume via /deputy from its waypoint)\n' "$id" ;;
+          printf '      action:  deputy pickup %s   (resume via /deputy from its waypoint)\n' "$id" ;;
       esac ;;
     failed)
       if ff="$(_fail_file "$id")"; then
@@ -3979,9 +3981,9 @@ _item_detail_block() {
         first="$(head -1 "$ff" 2>/dev/null || true)"
         [[ -n "$first" ]] && printf '      reason:  %s\n' "$first"
       fi
-      printf '      action:  deputy pickup #%s   (requeue → waiting)\n' "$id" ;;
+      printf '      action:  deputy pickup %s   (requeue → waiting)\n' "$id" ;;
     deferred|paused|cancelled)
-      printf '      action:  deputy pickup #%s   (revive → waiting)\n' "$id" ;;
+      printf '      action:  deputy pickup %s   (revive → waiting)\n' "$id" ;;
   esac
 }
 
