@@ -75,7 +75,12 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    before the protected-path gate and commit. If no test command is configured, note that
    in your summary — do not silently skip. *(Rationale: running the full suite on every
    step/retry made a ~1-line change take ~30 min; targeted-per-iteration + full-once keeps
-   correctness at a fraction of the cost.)*
+   correctness at a fraction of the cost.)* **Known false-failure (#106):** before the
+   #106 patch, `test_install` produced 4 assertion failures when invoked from inside
+   `.deputy/wt` (symlink/canonical-root mismatch between REPO and what the installer
+   resolves via `git worktree list`); these were environmental, not real regressions.
+   If you see `test_install` failures in the worktree on an older checkout, re-run from
+   the main tree to confirm; the fix landed in the same commit that added this note.
 5. **Stage all changes** before the gates: `git -C .deputy/wt add -A`. The gates must
    run on a non-empty staged diff — do not skip staging.
 6. **Protected-path gate (mandatory, before EVERY commit):**
