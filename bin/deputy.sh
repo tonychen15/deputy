@@ -2262,17 +2262,25 @@ _config_get() {
   return 0
 }
 
+# True (0) if the given key is PRESENT in .deputy/config (any value, incl. empty 'key=').
+# Distinguishes an explicit empty '(disable)' from an absent key (#90 empty=disable semantics).
+_config_has() {
+  local key="$1" cfg="$STATE_DIR/config"
+  [[ -f "$cfg" ]] || return 1
+  grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$cfg"
+}
+
 # #103: tri-state branch-delete decision. Returns 0 (delete) when:
 #   delete_merged_branch=1           → always delete (explicit opt-in)
-#   delete_merged_branch=0           → never delete  (explicit opt-out, wins over auto_merge)
-#   delete_merged_branch unset
+#   delete_merged_branch present, ≠1 → never delete  (explicit opt-out — '0' OR empty '(disable)',
+#                                       #90 semantics; wins over auto_merge)
+#   delete_merged_branch ABSENT
 #     + auto_merge=1                 → delete (full automation implies cleanup)
 #     + auto_merge!=1                → preserve (default, no change for non-auto repos)
 _should_delete_merged_branch() {
-  local cfg; cfg="$(_config_get delete_merged_branch)"
-  [[ "$cfg" == "1" ]] && return 0
-  [[ "$cfg" == "0" ]] && return 1
-  [[ "$(_config_get auto_merge)" == "1" ]] && return 0
+  [[ "$(_config_get delete_merged_branch)" == "1" ]] && return 0
+  _config_has delete_merged_branch && return 1     # present but not 1 (0 or empty) → preserve
+  [[ "$(_config_get auto_merge)" == "1" ]] && return 0   # absent + auto_merge=1 → delete
   return 1
 }
 

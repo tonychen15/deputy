@@ -118,3 +118,15 @@ run_wt_remove "$DEPUTY_ROOT"
 exists="$(git -C "$DEPUTY_ROOT" branch --list "deputy/feat-103c")"
 [[ -n "$exists" ]] && result="exists" || result="gone"
 assert_eq "$result" "exists" "auto_merge=0 + delete_merged_branch unset: branch preserved (no change)"
+
+# ── 8. #103: auto_merge=1, delete_merged_branch= (empty, explicit disable) → preserved ─
+# An explicit empty value is a disable (#90 semantics: 'key=' overrides), distinct from unset;
+# it must PRESERVE even under auto_merge=1 (present-but-not-1 wins over the auto_merge default).
+setup_git_repo
+create_branch_and_worktree "feat-103d" "$DEPUTY_ROOT"
+do_merge "feat-103d" "$DEPUTY_ROOT"
+printf 'auto_merge=1\ndelete_merged_branch=\n' > "$DEPUTY_ROOT/.deputy/config"
+run_wt_remove "$DEPUTY_ROOT"
+exists="$(git -C "$DEPUTY_ROOT" branch --list "deputy/feat-103d")"
+[[ -n "$exists" ]] && result="exists" || result="gone"
+assert_eq "$result" "exists" "auto_merge=1 + delete_merged_branch= (empty explicit disable): branch preserved"
