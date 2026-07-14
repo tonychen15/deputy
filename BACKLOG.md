@@ -10,10 +10,10 @@
 
 ## Items
 
-### Running (1)
-@[#104][P2] when user input 'deputy run --<priority> <desc>', deputy should first add this task by calling 'deputy add --<prio> <desc>' to get id. If there is a running task, follow the preemp rule. If there is no running task, but there are waiting tasks which have higher priority, then put this new task in the waiting queue. Otherwise, if no waiting task or all waiting tasks have lower priority than the new one, run the new one immediately
+### Running (0)
 
-### Surfaced (0)
+### Surfaced (1)
+?[#104][P2] when user input 'deputy run --<priority> <desc>', deputy should first add this task by calling 'deputy add --<prio> <desc>' to get id. If there is a running task, follow the preemp rule. If there is no running task, but there are waiting tasks which have higher priority, then put this new task in the waiting queue. Otherwise, if no waiting task or all waiting tasks have lower priority than the new one, run the new one immediately
 
 ### Waiting (3)
 [#105][P3] when user execute 'deputy add --<prio> <desc>' to get id. Deputy should add it to the waiting queue. If there is no running task, and no other waiting task, then run this new task directly. But if no running task but waiting tasks which have higher priority, then put this new task in the waiting queue. Otherwise, if no running task and all waiting tasks have lower priority than the new one, run the new one immediately
