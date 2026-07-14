@@ -3110,13 +3110,23 @@ cmd_pickup() {
 # specific item bypassing priority, then return (targeted = one item only).
 cmd_run() {
   local once=0 target_id="" _RUN_HEADLESS=0
+  # add+run mode: --p0..--p4 (and -ui/-u/-i aliases) followed by a description
+  local _add_prio="" _add_text=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --once) once=1; shift ;;
       --headless) _RUN_HEADLESS=1; shift ;;
+      --p0|-ui) _add_prio="--p0"; shift ;;
+      --p1|-u)  _add_prio="--p1"; shift ;;
+      --p2|-i)  _add_prio="--p2"; shift ;;
+      --p3)     _add_prio="--p3"; shift ;;
+      --p4)     _add_prio="--p4"; shift ;;
       '#'*) target_id="${1#'#'}"; shift ;;
       *)
-        if [[ "$1" =~ ^[0-9]+$ ]]; then
+        if [[ -n "$_add_prio" ]]; then
+          # After a priority flag: all remaining args form the description
+          _add_text="${_add_text}${_add_text:+ }$1"; shift
+        elif [[ "$1" =~ ^[0-9]+$ ]]; then
           target_id="$1"; shift
         elif [[ -n "$1" ]]; then
           printf 'deputy: run: id must be an integer (got: %s)\n' "$1" >&2; return 2
@@ -3133,6 +3143,12 @@ cmd_run() {
     if [[ ! "$target_id" =~ ^[0-9]+$ ]]; then
       printf 'deputy: run: id must be an integer (got: %s)\n' "$target_id" >&2; return 2
     fi
+  fi
+
+  # add+run mode validation: --<prio> requires a description; conflicts with explicit target_id
+  if [[ -n "$_add_prio" ]]; then
+    [[ -n "$_add_text" ]] || { printf 'deputy: run: %s requires a description\n' "$_add_prio" >&2; return 2; }
+    [[ -z "$target_id" ]] || { printf 'deputy: run: cannot combine a priority flag with a target id\n' >&2; return 2; }
   fi
 
   # #57 (Part B): warn (never kill) about leaked long-running orphans under in-repo
@@ -3159,16 +3175,97 @@ cmd_run() {
 
   cmd_recover >/dev/null 2>&1 || true
   # Non-targeted (cron/heartbeat) path: silent skip when any live claim exists.
-  # The targeted path below gets its own priority-aware check instead.
-  if [[ -z "$target_id" ]] && _live_claim_exists; then return 0; fi
+  # The targeted path and add+run mode both get their own priority-aware checks instead.
+  if [[ -z "$target_id" && -z "$_add_prio" ]] && _live_claim_exists; then return 0; fi
+
+  # ── Add+run mode — Phase 1: add the task (before the human-session gate) ─────
+  # The add always happens: the user explicitly asked to queue this task. Only the
+  # *run* decision is gated by human-session back-off. Stdout from cmd_add is captured
+  # so we can detect "already present" (which returns 0 from cmd_add, not an error).
+  local _ar_id="" _ar_prio="" _ar_rank=99 _ar_out="" _ar_rc=0 _ar_raw _ar_parsed _ar_rest
+  if [[ -n "$_add_prio" ]]; then
+    # DEPUTY_NO_AUTORUN=1 prevents cmd_add from spawning _autorun before our decision.
+    _ar_out="$( export DEPUTY_NO_AUTORUN=1; cmd_add "$_add_prio" "$_add_text" )" || _ar_rc=$?
+    printf '%s\n' "$_ar_out"
+    [[ "$_ar_rc" -ne 0 ]] && return "$_ar_rc"
+    # If the task already existed, nothing to run (the "already present" message was printed).
+    [[ "$_ar_out" == *"already present"* ]] && return 0
+    # Look up the new item's ID by description — BACKLOG is the source of truth.
+    while IFS= read -r _ar_raw; do
+      _ar_parsed="$(_parse_item "$_ar_raw")"
+      _ar_rest="${_ar_parsed#*|}"; _ar_rest="${_ar_rest#*|}"; _ar_rest="${_ar_rest#*|}"
+      if [[ "$_ar_rest" == "$_add_text" ]]; then
+        _ar_id="${_ar_parsed#*|}"; _ar_id="${_ar_id#*|}"; _ar_id="${_ar_id%%|*}"
+        break
+      fi
+    done < <(_each_item)
+    [[ -n "$_ar_id" ]] || return 0   # safety: couldn't resolve (shouldn't happen after a fresh add)
+    case "$_add_prio" in
+      --p0) _ar_prio="P0" ;; --p1) _ar_prio="P1" ;; --p2) _ar_prio="P2" ;;
+      --p3) _ar_prio="P3" ;; --p4) _ar_prio="P4" ;; *) _ar_prio="P3" ;;
+    esac
+    _ar_rank="$(_prio_rank "$_ar_prio")"
+  fi
 
   # ── Human-session back-off (startup check) ───────────────────────────────────
   # If an interactive Claude Code session is active in this repo, skip this heartbeat
   # tick to avoid mixing deputy commits with the human's uncommitted work.
+  # For add+run mode the task is already queued above — only the run is gated here.
   # Disable with: deputy config set human_backoff 0
   # Note: DEPUTY_ALLOW_ANY_BRANCH=1 does NOT bypass this check (independent guards).
   local _isa_pid="" _isa_status="" _isa_status_updated_at="" _isa_stale_pid=""
   if _human_backoff_gate; then return 0; fi
+
+  # ── Add+run mode — Phase 2: run decision (preemption or priority queue) ──────
+  if [[ -n "$_add_prio" && -n "$_ar_id" ]]; then
+    # Preemption check: is there a live running claim?
+    local _ar_claim_f _ar_lr_item="" _ar_lr_parsed _ar_lr_prio _ar_lr_id _ar_lr_rank
+    for _ar_claim_f in "$STATE_DIR"/*.claim; do
+      [[ -e "$_ar_claim_f" ]] || continue
+      _claim_live "$_ar_claim_f" || continue
+      _ar_lr_item="$(sed -n '1p' "$_ar_claim_f" 2>/dev/null || true)"
+      break
+    done
+    if [[ -n "$_ar_lr_item" ]]; then
+      _ar_lr_parsed="$(_parse_item "$_ar_lr_item")"
+      _ar_lr_prio="${_ar_lr_parsed#*|}"; _ar_lr_prio="${_ar_lr_prio%%|*}"
+      _ar_lr_id="${_ar_lr_parsed#*|}"; _ar_lr_id="${_ar_lr_id#*|}"; _ar_lr_id="${_ar_lr_id%%|*}"
+      _ar_lr_rank="$(_prio_rank "$_ar_lr_prio")"
+      if (( _ar_rank < _ar_lr_rank )); then
+        # New task is strictly higher priority: cooperatively pause the running task.
+        # This mirrors the targeted-run preemption protocol: the live claim stays until
+        # the worker itself exits on its next preemption check; the next heartbeat then
+        # sees no live claim and picks up the now-highest-priority new task.
+        printf 'deputy: pausing #%s (%s) — #%s (%s) will run on next heartbeat.\n' \
+          "$_ar_lr_id" "${_ar_lr_prio:-P?}" "$_ar_id" "${_ar_prio:-P?}"
+        cmd_set "$_ar_lr_id" paused >/dev/null 2>&1 || true
+      else
+        # New task is equal or lower priority (tie = no preempt): leave it waiting.
+        printf 'deputy: #%s (%s) is running; #%s (%s) left waiting — higher-priority task in progress.\n' \
+          "$_ar_lr_id" "${_ar_lr_prio:-P?}" "$_ar_id" "${_ar_prio:-P?}"
+      fi
+      return 0
+    fi
+    # No running task: check if the new item is the highest-priority waiting item.
+    # cmd_pick returns the top waiting/paused item (FIFO on ties), so if the new item
+    # is not at the top, another item with equal-or-higher priority was queued first.
+    local _ar_top _ar_top_parsed _ar_top_id
+    _ar_top="$(cmd_pick)"
+    if [[ -n "$_ar_top" ]]; then
+      _ar_top_parsed="$(_parse_item "$_ar_top")"
+      _ar_top_id="${_ar_top_parsed#*|}"; _ar_top_id="${_ar_top_id#*|}"; _ar_top_id="${_ar_top_id%%|*}"
+      if [[ "$_ar_top_id" == "$_ar_id" ]]; then
+        target_id="$_ar_id"   # new item is top priority: run it immediately via targeted path
+      else
+        # Another item has higher or equal priority (FIFO wins on ties): queue only.
+        printf 'deputy: #%s (%s) queued — higher-priority items waiting.\n' "$_ar_id" "${_ar_prio:-P?}"
+        return 0
+      fi
+    else
+      target_id="$_ar_id"   # queue unexpectedly empty after add; run the new item
+    fi
+    # Falls through to the targeted-run path with target_id set.
+  fi
 
   # Always-on model: do NOT remove the cron line while running. The line persists;
   # each tick is state-aware (skip when live, recover orphans, etc.).
