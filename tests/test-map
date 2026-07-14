@@ -1,0 +1,58 @@
+# #109: function → affected test file(s) for `deputy test --changed`.
+# Format:  <function-name>: <test_basename> [<test_basename>...]   (basename = tests/test_<x>.sh)
+# A changed function selects its listed tests. A changed `cmd_<X>` also AUTO-maps to
+# `test_<X>` by convention when tests/test_<X>.sh exists (no entry needed for those).
+# FAIL-SAFE: any changed function with NO mapping (not here + no convention match), any
+# top-level (non-function) change, or any unknown non-doc file change → the FULL suite runs.
+# Keep this current when a helper's test coverage moves; a stale entry only costs an extra
+# full-suite run (never a silent skip).
+
+# ── commands whose tests are not simply test_<name> ──────────────────────────
+cmd_list: test_list test_list_detail test_cmd_help
+cmd_watch: test_watch_digest test_livelog test_reflect test_review
+cmd_add: test_add test_add_priority test_autorun test_worker_proposal
+cmd_run: test_run test_run_add test_run_priority test_run_branch_guard test_heartbeat test_headed
+cmd_reflect: test_reflect test_review
+cmd_pick: test_pick
+
+# ── helpers (no cmd_ convention) ─────────────────────────────────────────────
+_config_get: test_config test_self_heal_76
+_config_set: test_config
+_config_has: test_config test_delete_merged_branch
+cmd_config: test_config
+_should_delete_merged_branch: test_delete_merged_branch
+_merge_ready_branch: test_auto_merge test_pickup
+_auto_merge_ready: test_auto_merge test_pickup
+_ready_merge_branch: test_auto_merge test_pickup
+_item_detail_block: test_list_detail test_watch_digest test_pickup
+_surfaced_kind: test_list_detail test_watch_digest
+_questions_file: test_watch_digest test_list_detail
+_fail_file: test_list_detail
+_worker_model_for: test_worker_model
+_item_hardness: test_worker_model
+_valid_model_id: test_worker_model
+_spawn_orchestrator: test_worker_model test_run
+_queue_overview: test_reflect test_review
+_attention_digest: test_watch_digest
+_runnable_count: test_watch_digest
+_canonical_slug: test_slug
+_short_hash: test_slug
+_write_task_meta: test_slug
+_meta_get: test_slug
+cmd_slug: test_slug
+_parse_item: test_parse test_item_ids
+_serialize_item: test_parse test_item_ids test_backlog_sections
+_allocate_ids: test_item_ids
+_backlog_commit: test_write_hardening test_torn_write_recovery test_queue_commit
+_flip_line: test_set test_write_hardening
+_regroup_backlog: test_regroup test_backlog_sections
+_wt_remove: test_worktree test_delete_merged_branch
+_wt_create: test_worktree
+_strip_cmd_prefixes: test_guardrail
+_bash_risky: test_guardrail
+_human_backoff_gate: test_human_backoff test_backoff_strikes
+_claim_live: test_claim test_active_run_lock
+_live_claim_exists: test_claim test_active_run_lock
+cmd_recover: test_recover
+_route: test_route
+_availability: test_route

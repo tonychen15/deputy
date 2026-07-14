@@ -1867,6 +1867,12 @@ commands:
                                   prio and id are empty strings when unset); composes with
                                   all state filters; use 'cut -d"|" -f4-' to extract desc
   status                          counts by state
+  test [--changed] [<name>...]    run the test suite (config test_cmd, else tests/run.sh). With
+                                  --changed, run ONLY the tests affected by the working-tree diff
+                                  (bin/deputy.sh changed functions → tests/test-map + cmd_<X>→
+                                  test_<X> convention); anything not confidently mapped runs the
+                                  FULL suite (fail-safe, never a silent skip). <name>... runs
+                                  just those test files (e.g. 'deputy test list pickup')
   pickup <id>                     bring up ONE attention task and ACT on it: ready-to-merge →
                                   merge into the default branch (→ done); proposed → approve
                                   (→ waiting); needs-input → point to /deputy; failed/cancelled/
@@ -4790,6 +4796,133 @@ cmd_watch() {
   done
 }
 
+# ── #109: 'deputy test [--changed] [name...]' — run the suite, a named subset, or only the
+# tests AFFECTED by the working-tree diff. FAIL-SAFE: any change it can't confidently map to a
+# test runs the FULL suite (never a silent skip). Automates the #89 targeted phase.
+
+# Full-suite command: the project's test_cmd, else this repo's tests/run.sh.
+_full_test_cmd() {
+  local tc; tc="$(_config_get test_cmd)"
+  [[ -n "$tc" ]] && { printf '%s' "$tc"; return 0; }
+  [[ -f "$ROOT/tests/run.sh" ]] && { printf 'bash tests/run.sh'; return 0; }
+  return 1
+}
+
+# Names of bin/deputy.sh functions whose lines changed (unstaged+staged). Emits __TOPLEVEL__
+# if any changed line is outside every function (git's own function context is unreliable for
+# shell, so we map changed line numbers to the enclosing 'name() {' ourselves).
+_diff_changed_functions() {
+  local hu=0 hs=0
+  git -C "$ROOT" diff --quiet -- bin/deputy.sh 2>/dev/null || hu=1
+  git -C "$ROOT" diff --cached --quiet -- bin/deputy.sh 2>/dev/null || hs=1
+  [[ "$hu" -eq 0 && "$hs" -eq 0 ]] && return 0
+  # Both staged AND unstaged edits: staged hunk line numbers would be mapped against a
+  # working-tree file whose lines the unstaged edits shifted → can't map safely → FULL.
+  [[ "$hu" -eq 1 && "$hs" -eq 1 ]] && { printf '__TOPLEVEL__\n'; return 0; }
+  local raw
+  raw="$( { git -C "$ROOT" diff --unified=0 -- bin/deputy.sh; git -C "$ROOT" diff --cached --unified=0 -- bin/deputy.sh; } 2>/dev/null )"
+  # A deletion-only hunk (new count 0) has no new-side lines to map to a function, so a removed
+  # function would be missed → fail safe to FULL.
+  printf '%s\n' "$raw" | grep -qE '^@@ [^@]*\+[0-9]+,0 @@' && { printf '__TOPLEVEL__\n'; return 0; }
+  local changed
+  changed="$(printf '%s\n' "$raw" \
+    | awk '/^@@ / { if (match($0,/\+[0-9]+(,[0-9]+)?/)) { s=substr($0,RSTART+1,RLENGTH-1);
+        if (index(s,",")) { split(s,p,","); st=p[1]+0; ct=p[2]+0 } else { st=s+0; ct=1 }
+        for(i=0;i<ct;i++) print st+i } }' | sort -un )"
+  [[ -n "$changed" ]] || return 0
+  awk -v CH="$changed" '
+    BEGIN { n=split(CH,a,"\n"); for(i=1;i<=n;i++) want[a[i]+0]=1; fn="" }
+    {
+      # enter a function on its "name() {" definition; a changed def line maps to that function
+      if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{?[[:space:]]*$/) { fn=$1; sub(/\(.*/,"",fn) }
+      if (NR in want) { if (fn=="") top=1; else seen[fn]=1 }
+      if ($0 ~ /^\}/) fn=""   # a column-0 "}" ends the function; later lines are top-level
+    }
+    END { for (k in seen) print k; if (top) print "__TOPLEVEL__" }
+  ' "$ROOT/bin/deputy.sh"
+}
+
+# Map a changed function → test basenames via tests/test-map, then the cmd_<X>→test_<X>
+# convention. Non-zero (empty) when unmapped → caller falls back to the full suite.
+_tests_for_function() {
+  local fn="$1" line
+  if [[ -f "$ROOT/tests/test-map" ]]; then
+    line="$(grep -E "^[[:space:]]*${fn}[[:space:]]*:" "$ROOT/tests/test-map" 2>/dev/null | head -1)"
+    [[ -n "$line" ]] && { printf '%s' "${line#*:}"; return 0; }
+  fi
+  if [[ "$fn" == cmd_* && -f "$ROOT/tests/test_${fn#cmd_}.sh" ]]; then
+    printf 'test_%s' "${fn#cmd_}"; return 0
+  fi
+  return 1
+}
+
+# Echo the affected test basenames for the working-tree diff, or the token FULL (fail-safe).
+_affected_tests() {
+  local files f sel="" fn fns t b
+  # working-tree + staged + UNTRACKED (a new source/hook/test file must not be silently missed;
+  # --exclude-standard respects .gitignore so .deputy/ scratch etc. is excluded).
+  files="$( { git -C "$ROOT" diff --name-only; git -C "$ROOT" diff --cached --name-only; \
+              git -C "$ROOT" ls-files --others --exclude-standard; } 2>/dev/null | sort -u )"
+  [[ -n "$files" ]] || return 0   # nothing changed
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    case "$f" in
+      tests/test-map|tests/lib.sh|tests/run.sh) printf 'FULL'; return 0 ;;   # harness change → all
+      tests/test_*.sh)        b="${f#tests/}"; sel+=" ${b%.sh}" ;;           # a changed test → run itself
+      bin/deputy.sh)
+        fns="$(_diff_changed_functions)"
+        [[ "$fns" == *"__TOPLEVEL__"* ]] && { printf 'FULL'; return 0; }
+        while IFS= read -r fn; do
+          [[ -n "$fn" ]] || continue
+          t="$(_tests_for_function "$fn")" || { printf 'FULL'; return 0; }
+          sel+=" $t"
+        done <<< "$fns"
+        ;;
+      hooks/guardrail.sh)     sel+=" test_guardrail" ;;
+      hooks/session-start.sh) sel+=" test_hook" ;;
+      .deputy/*)              : ;;   # deputy runtime state (normally gitignored) — not source
+      VERSION)                sel+=" test_version test_release test_release_notes" ;;   # drives version/release
+      skills/*)               : ;;   # SKILL prose — no test
+      README.md|CHANGELOG.md|*.md|docs/*) : ;;   # docs — no test
+      *)                      printf 'FULL'; return 0 ;;   # unknown → fail safe
+    esac
+  done <<< "$files"
+  printf '%s' "$sel" | tr ' ' '\n' | sed '/^$/d;s/\.sh$//' | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+_run_test_files() {
+  local rc=0 n
+  for n in "$@"; do
+    n="${n%.sh}"; n="${n#tests/}"
+    [[ -f "$ROOT/tests/$n.sh" ]] || { printf 'deputy: test: no such test: %s\n' "$n" >&2; rc=1; continue; }
+    printf '== tests/%s.sh ==\n' "$n"
+    ( cd "$ROOT" && bash "tests/$n.sh" ) || rc=1
+  done
+  return "$rc"
+}
+
+cmd_test() {
+  local changed=0; local -a names=()
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --changed) changed=1; shift ;;
+    -*) printf 'deputy: test: unknown flag: %s\n' "$1" >&2; return 2 ;;
+    *)  names+=( "$1" ); shift ;;
+  esac; done
+  if [[ "${#names[@]}" -gt 0 ]]; then _run_test_files "${names[@]}"; return $?; fi
+  if [[ "$changed" -eq 1 ]]; then
+    local aff; aff="$(_affected_tests)"
+    if [[ -z "$aff" ]]; then printf 'deputy: test --changed: no changes detected — nothing to run.\n'; return 0; fi
+    if [[ "$aff" == "FULL" ]]; then
+      printf 'deputy: test --changed: change not fully mapped — running the FULL suite.\n'
+    else
+      printf 'deputy: test --changed: affected tests: %s\n' "$aff"
+      _run_test_files $aff; return $?
+    fi
+  fi
+  local full; full="$(_full_test_cmd)" || { printf 'deputy: test: no test command (set config test_cmd, or add tests/run.sh)\n' >&2; return 2; }
+  ( cd "$ROOT" && eval "$full" )
+}
+
 main() {
   local cmd="${1:-help}"
   # #72: `deputy <cmd> --help|-h` prints focused help for that command, then exits.
@@ -4825,6 +4958,7 @@ main() {
     add) shift; cmd_add "$@" ;;
     slug) shift; cmd_slug "${1:-}"; return $? ;;
     status) cmd_status; return 0 ;;
+    test) shift; cmd_test "$@"; return $? ;;
     watch|tail) shift; cmd_watch "$@"; return $? ;;
     progress) shift; cmd_progress "${1:-}"; return $? ;;   # #108: passive read-only per-task progress
     pick) cmd_pick; return 0 ;;
