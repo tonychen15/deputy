@@ -10,12 +10,12 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[#103][P2] it seems that deputy didn't clean up the working branch deputy/<slug>
 
 ### Surfaced (0)
 
-### Waiting (1)
-[#103][P2] it seems that deputy didn't clean up the working branch deputy/<slug>
+### Waiting (0)
 
 ### Paused (0)
 
