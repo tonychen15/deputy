@@ -113,9 +113,114 @@ assert_eq "$trc" "0" "torn JSON is a soft (rc 0), not a crash"
 bash "$DEPUTY" progress "notanid" >/dev/null 2>&1
 assert_eq "$?" "2" "non-numeric id rejected with rc 2"
 
+# ── Tier 3 (#110): heuristic within-step % for a SINGLE-step in_progress ledger,
+# ── inferred passively from the run log's tool_use milestones. ────────────────
+bash "$DEPUTY" add "tier3 single step running" >/dev/null
+t3id="$(bash "$DEPUTY" list --porcelain | awk -F'|' '/tier3 single step running/{print $3}')"
+t3slug="$(bash "$DEPUTY" slug "$t3id")"
+mkdir -p "$WPDIR/$t3slug"
+cat > "$WPDIR/$t3slug/waypoint.json" <<EOF
+{ "task_id":"$t3slug","goal":"one","status":"in_progress",
+  "created_at":"$(iso '5 minutes ago')","updated_at":"$(iso '1 minute ago')","current_step":"1",
+  "steps":[{"id":"1","purpose":"only step underway","status":"in_progress"}] }
+EOF
+# Synthetic stream-JSON run log that walks the spine up to the protected-path gate.
+# Line 2 is the DESCRIPTION-ECHO TRAP: free text listing later milestone words
+# ("APPROVED", "commit", "git staged") that must NOT count. Line 7 is the
+# BOUNDARY TRAP: milestone words buried as echo/grep arguments that must NOT count.
+cat > "$DEPUTY_ROOT/.deputy/run-$t3id.log" <<'JSON'
+{"type":"system","subtype":"init"}
+{"type":"user","message":{"content":[{"type":"text","text":"Item: within-step ... git staged -> tests run -> protected-path gate -> xReview invoked -> APPROVED -> commit -> merge/surface"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"editing now"},{"type":"tool_use","name":"Edit","input":{"file_path":"bin/deputy.sh"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git -C .deputy/wt add -A"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"bash tests/test_progress.sh"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git -C .deputy/wt diff --cached --name-only | deputy protected --stdin"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo APPROVED and git add nothing; grep -n commit file"}}]}}
+JSON
+t3out="$(bash "$DEPUTY" progress "$t3id" 2>&1)"
+assert_contains "$t3out" "within-step (est.): ~72%" "Tier 3: reaches the protected-path gate rung (72%)"
+assert_contains "$t3out" "protected-path gate"       "Tier 3: labels the reached milestone"
+assert_contains "$t3out" "HEURISTIC"                 "Tier 3: clearly labelled as a heuristic estimate"
+# The description-echo + echo/grep argument traps must NOT advance the estimate.
+if [[ "$t3out" == *"~90%"* || "$t3out" == *"~95%"* || "$t3out" == *"~99%"* ]]; then
+  assert_eq "over-counted" "" "Tier 3: text/argument milestone words must not count (false positive)"
+else
+  assert_eq "ok" "ok" "Tier 3: ignores echoed-description and quoted-argument milestone words"
+fi
+
+# Scope guard: a MULTI-step ledger must NOT get a within-step line (Tier 1 suffices).
+bash "$DEPUTY" add "tier3 multi step scope guard" >/dev/null
+t3mid="$(bash "$DEPUTY" list --porcelain | awk -F'|' '/tier3 multi step scope guard/{print $3}')"
+t3mslug="$(bash "$DEPUTY" slug "$t3mid")"
+mkdir -p "$WPDIR/$t3mslug"
+cat > "$WPDIR/$t3mslug/waypoint.json" <<EOF
+{ "task_id":"$t3mslug","goal":"multi","status":"in_progress",
+  "created_at":"$(iso '9 minutes ago')","updated_at":"$(iso '1 minute ago')","current_step":"2",
+  "steps":[{"id":"1","purpose":"a","status":"succeeded","completed_at":"$(iso '3 minutes ago')"},
+           {"id":"2","purpose":"b underway","status":"in_progress"}] }
+EOF
+cat > "$DEPUTY_ROOT/.deputy/run-$t3mid.log" <<'JSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"x"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git -C .deputy/wt add -A"}}]}}
+JSON
+if [[ "$(bash "$DEPUTY" progress "$t3mid" 2>&1)" == *"within-step (est.)"* ]]; then
+  assert_eq "shown" "" "Tier 3 must be scoped to single-step ledgers only"
+else
+  assert_eq "ok" "ok" "Tier 3 is scoped to single-step ledgers only"
+fi
+
+# Low rung: a single-step log with only non-milestone actions shows 'step just started'.
+bash "$DEPUTY" add "tier3 barely started" >/dev/null
+t3bid="$(bash "$DEPUTY" list --porcelain | awk -F'|' '/tier3 barely started/{print $3}')"
+t3bslug="$(bash "$DEPUTY" slug "$t3bid")"
+mkdir -p "$WPDIR/$t3bslug"
+cat > "$WPDIR/$t3bslug/waypoint.json" <<EOF
+{ "task_id":"$t3bslug","goal":"one","status":"in_progress",
+  "created_at":"$(iso '2 minutes ago')","updated_at":"$(iso '1 minute ago')","current_step":"1",
+  "steps":[{"id":"1","purpose":"only","status":"in_progress"}] }
+EOF
+cat > "$DEPUTY_ROOT/.deputy/run-$t3bid.log" <<'JSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"deputy slug 999"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat BACKLOG.md"}}]}}
+JSON
+assert_contains "$(bash "$DEPUTY" progress "$t3bid" 2>&1)" "step just started" \
+  "Tier 3: earliest rung when no milestone action has landed yet"
+
+# Quoted-argument trap: milestone tokens/separators buried inside quotes must NOT
+# advance the estimate (the boundary regex is not shell-aware, so quoted spans are
+# stripped first). The only REAL milestone here is 'git add' → must stay at 40%.
+bash "$DEPUTY" add "tier3 quoted arg trap" >/dev/null
+t3qid="$(bash "$DEPUTY" list --porcelain | awk -F'|' '/tier3 quoted arg trap/{print $3}')"
+t3qslug="$(bash "$DEPUTY" slug "$t3qid")"
+mkdir -p "$WPDIR/$t3qslug"
+cat > "$WPDIR/$t3qslug/waypoint.json" <<EOF
+{ "task_id":"$t3qslug","goal":"one","status":"in_progress",
+  "created_at":"$(iso '4 minutes ago')","updated_at":"$(iso '1 minute ago')","current_step":"1",
+  "steps":[{"id":"1","purpose":"only","status":"in_progress"}] }
+EOF
+# NB: the log is JSON, so each command's inner double-quotes are \" and a shell
+# backslash-escaped quote is \\\" . Line 2 buries a ';' + 'deputy commit' in a
+# double-quoted arg WITH an escaped quote (echo "x\"; deputy commit") — the strip
+# must be escape-aware or a fake boundary survives. Line 3 is a single-quoted
+# trap; line 4 is the description-echo inside a 'deputy set' arg.
+cat > "$DEPUTY_ROOT/.deputy/run-$t3qid.log" <<'JSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git add -A"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo \"x\\\"; deputy commit\""}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep 'deputy review-log APPROVED' notes"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo x\\; deputy commit"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"deputy set \"@[#9] within-step ... APPROVED -> commit -> merge/surface\" waiting"}}]}}
+JSON
+t3qout="$(bash "$DEPUTY" progress "$t3qid" 2>&1)"
+assert_contains "$t3qout" "within-step (est.): ~40%" "Tier 3: quoted milestone tokens do not advance past the real one (git add=40%)"
+if [[ "$t3qout" == *"~90%"* || "$t3qout" == *"~95%"* || "$t3qout" == *"~99%"* ]]; then
+  assert_eq "over-counted" "" "Tier 3: quoted ';' separators / milestone words must not create phantom boundaries"
+else
+  assert_eq "ok" "ok" "Tier 3: quoted-span stripping neutralizes buried milestone tokens"
+fi
+
 # ── HARD read-only constraint: the progress code path must not follow, signal, ─
 # ── or otherwise touch the worker. Grep the relevant function bodies. ─────────
-body="$(awk '/^cmd_progress\(\) \{/,/^\}/' "$DEPUTY"; awk '/^_progress_log_tail\(\) \{/,/^\}/' "$DEPUTY")"
+body="$(awk '/^cmd_progress\(\) \{/,/^\}/' "$DEPUTY"; awk '/^_progress_log_tail\(\) \{/,/^\}/' "$DEPUTY"; awk '/^_progress_within_step\(\) \{/,/^\}/' "$DEPUTY")"
 assert_contains "$body" "tail -n" "log tail is a one-shot 'tail -n' read"
 for bad in "tail -f" "--pid" "kill " "kill_group" "SIGTERM" "SIGKILL" "pkill" " ps " "git commit" "git merge" "mktemp"; do
   if [[ "$body" == *"$bad"* ]]; then

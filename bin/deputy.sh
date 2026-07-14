@@ -4472,6 +4472,96 @@ _progress_log_tail() {
   tail -n 40 "$log" | _render_stream
 }
 
+# Tier 3 (#110): a HEURISTIC, best-effort "within-step %" for SINGLE-step ledgers,
+# inferred PASSIVELY from the worker's run log. Tier 1 already gives useful
+# granularity for multi-step tasks; the gap is a 1-step ledger, which Tier 1 can
+# only render coarsely (0 / half-credit / 100). This refines THAT one step by
+# reading how far the worker has walked its own quality spine.
+#
+# READ-ONLY: one-shot jq over the log file — never -f/--pid/signal, so it cannot
+# touch or disturb the live worker (same guarantee as _progress_log_tail).
+#
+# Detection reads ONLY tool_use ACTIONS (file-edit tool names + Bash command
+# strings), NEVER assistant/user free text. This is deliberate: the item
+# DESCRIPTION echoed into the worker's prompt literally lists milestone words
+# ("APPROVED", "commit", "git staged", …), so a naive text grep would false-fire.
+# Markers are further anchored to a shell COMMAND boundary (start of the Bash
+# call, or after a ; && | separator) so a milestone token buried as a quoted
+# argument (echo "git add", grep APPROVED, a `deputy set "<line-with-the-desc>"`)
+# does not count. Highest matched rung wins → the estimate is monotonic.
+# The printed number is a coarse ESTIMATE and is labelled as such.
+_progress_within_step() {
+  local id="$1" live="$STATE_DIR/run-$id.log" arch="$STATE_DIR/logs/$id.log" log=""
+  # Deterministic precedence: the LIVE run log (an active worker) wins; otherwise
+  # the archived per-id log. Same choice _progress_log_tail makes.
+  if [[ -f "$live" ]]; then log="$live"; elif [[ -f "$arch" ]]; then log="$arch"; fi
+  [[ -n "$log" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  # WHOLE-file scan (not a tail): an early milestone must not scroll out of view
+  # as the log grows. Tolerant parse — a torn/partial live line is skipped
+  # (fromjson? // empty), never crashing the view. Newlines within a command are
+  # flattened to spaces so a multi-line heredoc stays on one action line.
+  local actions
+  actions="$(jq -Rr '
+    (fromjson? // empty) as $e
+    | select(($e|type)=="object" and $e.type=="assistant")
+    | $e.message.content[]?
+    | select(.type=="tool_use")
+    | if (.name|test("^(Edit|Write|MultiEdit|NotebookEdit)$")) then "EDIT"
+      elif .name=="Bash" then "BASH " + ((.input.command // "")|gsub("[\r\n]+";" "))
+      else empty end
+  ' "$log" 2>/dev/null)" || return 1
+  [[ -n "$actions" ]] || return 1
+
+  # Strip QUOTED spans ('…' and "…") from each action line before matching. The
+  # boundary anchoring below is not shell-aware, so a separator or milestone token
+  # buried inside a quoted argument — echo "x; deputy commit",
+  # deputy set "<item-line-echoing-the-desc>" done — would otherwise create a
+  # phantom command boundary. Removing quoted text first neutralizes that class;
+  # the real invoked verbs (git add, deputy commit, codex exec, …) are never
+  # themselves quoted, so this only drops arguments, never a genuine milestone.
+  # Normalize away ALL shell quoting/escaping before matching, in order:
+  #   1. single-quoted spans — literal in shell, no escapes ('…')
+  #   2. double-quoted spans — escape-aware ("([^"\]|\.)*"), so echo "x\"; deputy
+  #      commit" strips the whole arg instead of stopping at the escaped quote
+  #   3. remaining backslash-escapes (\X) — an escaped char is LITERAL, so a bare
+  #      echo x\; deputy commit must not let the \; form a phantom boundary
+  # After this, only genuine unquoted/unescaped separators survive to anchor a
+  # milestone; the real invoked verbs (git add, deputy commit, …) are never
+  # quoted or escaped, so this only ever drops arguments, never a milestone.
+  actions="$(printf '%s\n' "$actions" \
+    | sed -E "s/'[^']*'//g" \
+    | sed -E 's/"([^"\\]|\\.)*"//g' \
+    | sed -E 's/\\.//g')"
+
+  # Command-boundary prefix: start of a BASH action, or just after a ; && | | || .
+  local bnd='(^BASH +|[;&|]+ *)'
+  # Ascending ladder "weight|label|regex" — evaluated in order, LAST match wins.
+  # Percentages are intentionally coarse ESTIMATES, not measurements. Regexes key
+  # on MUTATING/confirming verbs (git add, deputy commit/protected, codex/gemini
+  # review, review-log APPROVED, deputy done/merge) rather than read-only probes.
+  local reached=5 label="step just started" row w rest l re
+  for row in \
+    "25|files edited|^EDIT\$" \
+    "40|changes staged|${bnd}git( +-C +[^ ]+)?( +-[A-Za-z]+)* +add\\b" \
+    "55|targeted tests run|${bnd}(bash +)?[^ ]*tests/test_[A-Za-z0-9_]+\\.sh\\b" \
+    "65|full suite run|${bnd}(bash +)?[^ ]*tests/run\\.sh\\b" \
+    "72|protected-path gate|${bnd}deputy +protected\\b" \
+    "80|xReview invoked|${bnd}(codex +exec|gemini +-p|deputy +route +review|deputy +review-log)\\b" \
+    "90|xReview APPROVED|${bnd}deputy +review-log\\b.*APPROVED" \
+    "95|change committed|${bnd}deputy +commit\\b" \
+    "99|merging / surfacing|${bnd}(deputy +done\\b|deputy +wt-remove\\b|deputy +set +.*(surfaced|done)|git +merge\\b)" \
+  ; do
+    w="${row%%|*}"; rest="${row#*|}"; l="${rest%%|*}"; re="${rest#*|}"
+    if grep -Eq "$re" <<<"$actions"; then reached="$w"; label="$l"; fi
+  done
+
+  printf 'within-step (est.): ~%s%% — %s\n' "$reached" "$label"
+  printf '  \xe2\x93\x98 HEURISTIC estimate inferred from run-log milestones; not exact.\n'
+  return 0
+}
+
 # cmd_progress <id> — PURELY PASSIVE / READ-ONLY per-task progress view. Reads
 # ONLY the waypoint ledger + the worker's run log; NEVER signals, follows
 # (-f/--pid), or otherwise touches the running `claude -p` worker or its bwrap
@@ -4525,6 +4615,15 @@ cmd_progress() {
     if [[ "$status" != "completed" && "$pct" -ge 100 ]]; then pct=99; pfx='>='; fi
     printf 'progress: step %s of %s; %s of %s succeeded; %s%s%% by step count\n' \
       "${current:-–}" "$n" "$succ" "$n" "$pfx" "$pct"
+    # ── Tier 3 (#110): within-step heuristic for a SINGLE-step ledger ─────────
+    # Multi-step tasks get useful granularity from the step count above; the
+    # coarse case is a 1-step ledger. When that single step is actively running
+    # (inprog>=1 — keyed on the STEP, not a status string), refine it with a
+    # passive run-log milestone estimate. Silent (returns non-zero) if there is
+    # no log / no jq / no recognizable action yet.
+    if [[ "$n" -eq 1 && "$inprog" -ge 1 ]]; then
+      _progress_within_step "$id" || true
+    fi
   else
     printf 'progress: (no steps planned yet)\n'
   fi
