@@ -85,3 +85,36 @@ exists="$(git -C "$DEPUTY_ROOT" branch --list "deputy/feat-77e")"
 [[ -n "$exists" ]] && result="exists" || result="gone"
 assert_eq "$result" "exists" "config=1 + ROOT on deputy/* branch: guard fires, branch preserved"
 git -C "$DEPUTY_ROOT" checkout master 2>/dev/null || true
+
+# ── 5. #103: auto_merge=1, delete_merged_branch unset → branch deleted ───────
+# Full automation implies cleanup: when auto_merge=1 and delete_merged_branch is
+# not explicitly set, the branch is deleted after a clean merge.
+setup_git_repo
+create_branch_and_worktree "feat-103a" "$DEPUTY_ROOT"
+do_merge "feat-103a" "$DEPUTY_ROOT"
+printf 'auto_merge=1\n' > "$DEPUTY_ROOT/.deputy/config"   # delete_merged_branch NOT set
+run_wt_remove "$DEPUTY_ROOT"
+exists="$(git -C "$DEPUTY_ROOT" branch --list "deputy/feat-103a")"
+assert_eq "$exists" "" "auto_merge=1 + delete_merged_branch unset: branch deleted (auto cleanup)"
+
+# ── 6. #103: auto_merge=1, delete_merged_branch=0 → branch preserved ─────────
+# Explicit opt-out wins even when auto_merge=1.
+setup_git_repo
+create_branch_and_worktree "feat-103b" "$DEPUTY_ROOT"
+do_merge "feat-103b" "$DEPUTY_ROOT"
+printf 'auto_merge=1\ndelete_merged_branch=0\n' > "$DEPUTY_ROOT/.deputy/config"
+run_wt_remove "$DEPUTY_ROOT"
+exists="$(git -C "$DEPUTY_ROOT" branch --list "deputy/feat-103b")"
+[[ -n "$exists" ]] && result="exists" || result="gone"
+assert_eq "$result" "exists" "auto_merge=1 + delete_merged_branch=0: explicit opt-out preserves branch"
+
+# ── 7. #103: auto_merge=0, delete_merged_branch unset → branch preserved ─────
+# No change for repos not using auto_merge: branch accumulation behaviour unchanged.
+setup_git_repo
+create_branch_and_worktree "feat-103c" "$DEPUTY_ROOT"
+do_merge "feat-103c" "$DEPUTY_ROOT"
+printf 'auto_merge=0\n' > "$DEPUTY_ROOT/.deputy/config"   # delete_merged_branch NOT set
+run_wt_remove "$DEPUTY_ROOT"
+exists="$(git -C "$DEPUTY_ROOT" branch --list "deputy/feat-103c")"
+[[ -n "$exists" ]] && result="exists" || result="gone"
+assert_eq "$result" "exists" "auto_merge=0 + delete_merged_branch unset: branch preserved (no change)"

@@ -1917,7 +1917,7 @@ config keys (.deputy/config)  — set with 'deputy config <key> <value>':
   orphan_warn_mins=N              warn (never kill) about a bash orphan running > this many minutes under an in-repo Claude session (default 30)
   watchdog_mins=N                 hard-cap a headless worker that makes NO waypoint progress for N min: surface the item + kill the worker (a hung/looping worker can't burn tokens or hold the slot). Default 45; set 0 to disable
   auto_merge=1                    allow a spawned (headless) worker to git-merge its branch to the default branch; default 0 = the guardrail blocks the merge and the worker must surface the branch for human review
-  delete_merged_branch=1          after a successful wt-remove following a clean merge, delete the local deputy/<slug> branch (uses 'git branch -d', merged-only safe delete, NEVER -D/-f); default 0 = leave the branch for manual cleanup
+  delete_merged_branch=1          after a successful merge, delete the local deputy/<slug> branch (uses 'git branch -d', merged-only safe delete, NEVER -D/-f); default: auto-ON when auto_merge=1 (full automation implies cleanup), OFF otherwise; set =0 to keep branches even with auto_merge=1
   notify_on_spawn=0               silence the notification + cron.log '===SPAWN===' line emitted when the heartbeat autonomously spawns a worker; default 1 = announce every autonomous pickup (never silent)
   sandbox=0                       disable the bwrap read-only sandbox around the headless worker (default 1 = repo code is OS-read-only to the worker, only .deputy/+BACKLOG.md+worktree writable); 0 falls back to cwd-pinning only
   notify=desktop,push,email       channels for item-surfaced/finished notifications
@@ -2262,6 +2262,20 @@ _config_get() {
   return 0
 }
 
+# #103: tri-state branch-delete decision. Returns 0 (delete) when:
+#   delete_merged_branch=1           → always delete (explicit opt-in)
+#   delete_merged_branch=0           → never delete  (explicit opt-out, wins over auto_merge)
+#   delete_merged_branch unset
+#     + auto_merge=1                 → delete (full automation implies cleanup)
+#     + auto_merge!=1                → preserve (default, no change for non-auto repos)
+_should_delete_merged_branch() {
+  local cfg; cfg="$(_config_get delete_merged_branch)"
+  [[ "$cfg" == "1" ]] && return 0
+  [[ "$cfg" == "0" ]] && return 1
+  [[ "$(_config_get auto_merge)" == "1" ]] && return 0
+  return 1
+}
+
 # Write a single key to .deputy/config as an ATOMIC UPSERT (#90): drop any existing 'key='
 # lines (tolerating spaces around '=', which _config_get also trims), append 'key=value',
 # temp+rename. One line per key — the file never accumulates duplicates. An empty value writes
@@ -2371,8 +2385,7 @@ _wt_remove() {
     # merged-into-HEAD, so deleting must be gated on HEAD being the default branch —
     # otherwise a manual wt-remove from another feature branch where deputy/<slug>
     # happens to be merged could delete a branch never merged into the default one.
-    local del_cfg; del_cfg="$(_config_get delete_merged_branch)"
-    if [[ "${del_cfg:-0}" == "1" && "$removed" == "1" && "$branch" == deputy/* ]]; then
+    if _should_delete_merged_branch && [[ "$removed" == "1" && "$branch" == deputy/* ]]; then
       local cur_br def_br
       cur_br="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
       def_br="$(_default_branch)"
@@ -2939,7 +2952,7 @@ _merge_ready_branch() {
   local cur_line; cur_line="$(grep -F "[#$id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
   if [[ -n "$cur_line" ]] && cmd_set "$cur_line" done >/dev/null 2>&1; then
     rm -f "$marker" "$STATE_DIR/proposed-$id" 2>/dev/null || true
-    if [[ "$(_config_get delete_merged_branch)" == "1" ]] && git -C "$ROOT" merge-base --is-ancestor "$branch" HEAD 2>/dev/null; then
+    if _should_delete_merged_branch && git -C "$ROOT" merge-base --is-ancestor "$branch" HEAD 2>/dev/null; then
       git -C "$ROOT" branch -d "$branch" >/dev/null 2>&1 || true
     fi
     printf 'merged %s into %s — #%s done\n' "$branch" "$def" "$id"; return 0
