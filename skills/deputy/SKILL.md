@@ -75,12 +75,41 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    before the protected-path gate and commit. If no test command is configured, note that
    in your summary — do not silently skip. *(Rationale: running the full suite on every
    step/retry made a ~1-line change take ~30 min; targeted-per-iteration + full-once keeps
-   correctness at a fraction of the cost.)* **Known false-failure (#106):** before the
-   #106 patch, `test_install` produced 4 assertion failures when invoked from inside
-   `.deputy/wt` (symlink/canonical-root mismatch between REPO and what the installer
-   resolves via `git worktree list`); these were environmental, not real regressions.
-   If you see `test_install` failures in the worktree on an older checkout, re-run from
-   the main tree to confirm; the fix landed in the same commit that added this note.
+   correctness at a fraction of the cost.)*
+
+   **On a FULL-suite-gate FAILURE — isolate; never re-run the whole suite each retry (#107):**
+   *(#103 observed a worker re-run the full ~3-min suite 6× on a phantom failure instead of
+   isolating.)*
+   1. From the runner output identify exactly which `tests/test_*.sh` file(s) failed
+      (`tests/run.sh` prints `== tests/test_X.sh ==` before each file).
+   2. Iterate the fix by re-running ONLY those file(s) — `bash tests/test_X.sh` — never the
+      full suite on each retry. Each isolated re-run counts toward the §4 per-step retry
+      budget just like any failed attempt.
+   3. When the isolated file(s) pass, re-run the **full** suite **exactly once** to confirm
+      no collateral breakage. If it fails again with a *different* file, re-enter isolation
+      from the new output (still bounded by the §4 budget); if it fails only with an
+      allowlisted environmental signature (below), proceed.
+   4. **Ordering / global-state escape hatch:** if the isolated files each pass individually
+      but the full suite still fails, run just the minimal failing group once, then classify
+      it as an ordering/shared-state failure — fix it or surface it — do NOT retry-loop the
+      whole suite hoping it clears.
+
+   **Allowlisted environmental (phantom) failures are non-blocking ONLY when BOTH checks below pass — the allowlist is NARROW (#106/#107):**
+   Some failures are artifacts of *where* the suite runs, not real regressions. Known
+   environmental signatures:
+   - **`test_install` run from inside `.deputy/wt`** — before the #106 patch this produced 4
+     assertion failures (symlink/canonical-root mismatch between REPO and what the installer
+     resolves via `git worktree list`); environmental, not a regression. Fixed in the commit
+     that added this note; older checkouts still exhibit it.
+
+   To classify a full-suite failure as environmental (otherwise treat it as **blocking**),
+   BOTH must hold: (a) the failing test exercises **unchanged code or a known
+   environment-sensitive path** — if code you changed is in the exercised path it is
+   **blocking**, no exceptions; and (b) re-running the isolated file from the **main tree**
+   (repo root, not `.deputy/wt`) **passes** there while failing only in the worktree. When
+   both hold → **note it in your summary and proceed**; do NOT spend the retry budget
+   re-running the full suite on it. Any failure that reproduces from the main tree, or that
+   touches changed code, **blocks** the commit.
 5. **Stage all changes** before the gates: `git -C .deputy/wt add -A`. The gates must
    run on a non-empty staged diff — do not skip staging.
 6. **Protected-path gate (mandatory, before EVERY commit):**
@@ -167,7 +196,9 @@ If no coder is available, `deputy cron --reschedule "<reset text>"` — never bu
    - Do the work in `.deputy/wt`.
    - `git -C .deputy/wt add -A` (stage all changes before the gates).
    - Quality gate (§2a step 4: **targeted** tests this step; the **full** suite only once,
-     before the FINAL step's commit) → protected-path gate (mandatory) → implementation xReview (§3).
+     before the FINAL step's commit; on a full-suite failure, **isolate to the failing
+     file(s)** — never re-run the whole suite each retry) → protected-path gate (mandatory)
+     → implementation xReview (§3).
    - `deputy commit <slug> --summary "..."` (commits the already-staged changes).
    - **Preemption check:** same as §2a step 8 — after the commit, check `deputy pick`;
      if higher priority exists, `deputy set "<item-line>" paused` and stop.
