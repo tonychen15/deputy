@@ -3077,7 +3077,9 @@ cmd_run() {
   fi
 
   cmd_recover >/dev/null 2>&1 || true
-  if _live_claim_exists; then return 0; fi
+  # Non-targeted (cron/heartbeat) path: silent skip when any live claim exists.
+  # The targeted path below gets its own priority-aware check instead.
+  if [[ -z "$target_id" ]] && _live_claim_exists; then return 0; fi
 
   # ── Human-session back-off (startup check) ───────────────────────────────────
   # If an interactive Claude Code session is active in this repo, skip this heartbeat
@@ -3119,6 +3121,43 @@ cmd_run() {
     if [[ "$decision" != "claude" ]]; then
       return 0
     fi
+
+    # ── Priority-aware preemption for targeted runs ───────────────────────────
+    # When another item holds a live claim, compare priorities instead of silently
+    # skipping. Purely cooperative: we signal the running worker by flipping its
+    # BACKLOG line to paused; it exits on its next preemption check; the following
+    # heartbeat then picks up the now-highest-priority target. Never removes a live
+    # claim file (the worker still holds that slot until it exits cleanly).
+    local _lr_claim_f _lr_item="" _lr_parsed _lr_prio _lr_id _lr_rank _tgt_parsed _tgt_prio _tgt_rank
+    for _lr_claim_f in "$STATE_DIR"/*.claim; do
+      [[ -e "$_lr_claim_f" ]] || continue
+      _claim_live "$_lr_claim_f" || continue
+      _lr_item="$(sed -n '1p' "$_lr_claim_f" 2>/dev/null || true)"
+      break
+    done
+    if [[ -n "$_lr_item" ]]; then
+      _lr_parsed="$(_parse_item "$_lr_item")"
+      _lr_prio="${_lr_parsed#*|}"; _lr_prio="${_lr_prio%%|*}"
+      _lr_id="${_lr_parsed#*|}"; _lr_id="${_lr_id#*|}"; _lr_id="${_lr_id%%|*}"
+      _lr_rank="$(_prio_rank "$_lr_prio")"
+      _tgt_parsed="$(_parse_item "$found_line")"
+      _tgt_prio="${_tgt_parsed#*|}"; _tgt_prio="${_tgt_prio%%|*}"
+      _tgt_rank="$(_prio_rank "$_tgt_prio")"
+      if (( _tgt_rank < _lr_rank )); then
+        # Target is higher priority: signal the running worker to stop cooperatively,
+        # then back off. The worker exits on its next preemption check and the
+        # following heartbeat picks up the target (now highest priority).
+        printf 'deputy: pausing #%s (%s) — #%s (%s) will run on next heartbeat.\n' \
+          "$_lr_id" "${_lr_prio:-P?}" "$target_id" "${_tgt_prio:-P?}" >&2
+        cmd_set "$_lr_id" paused >/dev/null 2>&1 || true
+      else
+        # Target is lower or equal priority: leave it waiting and warn.
+        printf 'deputy: #%s (%s) is running; #%s (%s) left waiting — higher-priority task in progress.\n' \
+          "$_lr_id" "${_lr_prio:-P?}" "$target_id" "${_tgt_prio:-P?}" >&2
+      fi
+      return 0
+    fi
+
     _active_run_acquire "$found_line" "targeted" || return 0
     if ! cmd_claim "$found_line" --pid "$$" >/dev/null 2>&1; then
       _active_run_release
