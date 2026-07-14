@@ -10,13 +10,13 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[#105][P3] when user execute 'deputy add --<prio> <desc>' to get id. Deputy should add it to the waiting queue. If there is no running task, and no other waiting task, then run this new task directly. But if no running task but waiting tasks which have higher priority, then put this new task in the waiting queue. Otherwise, if no running task and all waiting tasks have lower priority than the new one, run the new one immediately
 
 ### Surfaced (1)
 ?[#109][P3] Add a changed-files -> affected-tests selector so the #89 targeted phase is AUTOMATED not LLM-judgment (PART B of #107; #107 PART A shipped the on-failure isolation + environmental-allowlist prose). Goal: 'deputy test --changed' (or a file->test mapping) runs only the tests affected by the working-tree diff, making the targeted gate fast AND reliable. DESIGN CONSTRAINTS (per xReview): needs explicit human approval + a DESIGNED file-to-test ownership model — NOT an ad hoc parser over the 234KB bin/deputy.sh. Deputy's logic is one monolithic deputy.sh, so 'changed files' is coarse (almost always deputy.sh); the real granularity is function-level (which cmd_*/helper changed -> which tests/test_*.sh exercises it). Options to weigh: (a) an explicit maintained manifest mapping code regions/functions -> test files; (b) a naming-convention heuristic (cmd_list -> test_list) with a fallback to full-suite when unmapped; (c) coverage-based selection. Must fail SAFE: unknown/unmapped change -> run full suite, never silently skip. ACCEPTANCE: 'deputy test --changed' selects a correct minimal test subset for a known change, falls back to full suite on anything unmapped, and has its own tests.
 
-### Waiting (2)
-[#105][P3] when user execute 'deputy add --<prio> <desc>' to get id. Deputy should add it to the waiting queue. If there is no running task, and no other waiting task, then run this new task directly. But if no running task but waiting tasks which have higher priority, then put this new task in the waiting queue. Otherwise, if no running task and all waiting tasks have lower priority than the new one, run the new one immediately
+### Waiting (1)
 [#110][P3] TIER 3 of #108 (follow-up): within-step progress % for SMALL/SIMPLE (single-step) tasks via PASSIVE run-log inference. For complex multi-step tasks Tier 1 step-granularity already suffices; the gap is single-step ledgers (coarse 0%/100%). Parse the worker's run log (READ-ONLY, no worker changes/signals) for ordered milestone markers -- files edited -> git staged -> targeted tests run/passed -> full suite run -> protected-path gate -> xReview invoked -> APPROVED -> commit -> merge/surface -- and map to a rough within-step %. HEURISTIC/best-effort: LABEL it clearly as an estimate. Prefer passive log parsing; do NOT make the worker emit special progress signals if that risks changing its behavior (an optional low-risk future enhancement is lightweight structured checkpoint lines in the log, ONLY if flow-neutral). Builds on the shipped Tier 1+2 in cmd_progress/_progress_log_tail. ACCEPTANCE: 'deputy progress <id>' on a running single-step task shows a labelled heuristic within-step % inferred from log milestones, without touching the worker.
 
 ### Paused (0)
