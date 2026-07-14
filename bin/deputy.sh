@@ -1858,6 +1858,11 @@ commands:
                                   overview + one poll then exit. --apply: overview + write
                                   .deputy/learnings.md then exit. Ctrl-C exits. (aliases: tail,
                                   review; replaces the former 'reflect')
+  watch <id>  /  progress <id>    PASSIVE, READ-ONLY per-task progress view: from the
+                                  waypoint ledger + run log print step-progress %, the
+                                  current step, a 'done so far' digest, an ETA band, and
+                                  a run-log tail. One-shot; never signals/follows/touches
+                                  the running worker (safe on a live, paused, or dead run)
   run [<id>] [--once] [--headless] work the backlog: claim the top item, run the orchestrator
                                   (interactive/TTY runs stream output live; --headless or
                                   headed=0 config forces the buffered/cron behavior)
@@ -4352,13 +4357,229 @@ _attention_digest() {
 # --once: print overview + one poll pass, then exit (test/script seam; live-tail still blocks
 # until the run ends). --apply: print overview + write the learnings snapshot, then exit.
 # Ctrl-C exits; the 'tail' alias is preserved.
+# ── #108: passive, read-only task-progress view ──────────────────────────────
+# Portable ISO-8601 → epoch seconds. GNU `date -d` handles Z/±HH:MM/fractional
+# directly; the BSD/macOS fallback normalizes first (strip fractional + tz, which
+# `${iso%%.*}` already drops when a fraction is present) then parses naive wall
+# time as a best-effort. Prints epoch secs; empty + rc1 if unparseable — every
+# caller guards against an empty result.
+_iso_epoch() {
+  local iso="${1:-}"; [[ -n "$iso" ]] || return 1
+  local e
+  if e="$(date -d "$iso" +%s 2>/dev/null)" && [[ -n "$e" ]]; then printf '%s' "$e"; return 0; fi
+  local norm="${iso%%.*}"                                  # drop fractional (+ any trailing tz)
+  norm="${norm%Z}"; norm="${norm%[+-][0-9][0-9]:[0-9][0-9]}"   # drop a bare Z / ±HH:MM offset
+  if e="$(date -j -f '%Y-%m-%dT%H:%M:%S' "$norm" +%s 2>/dev/null)" && [[ -n "$e" ]]; then printf '%s' "$e"; return 0; fi
+  return 1
+}
+
+# Human-readable elapsed since an epoch (e.g. '3m ago'); 'unknown' if empty/bad.
+_ago_human() {
+  local t="${1:-}"; [[ -n "$t" ]] || { printf 'unknown'; return; }
+  local now d; now="$(date +%s)"; d=$(( now - t )); (( d < 0 )) && d=0
+  if   (( d < 60 ));    then printf '%ds ago' "$d"
+  elif (( d < 3600 ));  then printf '%dm ago' "$(( d/60 ))"
+  elif (( d < 86400 )); then printf '%dh %dm ago' "$(( d/3600 ))" "$(( (d%3600)/60 ))"
+  else printf '%dd %dh ago' "$(( d/86400 ))" "$(( (d%86400)/3600 ))"; fi
+}
+
+# Compact duration for a span of seconds (e.g. '5m', '2h10m').
+_dur_human() {
+  local s="${1:-0}"
+  (( s < 60 ))    && { printf '%ds' "$s"; return; }
+  (( s < 3600 ))  && { printf '%dm' "$(( s/60 ))"; return; }
+  (( s < 86400 )) && { printf '%dh%dm' "$(( s/3600 ))" "$(( (s%3600)/60 ))"; return; }
+  printf '%dd%dh' "$(( s/86400 ))" "$(( (s%86400)/3600 ))"
+}
+
+# Median per-step duration (secs) across PAST completed ledgers, EXCLUDING the
+# current slug. A step's duration = completed_at − (previous succeeded step's
+# completed_at, or the ledger's created_at for the first). Only positive,
+# parseable durations count. Prints the median integer secs, empty if no history.
+_progress_median_step_secs() {
+  local cur="$1" wdir="$STATE_DIR/waypoints" j slug
+  [[ -d "$wdir" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  local -a durs=()
+  for j in "$wdir"/*/waypoint.json; do
+    [[ -f "$j" ]] || continue
+    slug="$(basename "$(dirname "$j")")"
+    [[ "$slug" == "$cur" ]] && continue
+    # Only COMPLETED ledgers count as history — a partial/live run would skew the median.
+    jq -e '.status=="completed"' "$j" >/dev/null 2>&1 || continue
+    local created prev cline ce dur
+    created="$(jq -r '.created_at // empty' "$j" 2>/dev/null)"
+    [[ -n "$created" ]] || continue
+    prev="$(_iso_epoch "$created")"; [[ -n "$prev" ]] || continue
+    while IFS= read -r cline; do
+      [[ -n "$cline" ]] || continue
+      ce="$(_iso_epoch "$cline")"; [[ -n "$ce" ]] || continue
+      dur=$(( ce - prev )); (( dur > 0 )) && durs+=( "$dur" )
+      prev="$ce"
+    done < <(jq -r '.steps[] | select(.status=="succeeded" and (.completed_at // "") != "") | .completed_at' "$j" 2>/dev/null)
+  done
+  (( ${#durs[@]} > 0 )) || return 1
+  printf '%s\n' "${durs[@]}" | sort -n | \
+    awk '{a[NR]=$1} END{ n=NR; if(n%2) print a[(n+1)/2]; else print int((a[n/2]+a[n/2+1])/2) }'
+}
+
+# Tier 2: print an ETA BAND for the remaining steps (never a crisp number).
+_progress_eta() {
+  local content="$1" slug="$2" n="$3" succ="$4" current="$5" status="$6"
+  local remaining=$(( n - succ )); (( remaining < 0 )) && remaining=0
+  if [[ "$n" -eq 0 || "$remaining" -eq 0 ]]; then
+    if [[ "$status" == "completed" ]]; then printf 'ETA: — (no remaining steps)\n'
+    else printf 'ETA: unknown (all planned steps done; finalizing or re-planning)\n'; fi
+    return 0
+  fi
+  local median; median="$(_progress_median_step_secs "$slug" || true)"
+  if [[ -z "$median" || "$median" -le 0 ]]; then
+    printf 'ETA: unknown (insufficient completed-step history)\n'; return 0
+  fi
+  # Active elapsed on the in_progress step: now − (last succeeded completed_at, or
+  # ledger created_at). Best-effort; subtracted from the band center, floored at 0.
+  local active=0
+  if [[ -n "$current" ]]; then
+    local ref refe now
+    ref="$(jq -r 'if ([.steps[]|select(.status=="succeeded")]|length) > 0
+                   then ([.steps[]|select(.status=="succeeded")]|last|.completed_at)
+                   else .created_at end // ""' <<<"$content")"
+    refe="$(_iso_epoch "$ref" || true)"; now="$(date +%s)"
+    [[ -n "$refe" ]] && active=$(( now - refe )); (( active < 0 )) && active=0
+  fi
+  local center=$(( remaining * median - active ))
+  if (( center <= 0 )); then
+    # The active step already exceeds the median (often paused/idle time, per
+    # caveat (a), or a genuinely slow step) — a positive band would be misleading.
+    printf 'ETA: overdue — current step already exceeds the median (%s); may be paused/idle or slow [%s step(s) left]\n' \
+      "$(_dur_human "$median")" "$remaining"
+    return 0
+  fi
+  printf 'ETA (rough band): %s–%s  [%s step(s) left, median step %s]\n' \
+    "$(_dur_human "$(( center / 2 ))")" "$(_dur_human "$(( center * 2 ))")" \
+    "$remaining" "$(_dur_human "$median")"
+  printf '  note: wall-clock between past step completions (may include paused/idle time); xReview retries add variance.\n'
+}
+
+# Print the last ~40 lines of the worker's run log, rendered readable. Prefers the
+# live run-<id>.log, else the archived logs/<id>.log. READ-ONLY: a one-shot
+# `tail -n` — never -f/--pid, so it cannot attach to or disturb the worker.
+_progress_log_tail() {
+  local id="$1" live="$STATE_DIR/run-$id.log" arch="$STATE_DIR/logs/$id.log" log=""
+  if [[ -f "$live" ]]; then log="$live"; elif [[ -f "$arch" ]]; then log="$arch"; fi
+  if [[ -z "$log" ]]; then printf -- '--- run log: (none found) ---\n'; return 0; fi
+  printf -- '--- run log (last 40 lines of %s) ---\n' "${log#"$STATE_DIR"/}"
+  tail -n 40 "$log" | _render_stream
+}
+
+# cmd_progress <id> — PURELY PASSIVE / READ-ONLY per-task progress view. Reads
+# ONLY the waypoint ledger + the worker's run log; NEVER signals, follows
+# (-f/--pid), or otherwise touches the running `claude -p` worker or its bwrap
+# sandbox. Safe on a live, paused, stuck, or dead worker. (#108)
+cmd_progress() {
+  local id="${1:-}"
+  [[ -n "$id" ]] || { printf 'deputy: progress requires an <id>\n' >&2; return 2; }
+  id="${id#\#}"
+  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: progress: invalid id: %s\n' "$id" >&2; return 2; }
+  _wp_require_jq || return 1
+
+  local slug; slug="$(cmd_slug "$id" 2>/dev/null || true)"
+  [[ -n "$slug" ]] || { printf 'deputy: progress: no task #%s found\n' "$id" >&2; return 1; }
+
+  printf '── progress: #%s (%s) ──\n' "$id" "$slug"
+
+  local wp; wp="$(_wp_json "$slug")"
+  if [[ ! -f "$wp" ]]; then
+    printf 'no waypoint ledger yet (task not started, or ran without the checkpoint spine).\n'
+    _progress_log_tail "$id"
+    return 0
+  fi
+
+  # Snapshot the ledger into memory (a single read) so a concurrent worker write
+  # can't tear our reads and NOTHING is written to disk — the path stays literally
+  # read-only. Ledger writes are atomic (mv), so one `cat` gets a consistent copy.
+  local content; content="$(cat "$wp" 2>/dev/null)"
+  if [[ -z "$content" ]] || ! jq -e . <<<"$content" >/dev/null 2>&1; then
+    printf 'progress: waypoint is being updated — try again in a moment.\n'
+    _progress_log_tail "$id"
+    return 0
+  fi
+
+  local goal status updated current n succ inprog
+  goal="$(jq -r '.goal // ""' <<<"$content")"
+  status="$(jq -r '.status // "?"' <<<"$content")"
+  updated="$(jq -r '.updated_at // ""' <<<"$content")"
+  current="$(jq -r '.current_step // ""' <<<"$content")"
+  n="$(jq -r '.steps | length' <<<"$content")"
+  succ="$(jq -r '[.steps[]|select(.status=="succeeded")]|length' <<<"$content")"
+  inprog="$(jq -r '[.steps[]|select(.status=="in_progress")]|length' <<<"$content")"
+
+  printf 'status: %s\ngoal:   %s\n' "$status" "$goal"
+
+  # ── Tier 1: step progress (in_progress step gets half credit) ────────────
+  if [[ "$n" -gt 0 ]]; then
+    local pct=$(( (2*succ + inprog) * 100 / (2*n) )); (( pct > 100 )) && pct=100
+    local pfx='~'
+    # Never imply completion the ledger hasn't confirmed; the denominator can
+    # grow if the worker re-plans, so cap at '>=99%' until status=completed.
+    if [[ "$status" != "completed" && "$pct" -ge 100 ]]; then pct=99; pfx='>='; fi
+    printf 'progress: step %s of %s; %s of %s succeeded; %s%s%% by step count\n' \
+      "${current:-–}" "$n" "$succ" "$n" "$pfx" "$pct"
+  else
+    printf 'progress: (no steps planned yet)\n'
+  fi
+
+  # ── current step detail ──────────────────────────────────────────────────
+  if [[ -n "$current" ]]; then
+    local cpur cexp
+    cpur="$(jq -r --arg s "$current" '.steps[]|select(.id==$s)|.purpose // ""' <<<"$content")"
+    cexp="$(jq -r --arg s "$current" '.steps[]|select(.id==$s)|.expected_result // ""' <<<"$content")"
+    printf 'current step %s: %s\n' "$current" "$cpur"
+    [[ -n "$cexp" ]] && printf '  expected: %s\n' "$cexp"
+  else
+    printf 'current step: none active\n'
+  fi
+
+  # ── done-so-far digest ───────────────────────────────────────────────────
+  local digest
+  digest="$(jq -r '.steps[] | select(.status=="succeeded")
+                   | "  ✓ [\(.id)] \(.actual_result.summary // .purpose // "")"
+                     + (if (.actual_result.artifacts[0].step_commit // "") != ""
+                        then " (\(.actual_result.artifacts[0].step_commit[0:8]))" else "" end)' <<<"$content")"
+  if [[ -n "$digest" ]]; then printf 'done so far:\n%s\n' "$digest"
+  else printf 'done so far: (nothing committed yet)\n'; fi
+
+  # ── time since last update ───────────────────────────────────────────────
+  local last_e; last_e="$(_iso_epoch "$updated" || true)"
+  printf 'last update: %s' "$(_ago_human "$last_e")"
+  [[ -n "$updated" ]] && printf '  (%s)' "$updated"
+  printf '\n'
+
+  # ── Tier 2: ETA band ─────────────────────────────────────────────────────
+  _progress_eta "$content" "$slug" "$n" "$succ" "$current" "$status"
+
+  # ── run-log tail (the worker's output so far) ────────────────────────────
+  _progress_log_tail "$id"
+  return 0
+}
+
 cmd_watch() {
-  local _wonce=0 _wapply=0 _wa
+  local _wonce=0 _wapply=0 _wa _wid=""
   for _wa in "$@"; do case "$_wa" in
     --once)  _wonce=1 ;;
     --apply) _wapply=1 ;;
+    '#'[0-9]*|[0-9]*)
+      # #108: a bare id (scanned from ANY position — 'watch <id> --once' or
+      # 'watch --once <id>') selects the passive per-task progress view.
+      local _cand="${_wa#\#}"
+      if [[ "$_cand" =~ ^[0-9]+$ ]]; then _wid="$_cand"
+      else printf 'deputy: watch: unknown argument: %s\n' "$_wa" >&2; return 2; fi ;;
     *) printf 'deputy: watch: unknown argument: %s\n' "$_wa" >&2; return 2 ;;
   esac; done
+
+  # #108: numeric id → one-shot read-only progress snapshot, dispatched BEFORE any
+  # monitor/tail/PID logic so the read-only guarantee holds regardless of flags.
+  if [[ -n "$_wid" ]]; then cmd_progress "$_wid"; return $?; fi
 
   # Queue overview once at start (the former 'deputy reflect'). --apply also writes the
   # learnings snapshot and is a one-shot (no monitor loop).
@@ -4483,6 +4704,7 @@ main() {
     slug) shift; cmd_slug "${1:-}"; return $? ;;
     status) cmd_status; return 0 ;;
     watch|tail) shift; cmd_watch "$@"; return $? ;;
+    progress) shift; cmd_progress "${1:-}"; return $? ;;   # #108: passive read-only per-task progress
     pick) cmd_pick; return 0 ;;
     pickup) shift; cmd_pickup "${1:-}"; return $? ;;
     set) shift; cmd_set "$@"; return $? ;;
