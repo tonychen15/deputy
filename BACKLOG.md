@@ -12,8 +12,7 @@
 
 ### Running (0)
 
-### Surfaced (1)
-?[#104][P2] when user input 'deputy run --<priority> <desc>', deputy should first add this task by calling 'deputy add --<prio> <desc>' to get id. If there is a running task, follow the preemp rule. If there is no running task, but there are waiting tasks which have higher priority, then put this new task in the waiting queue. Otherwise, if no waiting task or all waiting tasks have lower priority than the new one, run the new one immediately
+### Surfaced (0)
 
 ### Waiting (3)
 [#105][P3] when user execute 'deputy add --<prio> <desc>' to get id. Deputy should add it to the waiting queue. If there is no running task, and no other waiting task, then run this new task directly. But if no running task but waiting tasks which have higher priority, then put this new task in the waiting queue. Otherwise, if no running task and all waiting tasks have lower priority than the new one, run the new one immediately
@@ -30,7 +29,8 @@
 
 ### Failed / Cancelled / Duplicate (0)
 
-### Done (95)
+### Done (96)
++[#104][P2] when user input 'deputy run --<priority> <desc>', deputy should first add this task by calling 'deputy add --<prio> <desc>' to get id. If there is a running task, follow the preemp rule. If there is no running task, but there are waiting tasks which have higher priority, then put this new task in the waiting queue. Otherwise, if no waiting task or all waiting tasks have lower priority than the new one, run the new one immediately
 +[#106][P1] Fix test_install false-failures when tests/run.sh runs inside .deputy/wt (the worktree). test_install FAILs environmentally (symlink/canonical-root resolution) when the suite runs from a deputy worktree — exactly where headless workers run the final quality gate — but passes on the main tree. This makes the full-suite gate UNRELIABLE for every worker and can trap one in a re-run loop chasing phantom failures (observed in #103: 6 full-suite reruns, ~30 min). FIX: have test_install detect it is running inside a deputy worktree (e.g. $DEPUTY_WT set, or cwd under .deputy/wt) and either SKIP the affected assertions with a clear SKIP note, or resolve the canonical repo root so the assertions pass there too; must still fully exercise install on the main tree. Add a note to SKILL/#89 that a full-suite failure isolated to test_install-in-worktree is environmental, not a real regression.
 +[#103][P2] it seems that deputy didn't clean up the working branch deputy/<slug>
 <!-- release v1.5.1 — 2026-07-14 -->
