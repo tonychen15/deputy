@@ -1920,6 +1920,10 @@ config keys (.deputy/config)  — set with 'deputy config <key> <value>':
   delete_merged_branch=1          after a successful merge, delete the local deputy/<slug> branch (uses 'git branch -d', merged-only safe delete, NEVER -D/-f); default: auto-ON when auto_merge=1 (full automation implies cleanup), OFF otherwise; set =0 to keep branches even with auto_merge=1
   notify_on_spawn=0               silence the notification + cron.log '===SPAWN===' line emitted when the heartbeat autonomously spawns a worker; default 1 = announce every autonomous pickup (never silent)
   sandbox=0                       disable the bwrap read-only sandbox around the headless worker (default 1 = repo code is OS-read-only to the worker, only .deputy/+BACKLOG.md+worktree writable); 0 falls back to cwd-pinning only
+  worker_model=<id>               headless-worker model for a SIMPLE item (default claude-sonnet-4-6). Worker model is routed by a cheap pre-spawn HARDNESS heuristic on the description
+  worker_model_moderate=<id>      model for a MODERATE item (new command/flag/wiring, or a medium description); falls through to worker_model if unset. e.g. claude-fable-5
+  worker_model_complex=<id>       model for a COMPLEX/hard item (refactor/redesign/security/scope/grill keywords, or a long description); falls through to worker_model_moderate → worker_model. e.g. claude-opus-4-8
+  worker_fallback_model=<id>      if set, passed as claude --fallback-model so the worker auto-falls-back when the chosen model is unavailable/rate-limited
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
@@ -2691,6 +2695,54 @@ _sandbox_worker() {
   ( cd "$_cd" && "$@" )
 }
 
+# A syntactically-valid Claude model id (e.g. claude-sonnet-4-6). Guards against a typo or a
+# flag-like config value reaching 'claude --model'. Does NOT verify the model actually exists.
+_valid_model_id() { [[ "$1" =~ ^claude-[a-z0-9._-]+$ ]]; }
+
+# Classify an item's HARDNESS (simple|moderate|complex) from a cheap PRE-SPAWN heuristic on its
+# description — length + keyword signals. The real triage happens INSIDE the worker, so this is
+# only a quota-routing hint (a wrong guess just picks a different model's quota; all can do the
+# work). Tunable: adjust the thresholds/keywords here.
+_item_hardness() {
+  local desc="$1" n; n="${#desc}"
+  # complex/hard: big scope or design/refactor/systemic keywords
+  if [[ "$n" -gt 400 ]] || printf '%s' "$desc" \
+       | grep -qiE 're-?factor|re-?design|architect|migrat|concurren|\brace\b|security|guardrail|\bgrill\b|non-trivial|trade-?off|\bscope\b'; then
+    printf 'complex'; return 0
+  fi
+  # moderate: a real feature — new command/flag/option/wiring — or a medium description
+  if [[ "$n" -gt 150 ]] || printf '%s' "$desc" \
+       | grep -qiE 'add .*(command|sub-?command|flag|option|config|verb)|\bwire\b|integrat|consolidat|\bunify\b|new (command|verb|flag)'; then
+    printf 'moderate'; return 0
+  fi
+  printf 'simple'
+}
+
+# Choose the worker model for an item (echoed), routed by _item_hardness:
+#   complex  → worker_model_complex  (fallthrough: → worker_model_moderate → worker_model)
+#   moderate → worker_model_moderate (fallthrough: → worker_model)
+#   simple   → worker_model          (default claude-sonnet-4-6)
+# Any tier left unset falls through to the next lighter tier, so configuring only some is fine.
+_worker_model_for() {
+  local item="$1" desc base mod cx
+  base="$(_config_get worker_model)"; base="${base:-claude-sonnet-4-6}"
+  mod="$(_config_get worker_model_moderate)"
+  cx="$(_config_get worker_model_complex)"
+  desc="$(_parse_item "$item")"; desc="${desc#*|}"; desc="${desc#*|}"; desc="${desc#*|}"
+  local model
+  case "$(_item_hardness "$desc")" in
+    complex)  model="${cx:-${mod:-$base}}" ;;
+    moderate) model="${mod:-$base}" ;;
+    *)        model="$base" ;;
+  esac
+  # Guard against a typo/flag-like config value reaching 'claude --model'.
+  if ! _valid_model_id "$model"; then
+    printf 'deputy: worker model %q is not a valid model id — using claude-sonnet-4-6\n' "$model" >&2
+    model="claude-sonnet-4-6"
+  fi
+  printf '%s' "$model"
+}
+
 # (tests / custom drivers), call it as `<cmd> <item-line> <provider>`. Otherwise
 # build a headless prompt that runs the deputy orchestrator skill on this one item.
 _spawn_orchestrator() {
@@ -2709,8 +2761,16 @@ Item (the exact current BACKLOG.md line — pass it verbatim to 'deputy set'): $
 Provider for coding: $provider
 Use the 'deputy' CLI for ALL state changes (deputy set / wt-create / wt-remove / config / protected); never edit BACKLOG.md directly. Honor the protected-path gate and run an xReview (gemini) before each commit. The item MUST end marked done/failed/surfaced/cancelled/duplicate via 'deputy set \"<line>\" <state>'."
   local gset; gset="$(_guardrail_settings_path)"
+  # Worker model is config-driven + complexity-routed (see _worker_model_for): a complex-looking
+  # item runs on worker_model_complex (if set), everything else on worker_model (default sonnet);
+  # worker_fallback_model, if set, is passed as --fallback-model so the CLI auto-falls-back when
+  # the chosen model is unavailable/rate-limited.
+  local _wmodel _wfb; _wmodel="$(_worker_model_for "$item")"
+  _wfb="$(_config_get worker_fallback_model)"
+  local -a _wm_args=( --model "$_wmodel" )
+  [[ -n "$_wfb" ]] && _valid_model_id "$_wfb" && _wm_args+=( --fallback-model "$_wfb" )
   DEPUTY_GUARDED=1 DEPUTY_HEADLESS="$_headless" DEPUTY_ACTIVE_RUN_PID="$$" DEPUTY_WT="$(_wt_path)" DEPUTY_ROOT="$ROOT" \
-    _sandbox_worker claude -p "$prompt" --model claude-sonnet-4-6 \
+    _sandbox_worker claude -p "$prompt" "${_wm_args[@]}" \
       --output-format stream-json --verbose \
       --allowedTools "Bash,Edit,Write,Read,Glob,Grep" \
       --settings "$gset"
