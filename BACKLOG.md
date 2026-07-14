@@ -14,7 +14,8 @@
 
 ### Surfaced (0)
 
-### Waiting (0)
+### Waiting (1)
+[#103][P2] it seems that deputy didn't clean up the working branch deputy/<slug>
 
 ### Paused (0)
 
