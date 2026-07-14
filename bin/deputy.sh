@@ -999,7 +999,7 @@ cmd_add() {
   # a distinct $$, never erase each other's flag.
   local _worker=0
   _is_worker_context && _worker=1
-  rm -f "$STATE_DIR/.proposed_pending.$$" 2>/dev/null || true
+  rm -f "$STATE_DIR/.proposed_pending.$$" "$STATE_DIR/.add_pending.$$" 2>/dev/null || true
   _do_add() {
     _allocate_ids || return 1
     if _desc_exists "$text"; then
@@ -1033,6 +1033,9 @@ cmd_add() {
     # #99: freeze the immutable user_desc + canonical slug FIRST (required); roll back on append fail.
     _write_task_meta "$_nid" "$text" || { printf 'deputy: add: could not persist task metadata (#%s) — not added\n' "$_nid" >&2; return 1; }
     _append_item "$(_serialize_item waiting "$_pprio" "$_nid" "$text")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
+    # #105: hand the NEW id across the _with_lock subshell ($$ is stable) so the disposition
+    # message below fires ONLY for a genuinely-new item (never a duplicate 'already present').
+    printf '%s' "$_nid" > "$STATE_DIR/.add_pending.$$" 2>/dev/null || true
     printf 'deputy: added #%s: %s\n' "$_nid" "$text"
   }
   local _add_rc=0
@@ -1058,9 +1061,29 @@ cmd_add() {
     return "$_add_rc"
   fi
   [[ "$_add_rc" -ne 0 ]] && return "$_add_rc"
+  # #105: capture the NEW item's id (handoff from _do_add across its _with_lock subshell; $$ is
+  # stable). Read + delete it unconditionally so it never leaks (e.g. under DEPUTY_NO_AUTORUN=1),
+  # and so it fires ONLY for a genuinely-new item — a duplicate 'already present' wrote nothing.
+  local _np_id; _np_id="$(cat "$STATE_DIR/.add_pending.$$" 2>/dev/null || true)"
+  rm -f "$STATE_DIR/.add_pending.$$" 2>/dev/null || true
   # Trigger execution immediately if nothing is running and work is available.
   # Set DEPUTY_NO_AUTORUN=1 to suppress (used in tests that exercise add in isolation).
   if [[ "${DEPUTY_NO_AUTORUN:-0}" != "1" ]] && ! _live_claim_exists && [[ -n "$(cmd_pick)" ]]; then
+    # Make the just-added task's priority disposition OBSERVABLE (behavior unchanged — _autorun
+    # still drains the globally highest-priority runnable task; idle here, within #105's "no
+    # running task" scope). Consistent with `run --<prio>`'s messages (#104).
+    if [[ "$_np_id" =~ ^[0-9]+$ ]]; then
+      local _np_prio _np_top _np_top_id; _np_prio="${prio:-P3}"
+      _np_top="$(cmd_pick)"; _np_top_id="$(_parse_item "$_np_top")"
+      _np_top_id="${_np_top_id#*|}"; _np_top_id="${_np_top_id#*|}"; _np_top_id="${_np_top_id%%|*}"
+      # Phrased as state (not a promise that this exact item runs): a concurrent add/set could
+      # change the top between here and _autorun, since this runs after the queue lock releases.
+      if [[ "$_np_top_id" == "$_np_id" ]]; then
+        printf 'deputy: #%s (%s) is currently the highest-priority runnable task — running the queue now.\n' "$_np_id" "$_np_prio"
+      else
+        printf 'deputy: #%s (%s) queued — equal-or-higher-priority items waiting.\n' "$_np_id" "$_np_prio"
+      fi
+    fi
     _autorun
   fi
 }
