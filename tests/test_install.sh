@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/lib.sh"
-# REPO (from lib.sh) is the deputy repo root; inst_deputy.sh lives at its top.
+# REPO and INSTALL stay pointed at the current checkout (worktree or main tree) so
+# changes to the installer are exercised.  However the installer itself uses
+# `git worktree list` to anchor all created symlinks to the MAIN tree, so assertions
+# that compare `readlink -f` of a linked file against a REPO-relative path fail when
+# the suite runs from inside .deputy/wt (worktree path ≠ main-tree path).
+# MAIN_REPO is set to the canonical main-tree root and is used ONLY in those specific
+# assertions as the expected symlink target.
+#
+# git guarantees: `git worktree list --porcelain` always lists the main (primary)
+# worktree first (documented in git-worktree(1)).  We clear GIT_DIR/GIT_COMMON_DIR
+# to prevent an inherited env from redirecting resolution to an unrelated repo (same
+# guard as the installer itself uses).
+MAIN_REPO="$REPO"
+case "$REPO" in *"/.deputy/wt"|*"/.deputy/wt"/*)
+  _wl="$(env -u GIT_DIR -u GIT_COMMON_DIR git -C "$REPO" worktree list --porcelain 2>/dev/null || true)"
+  if [[ "$_wl" == "worktree "* ]]; then
+    _main="${_wl%%$'\n'*}"; _main="${_main#worktree }"
+    # Guard: only update MAIN_REPO when git succeeded and the resolved path exists.
+    [[ -n "$_main" && -d "$_main" ]] && MAIN_REPO="$_main"
+  fi
+  unset _wl _main
+  ;;
+esac
 INSTALL="$REPO/inst_deputy.sh"
 
 # Use a global fake crontab throughout this file so no init/cron call
@@ -89,23 +111,23 @@ assert_eq "$rc" "0" "re-link with skill exits 0"
 pi="$(mktemp -d)"
 DEPUTY_PREFIX="$pi" bash "$INSTALL" link >/dev/null 2>&1
 assert_eq "$([[ -L "$pi/inst_deputy.sh" ]] && echo yes || echo no)" "yes" "link symlinks inst_deputy.sh onto PATH"
-assert_eq "$(readlink -f "$pi/inst_deputy.sh" 2>/dev/null)" "$(readlink -f "$REPO/inst_deputy.sh")" "linked installer resolves to the real script"
+assert_eq "$(readlink -f "$pi/inst_deputy.sh" 2>/dev/null)" "$(readlink -f "$MAIN_REPO/inst_deputy.sh")" "linked installer resolves to the real script"
 
 # --- migration: a pre-existing runner-only install still gains the installer self-link on re-run ---
 pm="$(mktemp -d)"
-ln -sfn "$REPO/bin/deputy.sh" "$pm/deputy"          # simulate an old install (runner linked, no installer)
+ln -sfn "$MAIN_REPO/bin/deputy.sh" "$pm/deputy"     # simulate an old install (runner linked, no installer)
 DEPUTY_PREFIX="$pm" bash "$INSTALL" link >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "0" "re-link over an old runner-only install exits 0"
 assert_eq "$([[ -L "$pm/inst_deputy.sh" ]] && echo yes || echo no)" "yes" "re-link backfills inst_deputy.sh for old installs"
 
 # --- self-link refuses to clobber a FOREIGN inst_deputy.sh symlink without --force ---
 pf2="$(mktemp -d)"; foreign="$(mktemp)"
-ln -sfn "$REPO/bin/deputy.sh" "$pf2/deputy"          # deputy is ours (so the runner block passes)
+ln -sfn "$MAIN_REPO/bin/deputy.sh" "$pf2/deputy"     # deputy is ours (so the runner block passes)
 ln -sfn "$foreign" "$pf2/inst_deputy.sh"             # but inst_deputy.sh points elsewhere
 DEPUTY_PREFIX="$pf2" bash "$INSTALL" link >/dev/null 2>&1
 assert_eq "$(readlink "$pf2/inst_deputy.sh")" "$foreign" "self-link leaves a foreign installer symlink untouched without --force"
 DEPUTY_PREFIX="$pf2" bash "$INSTALL" link --force >/dev/null 2>&1
-assert_eq "$(readlink -f "$pf2/inst_deputy.sh" 2>/dev/null)" "$(readlink -f "$REPO/inst_deputy.sh")" "self-link --force replaces a foreign installer symlink"
+assert_eq "$(readlink -f "$pf2/inst_deputy.sh" 2>/dev/null)" "$(readlink -f "$MAIN_REPO/inst_deputy.sh")" "self-link --force replaces a foreign installer symlink"
 
 # --- init also enables the cron heartbeat (combined in one step) ---
 di_cron="$(mktemp -d)"
