@@ -1726,8 +1726,98 @@ cmd_version() {
 # `deputy release` draws the line under them. Version defaults to the PROJECT's
 # VERSION file ($ROOT/VERSION); pass an explicit version to override. Idempotent:
 # a no-op if that exact delimiter (version + today's date) already exists.
+# Sync the mechanical "current version" markers in README.md to $1 (version-agnostic +
+# idempotent — matches any x.y.z already there). Only the two machine markers are touched
+# (`currently \`X\`` and the `VERSION  # X` map line); the prose version blurbs are left
+# for a human/worker to curate. No-op (returns 0) if README.md is absent.
+_release_sync_readme() {
+  local ver="$1" f="$ROOT/README.md" tmp
+  [[ -f "$f" ]] || return 0
+  tmp="$f.rel.tmp.$$"
+  sed -E \
+    -e "s/(currently \`)[0-9][0-9.]*(\`)/\1$ver\2/g" \
+    -e "s/^(VERSION[[:space:]]+#[[:space:]]*)[0-9][0-9.]*/\1$ver/" \
+    "$f" > "$tmp" || { rm -f "$tmp"; return 1; }
+  cat "$tmp" > "$f"; local rc=$?    # cat > f preserves inode + perms; propagate its status
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# Build a CHANGELOG entry for $1=version. Prefers a worker-summarized entry (headless
+# `claude -p`, timeout-guarded, hardness-routed model); falls back to the raw
+# `release-notes` bullets when claude is unavailable / errors / times out / emits a
+# malformed entry. $2 = raw release-notes bullets, $3 = git shortlog since last tag,
+# $4 = "1" forces the raw (no-LLM) path. Prints the entry (starts with '## vX — DATE').
+_release_changelog_entry() {
+  local ver="$1" notes="$2" gitlog="$3" no_llm="$4"
+  local date entry model prompt fallback
+  date="$(date +%Y-%m-%d)"
+  if [[ -n "$notes" ]]; then
+    fallback="$(printf '## v%s — %s\n\n%s' "$ver" "$date" "$notes")"
+  else
+    fallback="$(printf '## v%s — %s\n\n- (no recorded backlog items since the last release)' "$ver" "$date")"
+  fi
+  if [[ "$no_llm" == "1" ]] || ! command -v claude >/dev/null 2>&1; then
+    printf '%s\n' "$fallback"; return 0
+  fi
+  model="$(_worker_model_for "release changelog summary of recent commits and done items")"
+  _valid_model_id "$model" || model="claude-sonnet-4-6"
+  prompt="$(printf 'You are writing ONE release entry for a project CHANGELOG.md. Output ONLY GitHub-flavored markdown — no preamble, no closing remarks, no code fences. The FIRST line must be exactly:\n## v%s — %s\nThen one summary sentence, then the changes grouped under bold subheads (**Features**, **Fixes**, **Docs** — include only those that apply) with concise one-line bullets. Merge related commits; drop noise (merge commits, "wip", release/version chores). Use ONLY the facts below; invent nothing.\n\n=== backlog items completed since last release ===\n%s\n\n=== git commits since last release ===\n%s\n' \
+    "$ver" "$date" "${notes:-(none recorded)}" "${gitlog:-(none)}")"
+  # Pass the prompt as an argument and redirect stdin from /dev/null so `claude -p` never
+  # blocks waiting for additional stdin; timeout bounds a hung/slow worker.
+  entry="$(timeout 180 claude -p "$prompt" --model "$model" </dev/null 2>/dev/null)" || entry=""
+  if [[ "$entry" == "## v$ver "* || "$entry" == "## v$ver—"* ]]; then
+    printf '%s\n' "$entry"
+  else
+    printf '%s\n' "$fallback"   # unavailable / timeout / malformed → raw bullets
+  fi
+}
+
+# Prepend $2 (a complete entry) immediately above the most-recent '## ' heading in
+# CHANGELOG.md (creating the file with a '# Changelog' title if absent). Returns 3 without
+# writing if an entry for v$1 is already present (re-run safety).
+_release_prepend_changelog() {
+  local ver="$1" entry="$2" f="$ROOT/CHANGELOG.md" tmp vre
+  vre="${ver//./\\.}"
+  [[ -f "$f" ]] && grep -qE "^## v${vre}( |—|\$)" "$f" && return 3
+  tmp="$f.rel.tmp.$$"
+  if [[ -f "$f" ]]; then
+    # Insert before the first existing '## ' entry (where a new release belongs); if none
+    # exists yet, append at the end.
+    awk -v e="$entry" '
+      !ins && /^## / { print e "\n"; ins=1 }
+      { print }
+      END { if (!ins) print "\n" e }
+    ' "$f" > "$tmp" || { rm -f "$tmp"; return 1; }
+  else
+    printf '# Changelog\n\n%s\n' "$entry" > "$tmp" || { rm -f "$tmp"; return 1; }
+  fi
+  cat "$tmp" > "$f"; local rc=$?   # cat > f preserves inode + perms; propagate its status
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# One-command release orchestrator (project rule: VERSION + CHANGELOG + BACKLOG delimiter
+# + README + commit + annotated tag move in lockstep). Flags:
+#   --push          also push the branch + tag to origin (default: local only, print cmd)
+#   --no-llm        skip the worker-summarized CHANGELOG; use raw release-notes bullets
+#   --marker-only   legacy behavior: ONLY insert the BACKLOG delimiter (used by tests)
+# Version defaults to ./VERSION; env DEPUTY_RELEASE_NO_LLM=1 also forces --no-llm.
 cmd_release() {
-  local ver="${1:-}"
+  local push=0 no_llm=0 marker_only=0 ver="" a
+  for a in "$@"; do
+    case "$a" in
+      --push)        push=1 ;;
+      --no-llm)      no_llm=1 ;;
+      --marker-only) marker_only=1 ;;
+      --)            ;;
+      -*)            printf 'deputy: release: unknown flag %s\n' "$a" >&2; return 2 ;;
+      *)             if [[ -z "$ver" ]]; then ver="$a"
+                     else printf 'deputy: release: unexpected argument %s\n' "$a" >&2; return 2; fi ;;
+    esac
+  done
+  [[ "${DEPUTY_RELEASE_NO_LLM:-}" == "1" ]] && no_llm=1
   if [[ -z "$ver" && -r "$ROOT/VERSION" ]]; then
     # read -r (default IFS) trims leading/trailing whitespace but preserves any
     # INTERNAL whitespace, so a malformed 'VERSION' like '1.0 beta' is caught by
@@ -1762,16 +1852,117 @@ cmd_release() {
     # (it preserves the release delimiter at the top of Done).
     _regroup_backlog "$tmp" || return 1
   }
-  local rrc=0; _with_lock _do_release || rrc=$?
-  if [[ "$rrc" -eq 3 ]]; then
-    printf 'deputy: release marker already present: %s\n' "$delim"
+
+  # ── --marker-only: the original behavior (delimiter insert + commit only) ──
+  if [[ "$marker_only" -eq 1 ]]; then
+    local rrc=0; _with_lock _do_release || rrc=$?
+    if [[ "$rrc" -eq 3 ]]; then
+      printf 'deputy: release marker already present: %s\n' "$delim"; return 0
+    elif [[ "$rrc" -ne 0 ]]; then
+      printf 'deputy: release failed (exit %s)\n' "$rrc" >&2; return 1
+    fi
+    _commit_queue "release v$ver"    # commit AFTER the lock is released
+    printf 'deputy: release marker added: %s\n' "$delim"
     return 0
-  elif [[ "$rrc" -ne 0 ]]; then
-    printf 'deputy: release failed (exit %s)\n' "$rrc" >&2
+  fi
+
+  # ── FULL RELEASE ──
+  git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    printf 'deputy: release: %s is not a git repository\n' "$ROOT" >&2; return 1; }
+  if git -C "$ROOT" rev-parse -q --verify "refs/tags/v$ver" >/dev/null 2>&1; then
+    printf 'deputy: release: tag v%s already exists — bump the version or delete the tag\n' "$ver" >&2
     return 1
   fi
-  _commit_queue "release v$ver"      # commit AFTER the lock is released
-  printf 'deputy: release marker added: %s\n' "$delim"
+  local branch; branch="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+
+  # Preflight: VERSION/CHANGELOG.md/README.md must be clean (no staged or unstaged edits)
+  # before we touch them, so the release commit cannot sweep in unrelated pending edits to
+  # these files. BACKLOG.md is intentionally excluded — it is deputy-owned and routinely
+  # dirty (the live queue) at release time, and its worktree state is what we want to commit.
+  if ! git -C "$ROOT" diff --quiet -- VERSION CHANGELOG.md README.md 2>/dev/null \
+     || ! git -C "$ROOT" diff --cached --quiet -- VERSION CHANGELOG.md README.md 2>/dev/null; then
+    printf 'deputy: release: VERSION/CHANGELOG.md/README.md have uncommitted changes — commit or stash them first (release owns these files)\n' >&2
+    return 1
+  fi
+
+  # 1. Capture change context BEFORE inserting the new delimiter. release-notes reads
+  #    "done since the last delimiter"; the git range is since the last v* tag.
+  local notes gitlog prev_tag
+  notes="$(cmd_release_notes 2>/dev/null)"
+  [[ "$notes" == "No unreleased items." ]] && notes=""
+  prev_tag="$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+  gitlog="$(git -C "$ROOT" log --no-merges --pretty='- %s' ${prev_tag:+"$prev_tag..HEAD"} 2>/dev/null)"
+
+  # 2. Generate + prepend the CHANGELOG entry (worker-summarized, raw fallback).
+  #    Return 3 = a 'v$ver' entry is already present. The tag-collision guard above already
+  #    blocked a genuine re-release, so reaching here means a PARTIAL/resumed release whose
+  #    CHANGELOG landed but tag did not — leave the entry as-is and finish the release.
+  local entry; entry="$(_release_changelog_entry "$ver" "$notes" "$gitlog" "$no_llm")"
+  _release_prepend_changelog "$ver" "$entry"; local crc=$?
+  if [[ "$crc" -eq 3 ]]; then
+    printf 'deputy: release: CHANGELOG already has a v%s entry — reusing it (completing a partial release)\n' "$ver" >&2
+  elif [[ "$crc" -ne 0 ]]; then
+    printf 'deputy: release: failed to update CHANGELOG.md (exit %s) — aborting before any VERSION bump or tag\n' "$crc" >&2
+    return 1
+  fi
+
+  # 3. Bump VERSION.
+  printf '%s\n' "$ver" > "$ROOT/VERSION"
+
+  # 4. Insert the BACKLOG delimiter (idempotent; writes BACKLOG.md in the worktree — the
+  #    git commit is folded into the single release commit in step 6 below).
+  local rrc=0; _with_lock _do_release || rrc=$?
+  if [[ "$rrc" -ne 0 && "$rrc" -ne 3 ]]; then
+    printf 'deputy: release: BACKLOG delimiter insert failed (exit %s) — nothing committed or tagged; revert the partial edits with `git checkout -- VERSION CHANGELOG.md README.md BACKLOG.md`\n' "$rrc" >&2
+    return 1
+  fi
+
+  # 5. Sync README version references (cosmetic — warn, don't abort, on failure).
+  _release_sync_readme "$ver" || printf 'deputy: release: warning — README version sync failed (continuing)\n' >&2
+
+  # 6. Commit VERSION + CHANGELOG + README + BACKLOG in ONE release commit (explicit paths —
+  #    never sweep other dirty files), then create the annotated tag on that commit. Folding
+  #    BACKLOG.md in here (instead of a separate best-effort _commit_queue) guarantees the tag
+  #    always captures the delimiter — the version bump and the delimiter can't diverge.
+  #    Reset the index for these paths first so any PRE-staged content can't ride along — the
+  #    commit then reflects exactly the release-generated worktree state of these files.
+  #    README.md is optional, so build the path list from files that actually exist (a
+  #    `git add -- <missing>` would abort and stage nothing).
+  local -a rel_paths=(VERSION CHANGELOG.md BACKLOG.md)
+  [[ -f "$ROOT/README.md" ]] && rel_paths+=(README.md)
+  git -C "$ROOT" reset -q -- "${rel_paths[@]}" >/dev/null 2>&1
+  git -C "$ROOT" add  --   "${rel_paths[@]}" >/dev/null 2>&1
+  if git -C "$ROOT" diff --cached --quiet -- "${rel_paths[@]}"; then
+    # Nothing to commit. Only safe to tag if HEAD is ALREADY this release (a resumed run
+    # whose commit landed but whose tag did not); otherwise we'd tag an unrelated commit.
+    local head_ver; head_ver="$(git -C "$ROOT" show HEAD:VERSION 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$head_ver" != "$ver" ]]; then
+      printf 'deputy: release: nothing to commit and HEAD is not v%s (HEAD VERSION=%s) — refusing to tag an unrelated commit\n' "$ver" "${head_ver:-none}" >&2
+      return 1
+    fi
+    printf 'deputy: release: no file changes — HEAD already is v%s; tagging it\n' "$ver" >&2
+  else
+    git -C "$ROOT" commit -q -m "release: v$ver" -- "${rel_paths[@]}" || {
+      printf 'deputy: release: commit failed — nothing tagged; inspect with `git status` and re-run or `git checkout -- VERSION CHANGELOG.md README.md BACKLOG.md`\n' >&2
+      return 1; }
+  fi
+  git -C "$ROOT" tag -a "v$ver" -m "v$ver" || {
+    printf 'deputy: release: tag v%s failed — the release commit landed; retag with `git tag -a v%s -m v%s`\n' "$ver" "$ver" "$ver" >&2
+    return 1; }
+
+  # 7. Push is opt-in — deputy never publishes on its own. Push the branch and EXACTLY this
+  #    tag (not --follow-tags, which would also publish unrelated local annotated tags).
+  if [[ "$push" -eq 1 ]]; then
+    if git -C "$ROOT" push origin "$branch" "v$ver"; then
+      printf 'deputy: released v%s and pushed origin/%s + tag v%s.\n' "$ver" "$branch" "$ver"
+    else
+      printf 'deputy: released v%s locally, but push FAILED — retry: git push origin %s v%s\n' "$ver" "$branch" "$ver" >&2
+      return 1
+    fi
+  else
+    printf 'deputy: released v%s locally — VERSION + CHANGELOG + BACKLOG delimiter + tag v%s.\n' "$ver" "$ver"
+    printf '        push when ready:  git push origin %s v%s\n' "$branch" "$ver"
+  fi
 }
 
 # Print done items above the most-recent release delimiter in BACKLOG.md, one bullet
@@ -1922,9 +2113,12 @@ commands:
                                   'config autonomy on|off' is a shorthand that sets BOTH
                                   autonomy knobs at once (auto_merge + self_review_fallback).
                                   e.g. 'deputy config auto_merge 1', 'deputy config autonomy on'
-  release [version]               mark a release boundary in Done: insert a dated
-                                  `<!-- release vX — YYYY-MM-DD -->` delimiter at the top
-                                  of the Done section (version defaults to ./VERSION)
+  release [version] [--push]      cut a release (version defaults to ./VERSION): bump
+                                  VERSION, prepend a worker-summarized CHANGELOG entry
+                                  (--no-llm for raw release-notes bullets), insert the
+                                  BACKLOG delimiter, sync README, commit + annotated tag.
+                                  Local only unless --push (deputy never auto-publishes).
+                                  --marker-only inserts just the BACKLOG delimiter.
   release-notes                   print Done items above the most-recent release delimiter
                                   as a CHANGELOG-ready bullet list (done-since-last-release);
                                   if no delimiter exists, prints all Done items

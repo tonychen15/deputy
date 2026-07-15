@@ -31,7 +31,7 @@ setup_repo
 bash "$DEPUTY" add "shipped work" --p1 >/dev/null
 bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" set "$(lof 'shipped work')" done >/dev/null
-bash "$DEPUTY" release 1.0.0 >/dev/null 2>&1
+bash "$DEPUTY" release --marker-only 1.0.0 >/dev/null 2>&1
 bash "$DEPUTY" add "pending work" --p2 >/dev/null
 bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" set "$(lof 'pending work')" done >/dev/null
@@ -45,7 +45,7 @@ setup_repo
 bash "$DEPUTY" add "pre-release item" --p0 >/dev/null
 bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" set "$(lof 'pre-release item')" done >/dev/null
-bash "$DEPUTY" release 2.0.0 >/dev/null 2>&1
+bash "$DEPUTY" release --marker-only 2.0.0 >/dev/null 2>&1
 out="$(bash "$DEPUTY" release-notes 2>&1)"; rc=$?
 assert_eq "$rc" "0" "exit 0 when nothing above delimiter"
 assert_eq "$out" "No unreleased items." "nothing above delimiter prints message"
@@ -62,11 +62,11 @@ setup_repo
 bash "$DEPUTY" add "v1 item" --p1 >/dev/null
 bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" set "$(lof 'v1 item')" done >/dev/null
-bash "$DEPUTY" release 1.0.0 >/dev/null 2>&1
+bash "$DEPUTY" release --marker-only 1.0.0 >/dev/null 2>&1
 bash "$DEPUTY" add "v2 item" --p2 >/dev/null
 bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" set "$(lof 'v2 item')" done >/dev/null
-bash "$DEPUTY" release 2.0.0 >/dev/null 2>&1
+bash "$DEPUTY" release --marker-only 2.0.0 >/dev/null 2>&1
 bash "$DEPUTY" add "unreleased" --p3 >/dev/null
 bash "$DEPUTY" list >/dev/null
 bash "$DEPUTY" set "$(lof 'unreleased')" done >/dev/null

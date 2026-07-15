@@ -182,7 +182,7 @@ lof() { grep -F -- "$1" "$DEPUTY_ROOT/BACKLOG.md" | head -1; }
 setup_repo
 printf '%s\n' '+[P1][#1] done alpha' '+[P2][#2] done beta' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null   # allocate IDs
-bash "$DEPUTY" release 1.0.0 >/dev/null 2>&1
+bash "$DEPUTY" release --marker-only 1.0.0 >/dev/null 2>&1
 assert_eq "$(grep -cE '^<!-- release ' "$DEPUTY_ROOT/BACKLOG.md")" "1" "delimiter present before clean"
 bash "$DEPUTY" clean --state done
 assert_eq "$(grep -cE '^<!-- release ' "$DEPUTY_ROOT/BACKLOG.md")" "0" "clean --state done strips orphaned delimiter when all done items removed"
@@ -195,7 +195,7 @@ assert_eq "$(grep -c 'done alpha\|done beta' "$DEPUTY_ROOT/BACKLOG.md")" "0" "cl
 setup_repo
 printf '+[P2][#1] pre release item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
-bash "$DEPUTY" release 2.0.0 >/dev/null 2>&1
+bash "$DEPUTY" release --marker-only 2.0.0 >/dev/null 2>&1
 bash "$DEPUTY" add "post release item" --p1 >/dev/null
 bash "$DEPUTY" set "$(lof 'post release item')" done >/dev/null
 id_pre="$(line_id "$(bash "$DEPUTY" list | grep 'pre release item')")"
@@ -211,7 +211,7 @@ assert_eq "$(grep -c 'pre release item' "$DEPUTY_ROOT/BACKLOG.md")" "0" "trailin
 setup_repo
 printf '+[P1][#1] pre release item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
-bash "$DEPUTY" release 3.0.0 >/dev/null 2>&1
+bash "$DEPUTY" release --marker-only 3.0.0 >/dev/null 2>&1
 bash "$DEPUTY" add "post release item" --p1 >/dev/null
 bash "$DEPUTY" set "$(lof 'post release item')" done >/dev/null
 id_post="$(line_id "$(bash "$DEPUTY" list | grep 'post release item')")"
@@ -224,7 +224,7 @@ assert_eq "$(grep -c 'post release item' "$DEPUTY_ROOT/BACKLOG.md")" "0" "post-r
 setup_repo
 printf '+[P1][#1] done item\n' >> "$DEPUTY_ROOT/BACKLOG.md"
 bash "$DEPUTY" list >/dev/null
-bash "$DEPUTY" release 4.0.0 >/dev/null 2>&1
+bash "$DEPUTY" release --marker-only 4.0.0 >/dev/null 2>&1
 bash "$DEPUTY" clean --dry-run --state done >/dev/null
 assert_eq "$(grep -cE '^<!-- release v4.0.0' "$DEPUTY_ROOT/BACKLOG.md")" "1" "dry-run leaves delimiter intact"
 assert_contains "$(bash "$DEPUTY" list)" "done item" "dry-run leaves done item intact"

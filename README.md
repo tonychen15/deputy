@@ -178,8 +178,10 @@ deputy watch [--once] [--apply]
 deputy pickup <id>     # bring up ONE attention task and act: ready-to-merge → merge (→ done);
                        # proposed → approve; needs-input → /deputy; failed/cancelled/deferred/
                        # paused → requeue. Local/safe only (never pushes)
-deputy release [version] # mark a release boundary: insert a dated delimiter at the top of Done
-                       # (version defaults to ./VERSION); tasks above the last marker = next release
+deputy release [version] [--push]  # cut a release: bump VERSION, prepend a worker-summarized
+                       # CHANGELOG entry (--no-llm for raw bullets), insert the Done delimiter,
+                       # sync README, commit + annotated tag. Local unless --push. --marker-only
+                       # inserts just the delimiter (version defaults to ./VERSION).
 deputy clean [<id>] [--dry-run] [--state <state>]
                        # <id>: remove one item by its numeric id (bare, e.g. 7)
                        # --state: remove all items of <state> (default: waiting = untouched)

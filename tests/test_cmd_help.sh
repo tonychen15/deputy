@@ -22,7 +22,7 @@ assert_contains "$out" "list [<state>]" "list -h: shows the list block"
 
 # prefix-collision: 'release --help' must NOT bleed into the 'release-notes' block
 out="$(bash "$DEPUTY" release --help 2>&1)"
-assert_contains "$out" "mark a release boundary" "release --help: shows release block"
+assert_contains "$out" "cut a release" "release --help: shows release block"
 if [[ "$out" == *"print Done items"* ]]; then
   TESTS_RUN=$((TESTS_RUN+1)); TESTS_FAILED=$((TESTS_FAILED+1)); printf 'FAIL: release --help bled into release-notes\n' >&2
 else
