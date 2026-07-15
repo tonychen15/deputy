@@ -13,6 +13,15 @@ queue pattern. Its distinguishing trait versus blind backlog-drainers is
 **discernment**: it decides *whether* and *how hard* to do each item, escalates the
 genuinely hard calls, and never blocks the queue while it waits on you.
 
+> **v1.5.1** — **observability, automation & one-command releases**: **`deputy progress <id>`**
+> — a purely passive, read-only view of a running task's step %, ETA band, done-so-far digest,
+> and run-log tail that never touches the worker (#108/#110); **`deputy test --changed`** — an
+> automated changed-files → affected-tests selector that fails safe to the full suite (#109);
+> **priority-aware `deputy run <id>`** + `run`/`add --<prio>` shorthands (#102/#104/#105); a
+> **hardness-routed worker model** (sonnet/fable/opus by task complexity); **`deputy release`
+> is now a one-command orchestrator** — worker-summarized CHANGELOG, VERSION bump, delimiter,
+> README sync, commit + annotated tag (`--push` opt-in); plus quality-gate and worktree-cleanup
+> fixes (#106/#103/#107).
 > **v1.5.0** — the **"what needs me" UX**: three clear commands — **`list`** (per-task
 > detail), **`watch`** (queue overview + beep-summon; absorbs `reflect`), and **`pickup <id>`**
 > (act on one attention task) (#99); **deterministic, idempotent per-task branches** frozen at
@@ -150,7 +159,7 @@ it never overwrites your `BACKLOG.md` or existing config:
 ./inst_deputy.sh cron           # or: deputy cron --ensure
 ```
 
-**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.5.0`).
+**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.5.1`).
 
 ---
 
@@ -341,7 +350,7 @@ templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)
 BACKLOG.md               # Deputy's own task queue
-VERSION                  # 1.5.0
+VERSION                  # 1.5.1
 ```
 
 Run the test suite with `bash tests/run.sh`.

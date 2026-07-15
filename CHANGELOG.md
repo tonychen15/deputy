@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.5.1 — 2026-07-15
+
+Quality-of-life release adding passive task-progress visibility, automated test selection, priority-aware run/add commands, and several reliability fixes to the quality gate and worktree cleanup.
+
+**Features**
+
+- `deputy progress <id>` / `deputy watch <id> --once`: passive read-only progress view — step %, ETA band, done-so-far digest, and run-log tail; never touches the running worker (#108)
+- Tier 3 within-step % for single-step tasks: passive run-log milestone inference (files edited → staged → tests → xReview → commit) labelled clearly as a heuristic estimate (#110)
+- `deputy test --changed`: automated changed-files → affected-tests selector via function-level naming-convention manifest; falls back to full suite on unmapped changes (#109)
+- Priority-aware `deputy run <id>`: higher-priority targeted run cooperatively pauses the running item; lower/equal-priority warns and leaves waiting; cron tick still silent-skips (#102)
+- `deputy run --<prio> <desc>`: add-and-run shorthand — adds task then immediately runs or queues based on priority relative to waiting items (#104)
+- `deputy add --<prio>`: runs the new task immediately when idle with no higher-priority waiting tasks (#105)
+- Hardness-routed, config-driven worker model: sonnet/fable/opus tier selection based on task complexity
+- `deputy release` is now a one-command release orchestrator
+
+**Fixes**
+
+- Fix test_install false-failures when run inside `.deputy/wt`: introduce `MAIN_REPO` for path assertions so 4 previously failing tests pass from both main tree and worktree (#106)
+- Auto-delete merged `deputy/<slug>` branch when `auto_merge=1`; treat explicit empty `delete_merged_branch=` as disabled (#103)
+- Harden #89 quality gate: on full-suite failure isolate to failing test file(s) rather than re-running the whole suite; add environmental-failure allowlist covering the worktree test_install case (#107)
+
 ## v1.5.0 — 2026-07-12
 
 Minor — the "what needs me" UX (list / watch / pickup), deterministic task branches, a
