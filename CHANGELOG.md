@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.2 — 2026-07-18
+
+Adds support for hand-written sub-ids as independent grouping labels in the backlog.
+
+**Features**
+
+- Sub-ids in the form `#N.x` can now be written by hand and are treated as independent grouping labels, not just auto-generated suffixes (#145.x)
+
 ## v1.5.1 — 2026-07-15
 
 Quality-of-life release adding passive task-progress visibility, automated test selection, priority-aware run/add commands, and several reliability fixes to the quality gate and worktree cleanup.
