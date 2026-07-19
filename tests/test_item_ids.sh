@@ -217,7 +217,7 @@ setup_repo
 bash "$DEPUTY" add "any item"
 out11="$(bash "$DEPUTY" run abc 2>&1)"; rc11=$?
 assert_eq "$rc11" "2" "run non-integer id → exit 2"
-assert_contains "$out11" "id must be an integer" "run non-integer → error message"
+assert_contains "$out11" "id must be a positive integer" "run non-integer → error message"
 
 # run (no arg) still picks by priority (regression)
 setup_repo
@@ -230,3 +230,134 @@ DEPUTY_ORCHESTRATOR_CMD="$ORCH" ORCH_LOG="$ORCH_LOG3" DEPUTY_AVAIL="claude,gemin
 item_ran3="$(cat "$ORCH_LOG3")"
 assert_contains "$item_ran3" "high priority" "run no-arg still picks highest priority"
 rm -f "$ORCH_LOG3" "$ORCH"
+
+# ══ Sub-ids (#145.2): hand-written grouping labels, NO coupling to the parent ══
+# A sub-id is a positive integer with a single '.<sub>' suffix. '#145' and '#145.2' are
+# two INDEPENDENT tasks; the '.2' only tells a human they belong to the same effort.
+
+# ── Parse / serialize round-trip ─────────────────────────────────────────────
+assert_eq "$(parse '[#145.2] sub item')"        "waiting||145.2|sub item"      "parse bare sub-id"
+assert_eq "$(parse '[P1][#145.2] sub item')"    "waiting|P1|145.2|sub item"    "parse P1 + sub-id"
+assert_eq "$(parse '[#145.2][P1] sub item')"    "waiting|P1|145.2|sub item"    "parse sub-id + P1 reversed"
+assert_eq "$(parse '@[#7.3][P0] running sub')"  "running|P0|7.3|running sub"   "parse running sub-id"
+# a '.' inside the description body is NOT part of an id
+assert_eq "$(parse '[#7] v1.2.3 release')"      "waiting||7|v1.2.3 release"    "desc dotted-version not eaten by id"
+# a sub-id mentioned in the description body is not the item's id
+assert_eq "$(parse '[#145.2] see [#145.9] too')" "waiting||145.2|see [#145.9] too" "desc sub-id ref stays in desc"
+assert_eq "$(ser waiting P1 145.2 'sub item')"  "[#145.2][P1] sub item"        "serialize P1 + sub-id"
+assert_eq "$(ser done '' 7.3 'done sub')"       "+[#7.3] done sub"             "serialize done sub-id"
+
+# ── Allocation: hand-written sub-id is preserved, not clobbered ───────────────
+# The integer PREFIX of a sub-id counts toward the next auto id (append-only, no recycling).
+setup_repo
+inject() { printf '%s\n' "$1" >> "$DEPUTY_ROOT/BACKLOG.md"; }
+inject '[#145.2] big effort sub A'
+out_alloc="$(bash "$DEPUTY" list)"
+assert_contains "$out_alloc" "[#145.2]" "alloc: hand-written sub-id 145.2 preserved verbatim"
+# the sub-id line must NOT have received a fresh integer id (no double id / mangling)
+assert_eq "$(grep -c '\[#[0-9]*\]\[#145.2\]\|\[#145.2\]\[#[0-9]' "$DEPUTY_ROOT/BACKLOG.md")" "0" "alloc: sub-id not double-tagged with an integer id"
+# a new add now gets 146 (max integer prefix 145 + 1), not 1 or 3
+bash "$DEPUTY" add "after sub" --p3 >/dev/null
+assert_contains "$(bash "$DEPUTY" list)" "[#146][P3] after sub" "alloc: next auto id = max-prefix+1 (146)"
+
+# lone sub-id (no bare parent present) still contributes its prefix to the max scan
+setup_repo
+inject '[#200.1] lone sub'
+bash "$DEPUTY" add "next one" >/dev/null
+assert_contains "$(bash "$DEPUTY" list)" "[#201][P3] next one" "alloc: lone sub-id 200.1 → next id 201"
+
+# a zero-padded prefix ('[#08]') must not trip bash octal arithmetic in the max scan (10#)
+setup_repo
+inject '[#08] padded legacy id'
+out_oct="$(bash "$DEPUTY" add "after padded" 2>&1)"; rc_oct=$?
+assert_eq "$rc_oct" "0" "alloc: zero-padded id [#08] does not crash the max scan"
+assert_contains "$(bash "$DEPUTY" list)" "[#9][P3] after padded" "alloc: [#08] treated base-10 → next id 9"
+
+# ── list filters by sub-id (bare, '#', and --id forms) ───────────────────────
+setup_repo
+inject '[#145.2] alpha sub'
+inject '[#146] beta parent'
+bash "$DEPUTY" list >/dev/null
+assert_contains "$(bash "$DEPUTY" list 145.2)"       "alpha sub"  "list <sub-id> bare form matches"
+assert_eq "$(bash "$DEPUTY" list 145.2 | grep -c 'beta parent')" "0" "list <sub-id> excludes other items"
+assert_contains "$(bash "$DEPUTY" list '#145.2')"    "alpha sub"  "list '#<sub-id>' matches"
+assert_contains "$(bash "$DEPUTY" list --id 145.2)"  "alpha sub"  "list --id <sub-id> matches"
+
+# ── run <sub-id> targets exactly that item, bypassing priority ────────────────
+setup_repo
+inject '[#145.2] targeted sub'
+inject '[#146][P0] urgent other'
+bash "$DEPUTY" list >/dev/null
+ORCH2="$(mktemp)"
+cat > "$ORCH2" <<ORCHEOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" > "\${ORCH_LOG:-/dev/null}"
+bash "$DEPUTY" set "\$1" done >/dev/null 2>&1 || true
+ORCHEOF
+chmod +x "$ORCH2"
+ORCH_LOG4="$(mktemp)"
+DEPUTY_ORCHESTRATOR_CMD="$ORCH2" ORCH_LOG="$ORCH_LOG4" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true \
+  bash "$DEPUTY" run 145.2 2>&1 || true
+assert_contains "$(cat "$ORCH_LOG4")" "targeted sub" "run <sub-id> ran the targeted sub-item"
+assert_contains "$(bash "$DEPUTY" list)" "+[#145.2]" "run <sub-id> marked the sub-item done"
+assert_contains "$(bash "$DEPUTY" list)" "[#146][P0] urgent other" "run <sub-id> left the higher-priority item untouched"
+# leading-# form
+DEPUTY_ORCHESTRATOR_CMD="$ORCH2" ORCH_LOG="$ORCH_LOG4" DEPUTY_AVAIL="claude,gemini" DEPUTY_CRONTAB=/bin/true \
+  bash "$DEPUTY" run '#146' 2>&1 || true
+assert_contains "$(bash "$DEPUTY" list)" "+[#146]" "run '#<id>' still works alongside sub-ids"
+rm -f "$ORCH_LOG4"
+
+# ── set <sub-id> resolves the item by its sub-id ─────────────────────────────
+setup_repo
+inject '[#145.2] set me'
+bash "$DEPUTY" list >/dev/null
+bash "$DEPUTY" set 145.2 done
+assert_contains "$(bash "$DEPUTY" list)" "+[#145.2][P3] set me" "set <sub-id> flips the sub-item's state"
+
+# ── Validation: reject malformed sub-ids ─────────────────────────────────────
+setup_repo
+bash "$DEPUTY" add "any" >/dev/null
+# Both parts must be positive+unpadded: reject a zero parent/sub ('0', '145.0', '0.1') too.
+for bad in "145." ".2" "145..2" "145.2.3" "0.1" "1.2a" "145.0" "0" "00.1" "1.02"; do
+  out_bad="$(bash "$DEPUTY" run "$bad" 2>&1)"; rc_bad=$?
+  assert_eq "$rc_bad" "2" "run rejects malformed sub-id '$bad'"
+done
+# a valid sub-id that simply doesn't exist → 'no item', exit 1 (not a validation error)
+out_missing="$(bash "$DEPUTY" run 999.9 2>&1)"; rc_missing=$?
+assert_eq "$rc_missing" "1" "run <valid-but-absent sub-id> → exit 1"
+assert_contains "$out_missing" "no item with id 999.9" "run absent sub-id → 'no item' message"
+
+# set/clean must reject invalid id shapes CONSISTENTLY with run/list, even via the '#' form,
+# so a hand-written malformed id (e.g. a stray '[#145.0]') is never silently mutated/deleted.
+setup_repo
+inject '[#145.0] malformed id line'   # parser is lenient, so this line exists with id 145.0
+bash "$DEPUTY" list >/dev/null
+bash "$DEPUTY" set 145.0 done >/dev/null 2>&1 || true
+assert_eq "$(bash "$DEPUTY" list | grep -c '+.*malformed id line')" "0" "set rejects invalid id 145.0 (line not flipped to done)"
+out_clean="$(bash "$DEPUTY" clean '#145.0' 2>&1)"; rc_clean=$?
+assert_eq "$rc_clean" "2" "clean '#145.0' → exit 2 (invalid id, not deleted)"
+assert_contains "$out_clean" "invalid id" "clean '#<invalid>' → 'invalid id' message"
+assert_contains "$(bash "$DEPUTY" list)" "malformed id line" "clean rejected the invalid id — line still present"
+
+# ── Regex safety: the '.' in a sub-id must not act as a wildcard ──────────────
+# cmd_slug greps the id against BACKLOG; an unescaped '1.2' would also match '[#152]'.
+# The decoy is placed FIRST in file order so an unescaped pattern would return it (head -1).
+setup_repo
+inject '[#152] decoy line thing'
+inject '[#1.2] genuine sub thing'
+slug_out="$(bash "$DEPUTY" slug 1.2 2>&1)"
+assert_contains "$slug_out" "genuine" "slug <sub-id> matches the exact line ('.' escaped, not a wildcard)"
+assert_eq "$(printf '%s' "$slug_out" | grep -c 'decoy')" "0" "slug <sub-id> does not wildcard-match the decoy"
+rm -f "$ORCH2"
+
+# ── Exact id-field resolution: a description that MENTIONS "[#N]" never hijacks it ────
+# An earlier item whose description references another item's id tag must not be the one a
+# by-id lookup (set/run, and the merge/retry line lookups via _line_by_id) resolves.
+setup_repo
+inject '[#5] blocked on [#3] until reviewed'   # earlier line MENTIONS [#3] in its description
+inject '[#3] the genuine target'
+bash "$DEPUTY" list >/dev/null
+bash "$DEPUTY" set 3 done
+after="$(bash "$DEPUTY" list)"
+assert_contains "$after" "+[#3][P3] the genuine target"       "set <id> resolves the real [#3], not the line mentioning it"
+assert_contains "$after" "[#5][P3] blocked on [#3] until reviewed" "set <id> left the mentioning [#5] item waiting"

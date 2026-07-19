@@ -177,9 +177,13 @@ _parse_item() {
       prio="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[2]}"; consumed=1
     fi
     # id tag: requires the '#' marker — a bare [N] is NOT an id, so a hand-edited
-    # '[2024] roadmap'-style description is never misread as an id.
-    if [[ -z "$id" && "$line" =~ ^\[#([0-9]+)\][[:space:]]*(.*) ]]; then
-      id="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[2]}"; consumed=1
+    # '[2024] roadmap'-style description is never misread as an id. An id is a positive
+    # integer with an OPTIONAL single '.<sub>' grouping suffix ([#7] or [#145.2]); '#145'
+    # and '#145.2' are INDEPENDENT tasks (no coupling) — the '.2' is a human-only label
+    # saying they belong to the same effort. BASH_REMATCH[2] is the optional '.<sub>'
+    # group, so the description remainder is [3].
+    if [[ -z "$id" && "$line" =~ ^\[#([0-9]+(\.[0-9]+)?)\][[:space:]]*(.*) ]]; then
+      id="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[3]}"; consumed=1
     fi
   done
   desc="$line"
@@ -286,17 +290,17 @@ cmd_list() {
         else printf 'deputy: list: unknown state: %s\n' "$2" >&2; return 2; fi ;;
       --id=*)
         s="${arg#--id=}"
-        if [[ "$s" =~ ^[0-9]+$ && "$s" -gt 0 ]]; then
+        if _valid_item_id "$s"; then
           [[ -n "$id_filter" ]] && { printf 'deputy: list: duplicate id filter\n' >&2; return 2; }
           id_filter="$s"; shift
-        else printf 'deputy: list: --id requires a positive integer, got: %s\n' "$s" >&2; return 2; fi ;;
+        else printf 'deputy: list: --id requires an item id (e.g. 7 or 145.2), got: %s\n' "$s" >&2; return 2; fi ;;
       --id)
         [[ $# -ge 2 ]] || { printf 'deputy: list: --id requires a <N>\n' >&2; return 2; }
         s="$2"
-        if [[ "$s" =~ ^[0-9]+$ && "$s" -gt 0 ]]; then
+        if _valid_item_id "$s"; then
           [[ -n "$id_filter" ]] && { printf 'deputy: list: duplicate id filter\n' >&2; return 2; }
           id_filter="$s"; shift 2
-        else printf 'deputy: list: --id requires a positive integer, got: %s\n' "$s" >&2; return 2; fi ;;
+        else printf 'deputy: list: --id requires an item id (e.g. 7 or 145.2), got: %s\n' "$s" >&2; return 2; fi ;;
       --*)
         s="${arg#--}"
         if _valid_state "$s"; then filter="$s"; shift
@@ -304,7 +308,7 @@ cmd_list() {
       '#'[0-9]*)
         # quoted '#<N>' form: e.g. deputy list '#42'
         s="${arg#'#'}"
-        if [[ "$s" =~ ^[0-9]+$ && "$s" -gt 0 ]]; then
+        if _valid_item_id "$s"; then
           [[ -n "$id_filter" ]] && { printf 'deputy: list: duplicate id filter\n' >&2; return 2; }
           id_filter="$s"; shift
         else printf 'deputy: list: invalid id: %s\n' "$arg" >&2; return 2; fi ;;
@@ -312,10 +316,10 @@ cmd_list() {
         printf 'deputy: list: invalid id: %s\n' "$arg" >&2; return 2 ;;
       [0-9]*)
         # bare positive integer form: e.g. deputy list 42
-        if [[ "$arg" =~ ^[0-9]+$ && "$arg" -gt 0 ]]; then
+        if _valid_item_id "$arg"; then
           [[ -n "$id_filter" ]] && { printf 'deputy: list: duplicate id filter\n' >&2; return 2; }
           id_filter="$arg"; shift
-        else printf 'deputy: list: invalid id: %s (must be a positive integer)\n' "$arg" >&2; return 2; fi ;;
+        else printf 'deputy: list: invalid id: %s (want an item id, e.g. 7 or 145.2)\n' "$arg" >&2; return 2; fi ;;
       *)
         if _valid_state "$arg"; then filter="$arg"; shift
         else printf 'deputy: list: unexpected argument: %s (want a <state>, --<state>, or <id>)\n' "$arg" >&2; return 2; fi ;;
@@ -383,6 +387,21 @@ _now_ms() {
 }
 
 _valid_positive_int() { [[ "${1:-}" =~ ^[0-9]+$ && "${1:-}" -gt 0 ]]; }
+# A backlog item id: a positive integer, optionally with a single '.<sub>' grouping suffix
+# (e.g. '7' or '145.2'). Sub-ids are a hand-written organizational label ONLY — '#145' and
+# '#145.2' are independent tasks with no scheduling/merge/lifecycle coupling; the '.2' just
+# tells a human they belong to the same effort. The '.' is filesystem-safe (markers, logs,
+# meta, waypoints) and a valid git-ref char; where an id is spliced into a regex it MUST be
+# escaped via _id_re (a bare '.' would match any char). Both the parent and (when present) the
+# sub must be POSITIVE and unpadded — '[1-9][0-9]*' rejects '0', '145.0', '0.1' and, as a bonus,
+# sidesteps bash's octal-arithmetic trap on a zero-padded token. The parser stays lenient
+# ('[0-9]+') so a legacy/hand-typed odd id still parses; validation is where we draw the line.
+_valid_item_id() { [[ "${1:-}" =~ ^[1-9][0-9]*(\.[1-9][0-9]*)?$ ]]; }
+# Integer sort-key of an item id (the part before an optional '.<sub>'): the value the
+# next-id max-scan compares/increments. '7'->7, '145.2'->145, a non-id -> empty (skipped).
+_id_int_key() { [[ "${1:-}" =~ ^([0-9]+)(\.[0-9]+)?$ ]] && printf '%s' "${BASH_REMATCH[1]}"; }
+# Escape a validated item id for safe interpolation into a grep -E / bash ERE ('.' -> '\.').
+_id_re() { printf '%s' "${1//./\\.}"; }
 
 _epoch_ms() {
   local ts="${1:-}"
@@ -839,7 +858,8 @@ _allocate_ids() {
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     _ai_id="${parsed#*|}"; _ai_id="${_ai_id#*|}"; _ai_id="${_ai_id%%|*}"  # third field
-    if [[ "$_ai_id" =~ ^[0-9]+$ && "$_ai_id" -gt "$max_id" ]]; then max_id="$_ai_id"; fi
+    # 10# forces base-10 so a zero-padded prefix ('[#08]') can't trip bash's octal arithmetic.
+    if [[ "$_ai_id" =~ ^([0-9]+)(\.[0-9]+)?$ ]] && (( 10#${BASH_REMATCH[1]} > max_id )); then max_id=$(( 10#${BASH_REMATCH[1]} )); fi
   done < <(_each_item)
 
   # Pass 2: rewrite only items lacking an ID. Track whether anything changed.
@@ -928,9 +948,24 @@ _next_id() {
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     _ni_id="${parsed#*|}"; _ni_id="${_ni_id#*|}"; _ni_id="${_ni_id%%|*}"
-    [[ "$_ni_id" =~ ^[0-9]+$ && "$_ni_id" -gt "$max_id" ]] && max_id="$_ni_id"
+    [[ "$_ni_id" =~ ^([0-9]+)(\.[0-9]+)?$ ]] && (( 10#${BASH_REMATCH[1]} > max_id )) && max_id=$(( 10#${BASH_REMATCH[1]} ))
   done < <(_each_item)
   printf '%s' "$(( max_id + 1 ))"
+}
+
+# Echo the FIRST backlog item line whose PARSED id field equals <id> — an EXACT id match, so a
+# description that merely mentions "[#<id>]" can never hijack the lookup, and a sub-id's '.' is
+# compared literally (not as a regex wildcard). rc1 + no output if none. This mirrors the id
+# resolution already used by `set`/`run`; the lifecycle paths (merge, retry-budget) use it in
+# place of an unanchored `grep -F "[#$id]"`, which could otherwise flip the wrong line's state.
+_line_by_id() {
+  local want="$1" raw p rid
+  [[ -n "$want" ]] || return 1
+  while IFS= read -r raw; do
+    p="$(_parse_item "$raw")"; rid="${p#*|}"; rid="${rid#*|}"; rid="${rid%%|*}"
+    [[ "$rid" == "$want" ]] && { printf '%s' "$raw"; return 0; }
+  done < <(_each_item)
+  return 1
 }
 
 # #53: count surfaced items that genuinely BLOCK (a running item that flipped to
@@ -945,7 +980,7 @@ _blocking_surfaced_count() {
     state="${parsed%%|*}"
     [[ "$state" == "surfaced" ]] || continue
     _bs_rest="${parsed#*|}"; _bs_rest="${_bs_rest#*|}"; _bs_id="${_bs_rest%%|*}"
-    if [[ "$_bs_id" =~ ^[0-9]+$ && ( -f "$STATE_DIR/proposed-$_bs_id" || -f "$STATE_DIR/ready-merge-$_bs_id" ) ]]; then
+    if _valid_item_id "$_bs_id" && [[ -f "$STATE_DIR/proposed-$_bs_id" || -f "$STATE_DIR/ready-merge-$_bs_id" ]]; then
       continue   # a worker proposal (#53) or a ready-to-merge surface (#60) — not a blocking surface
     fi
     n=$(( n + 1 ))
@@ -1313,7 +1348,7 @@ cmd_set() {
   # it to THE line by parsed id field (robust vs description text that contains "[#N]").
   # Resolved here so the post-lock notify + marker-cleanup parse the real line; _do_set's
   # under-lock grep -qxF re-validates, so a line that moved meanwhile errors cleanly.
-  if [[ "$from" =~ ^#?[0-9]+$ ]] && ! grep -qxF -- "$from" "$BACKLOG" 2>/dev/null; then
+  if _valid_item_id "${from#'#'}" && ! grep -qxF -- "$from" "$BACKLOG" 2>/dev/null; then
     local _want="${from#'#'}" _raw _p _rid _n=0 _hit=""
     while IFS= read -r _raw; do
       _p="$(_parse_item "$_raw")"; _rid="${_p#*|}"; _rid="${_rid#*|}"; _rid="${_rid%%|*}"
@@ -1349,7 +1384,7 @@ cmd_set() {
     local _fl_rc; _flip_line "$from" "$to"; _fl_rc=$?; [[ "$_fl_rc" -eq 0 ]] || return "$_fl_rc"
     # #60: maintain the ready-merge marker under the SAME lock as the line flip, so scheduling
     # never sees a 'surfaced' item without its marker (no blocking-count race window).
-    if [[ "$_id" =~ ^[0-9]+$ ]]; then
+    if _valid_item_id "$_id"; then
       if [[ "$_eff_state" == "surfaced" && "$_ready_merge" == "1" ]]; then
         # Record the EXACT branch (#97) so the runner's auto-merge never has to guess it. Prefer
         # the branch the worker passed explicitly (--branch=deputy/<slug>) — deterministic and
@@ -1397,7 +1432,7 @@ cmd_set() {
     # rm is a no-op for non-proposal items (no marker). Skip while staying surfaced.
     if [[ "$_eff_state2" != "surfaced" ]]; then
       local _ps_id="${_id_rest2%%|*}"
-      [[ "$_ps_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_ps_id" 2>/dev/null || true
+      _valid_item_id "$_ps_id" && rm -f "$STATE_DIR/proposed-$_ps_id" 2>/dev/null || true
     fi
     # #69: a prio change is not a lifecycle transition — skip the notify + done-queue
     # print (those belong to state changes only).
@@ -2087,7 +2122,8 @@ commands:
                                   (interactive/TTY runs stream output live; --headless or
                                   headed=0 config forces the buffered/cron behavior)
                                   if an <id> is given, run that specific item bypassing
-                                  priority order (targeted, one item only)
+                                  priority order (targeted, one item only). <id> is an
+                                  integer or a hand-written sub-id like 145.2 (see below)
   set <id|"<exact line>"> <state|pN>
                                   change an item's state or priority — target by <id> or
                                   exact-line match. Value shape decides: a state word sets
@@ -2125,6 +2161,11 @@ commands:
   version                         print the installed deputy version (also --version, -V)
   help [--full]                   show this message (--full: include config key documentation)
 
+  Item ids: auto-assigned as plain integers (#7). You may HAND-WRITE a sub-id with a
+  '.<n>' suffix (#145.2) to mark a sub-item of #145. #145.2 is a full, independent item
+  id (run/set/target it like any other) — only its RELATIONSHIP to #145 is a human label;
+  the two share no scheduling/merge. Accepted anywhere an <id> is (run/set/list/clean/
+  pickup/progress); its integer prefix still counts in auto-allocation.
 COMMANDS
   if [[ "$full" == "--full" ]]; then
     cat <<'CONFIG'
@@ -3069,11 +3110,11 @@ _fire_spawn_notify() {
 
 # #63: stable, per-item live log so the worker's output is watchable (deputy watch / the
 # auto-tail) instead of buffered to an anonymous temp. Returns the log path and truncates it
-# (fresh per attempt). Falls back to a mktemp when the item has no file-safe numeric id.
+# (fresh per attempt). Falls back to a mktemp when the item has no file-safe item id.
 _run_log_path() {
   local line="$1" id
   id="$(_parse_item "$line")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
-  if [[ "$id" =~ ^[0-9]+$ ]] && : > "$STATE_DIR/run-$id.log" 2>/dev/null; then
+  if _valid_item_id "$id" && : > "$STATE_DIR/run-$id.log" 2>/dev/null; then
     printf '%s' "$STATE_DIR/run-$id.log"
   else
     mktemp
@@ -3084,7 +3125,7 @@ _run_log_path() {
 _archive_run_log() {
   local line="$1" log="$2" id
   id="$(_parse_item "$line")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
-  if [[ "$id" =~ ^[0-9]+$ && "$log" == "$STATE_DIR/run-$id.log" ]]; then
+  if _valid_item_id "$id" && [[ "$log" == "$STATE_DIR/run-$id.log" ]]; then
     { mkdir -p "$STATE_DIR/logs" 2>/dev/null && mv -f "$log" "$STATE_DIR/logs/$id.log" 2>/dev/null; } || rm -f "$log" 2>/dev/null
   else
     rm -f "$log" 2>/dev/null
@@ -3137,7 +3178,7 @@ _watchdog_trip() {
   local wpid="$1" item="$2" cap="$3" id slug note
   id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
   printf 'deputy: WATCHDOG — no waypoint progress in %s min; surfacing #%s and stopping the worker.\n' "$cap" "${id:-?}" >&2
-  if [[ "$id" =~ ^[0-9]+$ ]]; then
+  if _valid_item_id "$id"; then
     slug="$(_wp_slug "$id" "watchdog timeout")"; note="$(_trail_path questions "$slug")"
     mkdir -p "$(dirname "$note")" 2>/dev/null || true
     printf 'WATCHDOG TIMEOUT (#87): no waypoint progress for %s min — the worker was killed as a suspected hang. Check the run log (%s/logs/%s.log), then resume via /deputy or resolve as appropriate.\n' "$cap" "$STATE_DIR" "$id" > "$note" 2>/dev/null || true
@@ -3245,7 +3286,7 @@ _merge_ready_branch() {
   fi
   # Merge succeeded. Clear markers + delete the branch ONLY if the done-write succeeds, so a
   # failed BACKLOG write leaves the marker for retry rather than losing the item.
-  local cur_line; cur_line="$(grep -F "[#$id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+  local cur_line; cur_line="$(_line_by_id "$id" || true)"
   if [[ -n "$cur_line" ]] && cmd_set "$cur_line" done >/dev/null 2>&1; then
     rm -f "$marker" "$STATE_DIR/proposed-$id" 2>/dev/null || true
     if _should_delete_merged_branch && git -C "$ROOT" merge-base --is-ancestor "$branch" HEAD 2>/dev/null; then
@@ -3265,7 +3306,7 @@ _merge_ready_branch() {
 _auto_merge_ready() {
   local item="$1" id branch
   id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
-  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  _valid_item_id "$id" || return 1
   [[ "$(_config_get auto_merge)" == "1" ]] || return 1
   [[ -f "$STATE_DIR/ready-merge-$id" ]] || return 1     # not ready (blocking surface / n/a)
   branch="$(_ready_merge_branch "$id" || true)"
@@ -3291,12 +3332,13 @@ cmd_pickup() {
   # `deputy pickup #42` reaches deputy with no args. Use `deputy pickup 42` or quote: '#42'.
   [[ -n "$id" ]] || { printf 'deputy: pickup requires an <id> — e.g. "deputy pickup 42" (a bare #42 is a shell comment; quote it as "#42")\n' >&2; return 2; }
   id="${id#\#}"
-  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: pickup: invalid id: %s\n' "$id" >&2; return 2; }
+  _valid_item_id "$id" || { printf 'deputy: pickup: invalid id: %s\n' "$id" >&2; return 2; }
   _with_lock _allocate_ids
   # Anchor the id tag to the line start (after an optional 1-char status prefix) so a "[#id]"
-  # mention in another task's description can't be matched instead.
+  # mention in another task's description can't be matched instead. Escape the id's '.' (a
+  # sub-id like 145.2) so the ERE doesn't treat it as a wildcard (_id_re).
   local line pi state
-  line="$(grep -E "^[^[]?\[#${id}\]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+  line="$(grep -E "^[^[]?\[#$(_id_re "$id")\]" "$BACKLOG" 2>/dev/null | head -1 || true)"
   [[ -n "$line" ]] || { printf 'deputy: pickup: no task #%s found\n' "$id" >&2; return 1; }
   pi="$(_parse_item "$line")"; state="${pi%%|*}"
   printf '%s\n' "$line"
@@ -3354,10 +3396,10 @@ cmd_run() {
         if [[ -n "$_add_prio" ]]; then
           # After a priority flag: all remaining args form the description
           _add_text="${_add_text}${_add_text:+ }$1"; shift
-        elif [[ "$1" =~ ^[0-9]+$ ]]; then
+        elif _valid_item_id "$1"; then
           target_id="$1"; shift
         elif [[ -n "$1" ]]; then
-          printf 'deputy: run: id must be an integer (got: %s)\n' "$1" >&2; return 2
+          printf 'deputy: run: id must be a positive integer, optionally with a .N sub-id (got: %s)\n' "$1" >&2; return 2
         else
           shift
         fi
@@ -3365,11 +3407,11 @@ cmd_run() {
     esac
   done
 
-  # Validate target_id: strip leading # and verify integer
+  # Validate target_id: strip leading # and verify it's a valid item id (int or int.sub)
   if [[ -n "$target_id" ]]; then
     target_id="${target_id#'#'}"
-    if [[ ! "$target_id" =~ ^[0-9]+$ ]]; then
-      printf 'deputy: run: id must be an integer (got: %s)\n' "$target_id" >&2; return 2
+    if ! _valid_item_id "$target_id"; then
+      printf 'deputy: run: id must be a positive integer, optionally with a .N sub-id (got: %s)\n' "$target_id" >&2; return 2
     fi
   fi
 
@@ -3652,10 +3694,10 @@ cmd_run() {
           printf '%s\n' "cron resume budget exhausted (3 attempts, no step progress)" \
             > "$(_trail_path fails "$_qrb_slug")"
           local _qrb_cur_line
-          _qrb_cur_line="$(grep -F "[#$_rb_id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+          _qrb_cur_line="$(_line_by_id "$_rb_id" || true)"
           if [[ -n "$_qrb_cur_line" ]]; then
             _with_lock _revert_to_waiting "$_qrb_cur_line" >/dev/null 2>&1 || true
-            _qrb_cur_line="$(grep -F "[#$_rb_id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+            _qrb_cur_line="$(_line_by_id "$_rb_id" || true)"
             [[ -n "$_qrb_cur_line" ]] && { _with_lock _do_set_item_failed "$_qrb_cur_line" || true; }
           fi
         fi
@@ -3723,7 +3765,7 @@ cmd_run() {
         # Look up the current BACKLOG line for this item (running_line may still be in BACKLOG
         # if the orchestrator didn't mark the item terminal; search by id tag [#N]).
         local _rb_cur_line
-        _rb_cur_line="$(grep -F "[#$_rb_id]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+        _rb_cur_line="$(_line_by_id "$_rb_id" || true)"
         [[ -n "$_rb_cur_line" ]] && { _with_lock _do_set_item_failed "$_rb_cur_line" || true; }
       fi
     fi
@@ -3756,9 +3798,12 @@ cmd_clean() {
       --state)
         [[ $# -ge 2 ]] || { printf 'deputy: --state requires an argument\n' >&2; return 2; }
         filter_state="$2"; shift 2 ;;
-      '#'*) filter_id="${1#'#'}"; shift ;;
+      '#'*)
+        filter_id="${1#'#'}"
+        _valid_item_id "$filter_id" || { printf 'deputy: clean: invalid id: %s\n' "$1" >&2; return 2; }
+        shift ;;
       *)
-        if [[ "$1" =~ ^[0-9]+$ ]]; then
+        if _valid_item_id "$1"; then
           filter_id="$1"; shift
         elif _valid_state "$1"; then
           filter_state="$1"; shift
@@ -3769,7 +3814,7 @@ cmd_clean() {
   done
 
   if [[ -n "$filter_id" ]]; then
-    # ID-targeted clean: find and remove exactly one item by its numeric ID.
+    # ID-targeted clean: find and remove exactly one item by its ID (int or int.sub).
     local _cid_alloc_rc=0; _with_lock _allocate_ids || _cid_alloc_rc=$?
     [[ "$_cid_alloc_rc" -ne 0 ]] && return "$_cid_alloc_rc"
     local raw parsed state item_id
@@ -3893,7 +3938,7 @@ cmd_clean() {
     for r in "${doomed[@]}"; do
       _dc_parsed="$(_parse_item "$r")"
       _dc_rest="${_dc_parsed#*|}"; _dc_rest="${_dc_rest#*|}"; _dc_id="${_dc_rest%%|*}"
-      [[ "$_dc_id" =~ ^[0-9]+$ ]] && rm -f "$STATE_DIR/proposed-$_dc_id" "$STATE_DIR/ready-merge-$_dc_id" 2>/dev/null || true
+      _valid_item_id "$_dc_id" && rm -f "$STATE_DIR/proposed-$_dc_id" "$STATE_DIR/ready-merge-$_dc_id" 2>/dev/null || true
     done
   }
   local _clean_rc=0; _with_lock _do_clean || _clean_rc=$?
@@ -4296,7 +4341,7 @@ _meta_get() {
 # the backfill path treats it as best-effort (cmd_slug still derives a deterministic slug).
 _write_task_meta() {  # <id> <user_desc>
   local id="$1" ud="$2" f md tmp
-  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  _valid_item_id "$id" || return 1
   md="$(_meta_dir)"; mkdir -p "$md" 2>/dev/null || return 1
   f="$(_meta_path "$id")"
   if [[ -f "$f" ]]; then
@@ -4324,14 +4369,15 @@ cmd_slug() {
   local id="$1"
   [[ -n "$id" ]] || { printf 'deputy: slug requires an <id>\n' >&2; return 2; }
   id="${id#\#}"
-  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: slug: invalid id: %s\n' "$id" >&2; return 2; }
+  _valid_item_id "$id" || { printf 'deputy: slug: invalid id: %s\n' "$id" >&2; return 2; }
   local s; s="$(_meta_get "$id" slug || true)"
   if [[ -n "$s" ]]; then printf '%s\n' "$s"; return 0; fi
   # Backfill: freeze from the current BACKLOG description (best available user_desc). Anchor the
   # id tag to the line start (after an optional 1-char status prefix) so a description that merely
-  # mentions "[#<id>]" can't hijack the match — the id tag always leads the line.
+  # mentions "[#<id>]" can't hijack the match — the id tag always leads the line. Escape the id's
+  # '.' (a sub-id like 145.2) so the ERE doesn't treat it as a wildcard (_id_re).
   local line pi desc
-  line="$(grep -E "^[^[]?\[#${id}\]" "$BACKLOG" 2>/dev/null | head -1 || true)"
+  line="$(grep -E "^[^[]?\[#$(_id_re "$id")\]" "$BACKLOG" 2>/dev/null | head -1 || true)"
   [[ -n "$line" ]] || { printf 'deputy: slug: no task #%s found\n' "$id" >&2; return 1; }
   pi="$(_parse_item "$line")"; desc="${pi#*|}"; desc="${desc#*|}"; desc="${desc#*|}"
   _write_task_meta "$id" "$desc"
@@ -4431,7 +4477,7 @@ _spawnfail_reset() { rm -f "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 # matching BOTH slug conventions (<desc>-<id> suffix and <id>-<desc> prefix). First match wins.
 _questions_file() {
   local id="$1" cand
-  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  _valid_item_id "$id" || return 1
   for cand in "$STATE_DIR"/questions/*-"$id".md "$STATE_DIR"/questions/"$id"-*.md \
               "$STATE_DIR"/*-"$id".questions.md "$STATE_DIR"/"$id"-*.questions.md; do
     [[ -f "$cand" ]] && { printf '%s' "$cand"; return 0; }
@@ -4441,7 +4487,7 @@ _questions_file() {
 # Same, for a task's failure-context (.fail.md) file.
 _fail_file() {
   local id="$1" cand
-  [[ "$id" =~ ^[0-9]+$ ]] || return 1
+  _valid_item_id "$id" || return 1
   for cand in "$STATE_DIR"/fails/*-"$id".md "$STATE_DIR"/fails/"$id"-*.md \
               "$STATE_DIR"/*-"$id".fail.md "$STATE_DIR"/"$id"-*.fail.md; do
     [[ -f "$cand" ]] && { printf '%s' "$cand"; return 0; }
@@ -4467,7 +4513,7 @@ _ready_merge_branch() {
 # Classify a surfaced item by its marker: needs-input (default), ready-to-merge, or proposed.
 _surfaced_kind() {
   local id="$1" kind="needs input"
-  if [[ "$id" =~ ^[0-9]+$ ]]; then
+  if _valid_item_id "$id"; then
     [[ -f "$STATE_DIR/ready-merge-$id" ]] && kind="ready to merge"
     [[ -f "$STATE_DIR/proposed-$id"    ]] && kind="proposed"
   fi
@@ -4793,7 +4839,7 @@ cmd_progress() {
   local id="${1:-}"
   [[ -n "$id" ]] || { printf 'deputy: progress requires an <id>\n' >&2; return 2; }
   id="${id#\#}"
-  [[ "$id" =~ ^[0-9]+$ ]] || { printf 'deputy: progress: invalid id: %s\n' "$id" >&2; return 2; }
+  _valid_item_id "$id" || { printf 'deputy: progress: invalid id: %s\n' "$id" >&2; return 2; }
   _wp_require_jq || return 1
 
   local slug; slug="$(cmd_slug "$id" 2>/dev/null || true)"
@@ -4894,7 +4940,7 @@ cmd_watch() {
       # #108: a bare id (scanned from ANY position — 'watch <id> --once' or
       # 'watch --once <id>') selects the passive per-task progress view.
       local _cand="${_wa#\#}"
-      if [[ "$_cand" =~ ^[0-9]+$ ]]; then _wid="$_cand"
+      if _valid_item_id "$_cand"; then _wid="$_cand"
       else printf 'deputy: watch: unknown argument: %s\n' "$_wa" >&2; return 2; fi ;;
     *) printf 'deputy: watch: unknown argument: %s\n' "$_wa" >&2; return 2 ;;
   esac; done
@@ -4925,7 +4971,7 @@ cmd_watch() {
       _wi_item="$(sed -n '1p' "$d/item" 2>/dev/null || true)"
       _wi_pid="$(sed -n '1p'  "$d/pid"  2>/dev/null || true)"
       _wi_id="$(_parse_item "$_wi_item")"; _wi_id="${_wi_id#*|}"; _wi_id="${_wi_id#*|}"; _wi_id="${_wi_id%%|*}"
-      if [[ ! "$_wi_id" =~ ^[0-9]+$ ]]; then
+      if ! _valid_item_id "$_wi_id"; then
         printf 'deputy: a worker is running but its item has no id to watch.\n' >&2
         [[ "$_wonce" -eq 1 ]] && return 1; sleep "$_wpoll"; continue
       fi
