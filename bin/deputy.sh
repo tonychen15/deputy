@@ -3661,7 +3661,7 @@ cmd_run() {
     if [[ -n "$_rb_id" ]] && _wp_retry_budget_exhausted "$_rb_id"; then
       local _rb_desc; _rb_desc="${_rb_id_rest#*|}"
       local _rb_slug; _rb_slug="$(_wp_slug "$_rb_id" "$_rb_desc")"
-      local _fail_reason="cron resume budget exhausted (3 attempts, no step progress)"
+      local _fail_reason="cron resume budget exhausted ($_WP_RETRY_BUDGET attempts, no step progress)"
       printf '%s\n' "$_fail_reason" > "$(_trail_path fails "$_rb_slug")"   # #70: .deputy/fails/<slug>.md
       _with_lock _do_set_item_failed "$running_line" || true
       rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
@@ -3691,7 +3691,7 @@ cmd_run() {
         if _wp_retry_budget_exhausted "$_rb_id"; then
           local _qrb_desc; _qrb_desc="${_rb_id_rest#*|}"
           local _qrb_slug; _qrb_slug="$(_wp_slug "$_rb_id" "$_qrb_desc")"
-          printf '%s\n' "cron resume budget exhausted (3 attempts, no step progress)" \
+          printf '%s\n' "cron resume budget exhausted ($_WP_RETRY_BUDGET attempts, no step progress)" \
             > "$(_trail_path fails "$_qrb_slug")"
           local _qrb_cur_line
           _qrb_cur_line="$(_line_by_id "$_rb_id" || true)"
@@ -3760,7 +3760,7 @@ cmd_run() {
       if _wp_retry_budget_exhausted "$_rb_id"; then
         local _rb_desc2; _rb_desc2="${_rb_id_rest#*|}"
         local _rb_slug2; _rb_slug2="$(_wp_slug "$_rb_id" "$_rb_desc2")"
-        printf '%s\n' "cron resume budget exhausted (3 attempts, no step progress)" \
+        printf '%s\n' "cron resume budget exhausted ($_WP_RETRY_BUDGET attempts, no step progress)" \
           > "$(_trail_path fails "$_rb_slug2")"
         # Look up the current BACKLOG line for this item (running_line may still be in BACKLOG
         # if the orchestrator didn't mark the item terminal; search by id tag [#N]).
@@ -4276,7 +4276,7 @@ cmd_wp_commit() {
 cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
 
 # ── Retry budget helpers ─────────────────────────────────────────────────────
-# Budget: if an item has been cron-resumed 3 times with no new committed step,
+# Budget: if an item has been cron-resumed _WP_RETRY_BUDGET times with no new committed step,
 # stop reviving it (mark it failed). Stored in waypoint.json as `resume_attempts`
 # (an integer; absent = 0) and `resume_attempts_committed_steps` (count of
 # succeeded steps at the last attempt; if step count grew → reset budget).
@@ -4285,7 +4285,10 @@ cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
 # Items without a waypoint (no waypoints/ dir) are not budgeted.
 
 # Maximum no-progress resumes before marking the item failed.
-_WP_RETRY_BUDGET=3
+# Kept >= the per-step xReview retry budget in SKILL.md §4 (initial try + 3 retries):
+# extra review rounds inside one step commit no new step, so a too-small resume budget
+# would kill a worker before its last allowed retry ever runs.
+_WP_RETRY_BUDGET=4
 
 # Convert item id + description to a safe filesystem slug for .fail.md filenames.
 _wp_slug() {

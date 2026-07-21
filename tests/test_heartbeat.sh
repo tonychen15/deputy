@@ -7,7 +7,7 @@
 #   4. Tick recovers + resumes an orphaned task
 #   5. Tick leaves surfaced/failed alone
 #   6. PID + start-time validation rejects a reused-PID stale claim
-#   7. Retry budget marks item failed after 3 no-progress resumes
+#   7. Retry budget marks item failed after 4 no-progress resumes
 source "$(dirname "$0")/lib.sh"
 
 # ── Fake crontab fixture ─────────────────────────────────────────────────────
@@ -256,7 +256,7 @@ kill "$LIVE_F" 2>/dev/null || true
 rm -f "$ORCH_F"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test G: Retry budget — after 3 no-progress resumes, mark item failed
+# Test G: Retry budget — after 4 no-progress resumes, mark item failed
 # ─────────────────────────────────────────────────────────────────────────────
 setup_repo
 ROOT_G="$DEPUTY_ROOT"
@@ -282,7 +282,7 @@ chmod +x "$ORCH_G"
 # We need to simulate the orchestrator dying mid-run by:
 #   1. Placing the item in @running with a dead claim
 #   2. Triggering a heartbeat tick (deputy run)
-# And repeating 3 times to exhaust the budget
+# And repeating 4 times to exhaust the budget
 
 simulate_failed_run() {
   local step_num="$1"
@@ -303,26 +303,29 @@ simulate_failed_run() {
   bash "$DEPUTY" set "$curr_line" running >/dev/null 2>&1 || true
 }
 
-# Simulate 3 failed runs (no step committed each time)
-simulate_failed_run 1
-DEPUTY_ORCHESTRATOR_CMD="$ORCH_G" DEPUTY_AVAIL="claude,gemini" \
-  DEPUTY_CRONTAB=/bin/true \
-  bash "$DEPUTY" run --once >/dev/null 2>&1 || true
+run_failed_attempt() {
+  simulate_failed_run "$1"
+  DEPUTY_ORCHESTRATOR_CMD="$ORCH_G" DEPUTY_AVAIL="claude,gemini" \
+    DEPUTY_CRONTAB=/bin/true \
+    bash "$DEPUTY" run --once >/dev/null 2>&1 || true
+}
 
-simulate_failed_run 2
-DEPUTY_ORCHESTRATOR_CMD="$ORCH_G" DEPUTY_AVAIL="claude,gemini" \
-  DEPUTY_CRONTAB=/bin/true \
-  bash "$DEPUTY" run --once >/dev/null 2>&1 || true
+# Simulate 4 failed runs (no step committed each time)
+run_failed_attempt 1
+run_failed_attempt 2
+run_failed_attempt 3
 
-simulate_failed_run 3
-DEPUTY_ORCHESTRATOR_CMD="$ORCH_G" DEPUTY_AVAIL="claude,gemini" \
-  DEPUTY_CRONTAB=/bin/true \
-  bash "$DEPUTY" run --once >/dev/null 2>&1 || true
+# Boundary: 3 attempts is still within budget — item must NOT be failed yet
+case "$(bash "$DEPUTY" list)" in *'![#'*) boundary=failed ;; *) boundary=alive ;; esac
+assert_eq "$boundary" "alive" \
+  "retry budget: item still alive after 3 no-progress resumes (budget is 4)"
 
-# After 3 failed attempts with no step progress, item must be failed
+run_failed_attempt 4
+
+# After 4 failed attempts with no step progress, item must be failed
 list_out="$(bash "$DEPUTY" list)"
 assert_contains "$list_out" "![#" \
-  "retry budget: item marked failed after 3 no-progress resumes"
+  "retry budget: item marked failed after 4 no-progress resumes"
 # Fail file should exist
 assert_eq "$(ls "$ROOT_G/.deputy/fails/"*.md 2>/dev/null | wc -l | tr -d ' ')" "1" \
   "retry budget: fails/<slug>.md written (#70)"

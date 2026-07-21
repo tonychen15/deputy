@@ -309,11 +309,11 @@ counts against the retry budget in §4).
   increment it by 1 on EACH failed attempt** — a failed test/quality-gate run *or* a
   `NEEDS_CHANGES` from *any* reviewer both count toward the same per-step budget. A
   reviewer-side error fallback (e.g. codex→claude) does **NOT** reset the count. Retry while
-  `retry_count` < 3; on the **3rd** failed attempt, stop — treat as BLOCKED/exhausted
-  (initial try + 2 retries). The **plan** review and **each implementation step** each get
+  `retry_count` < 4; on the **4th** failed attempt, stop — treat as BLOCKED/exhausted
+  (initial try + 3 retries). The **plan** review and **each implementation step** each get
   their **own independent** budget (a plan rejection never counts against an implementation
-  step, and vice-versa). This prevents the reviewer↔author standoff that ran **4 rounds in
-  #84** from looping.
+  step, and vice-versa). This bounds the reviewer↔author standoff that ran **4 rounds in
+  #84**: a 5th round can never happen.
 - **Exhausted / BLOCKED / protected-path violation:** for a **complex** item, re-triage
   as complex and **surface** it ("Deputy got stuck here — your call"); for a **simple**
   item, `deputy set "<item-line>" failed` and write the reason + log to
