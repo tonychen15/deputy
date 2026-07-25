@@ -14,7 +14,8 @@
 
 ### Surfaced (0)
 
-### Waiting (0)
+### Waiting (1)
+[#111][P1] Blocked auto-merge must self-resolve, not surface. (a) New non-runnable/non-attention state pending-merge (symbol '&'): _merge_ready_branch transient precondition failures (dirty main tree) park here keeping the ready-merge-<id> marker, instead of leaving the item surfaced; runner drains pending-merge at the top of each cmd_run tick BEFORE cmd_pick (oldest first), and falls through to waiting work when still blocked so a dirty tree never stalls the queue; escalate to surfaced after N retries/T hours; exclude from cmd_pick + _runnable_count + _blocking_surfaced_count; route 'deputy pickup' to the merge action (not requeue-to-waiting); update _valid_state, prefix parse/emit, list grouping, counters, help/LEGEND, tests. Do NOT reuse 'paused' — cmd_pick treats it as runnable and would respawn an orchestrator on already-finished work. (b) When HEAD != default branch, merge in a detached temp worktree + git update-ref so the human tree is never touched (verified), resolving the wrong-branch case immediately and making pending-merge dirty-tree-only. Real content conflicts (rc=2) still surface.
 
 ### Paused (0)
 
