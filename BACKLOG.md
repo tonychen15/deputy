@@ -12,8 +12,7 @@
 
 ### Running (0)
 
-### Surfaced (1)
-?[#111][P1] Blocked auto-merge must self-resolve, not surface. (a) New non-runnable/non-attention state pending-merge (symbol '&'): _merge_ready_branch transient precondition failures (dirty main tree) park here keeping the ready-merge-<id> marker, instead of leaving the item surfaced; runner drains pending-merge at the top of each cmd_run tick BEFORE cmd_pick (oldest first), and falls through to waiting work when still blocked so a dirty tree never stalls the queue; escalate to surfaced after N retries/T hours; exclude from cmd_pick + _runnable_count + _blocking_surfaced_count; route 'deputy pickup' to the merge action (not requeue-to-waiting); update _valid_state, prefix parse/emit, list grouping, counters, help/LEGEND, tests. Do NOT reuse 'paused' — cmd_pick treats it as runnable and would respawn an orchestrator on already-finished work. (b) When HEAD != default branch, merge in a detached temp worktree + git update-ref so the human tree is never touched (verified), resolving the wrong-branch case immediately and making pending-merge dirty-tree-only. Real content conflicts (rc=2) still surface.
+### Surfaced (0)
 
 ### Waiting (0)
 
@@ -27,7 +26,8 @@
 
 ### Failed / Cancelled / Duplicate (0)
 
-### Done (101)
+### Done (102)
++[#111][P1] Blocked auto-merge must self-resolve, not surface. (a) New non-runnable/non-attention state pending-merge (symbol '&'): _merge_ready_branch transient precondition failures (dirty main tree) park here keeping the ready-merge-<id> marker, instead of leaving the item surfaced; runner drains pending-merge at the top of each cmd_run tick BEFORE cmd_pick (oldest first), and falls through to waiting work when still blocked so a dirty tree never stalls the queue; escalate to surfaced after N retries/T hours; exclude from cmd_pick + _runnable_count + _blocking_surfaced_count; route 'deputy pickup' to the merge action (not requeue-to-waiting); update _valid_state, prefix parse/emit, list grouping, counters, help/LEGEND, tests. Do NOT reuse 'paused' — cmd_pick treats it as runnable and would respawn an orchestrator on already-finished work. (b) When HEAD != default branch, merge in a detached temp worktree + git update-ref so the human tree is never touched (verified), resolving the wrong-branch case immediately and making pending-merge dirty-tree-only. Real content conflicts (rc=2) still surface.
 <!-- release v1.5.2 — 2026-07-18 -->
 <!-- release v1.5.1 — 2026-07-15 -->
 +[#109][P3] Add a changed-files -> affected-tests selector so the #89 targeted phase is AUTOMATED not LLM-judgment (PART B of #107; #107 PART A shipped the on-failure isolation + environmental-allowlist prose). Goal: 'deputy test --changed' (or a file->test mapping) runs only the tests affected by the working-tree diff, making the targeted gate fast AND reliable. DESIGN CONSTRAINTS (per xReview): needs explicit human approval + a DESIGNED file-to-test ownership model — NOT an ad hoc parser over the 234KB bin/deputy.sh. Deputy's logic is one monolithic deputy.sh, so 'changed files' is coarse (almost always deputy.sh); the real granularity is function-level (which cmd_*/helper changed -> which tests/test_*.sh exercises it). Options to weigh: (a) an explicit maintained manifest mapping code regions/functions -> test files; (b) a naming-convention heuristic (cmd_list -> test_list) with a fallback to full-suite when unmapped; (c) coverage-based selection. Must fail SAFE: unknown/unmapped change -> run full suite, never silently skip. ACCEPTANCE: 'deputy test --changed' selects a correct minimal test subset for a known change, falls back to full suite on anything unmapped, and has its own tests.
