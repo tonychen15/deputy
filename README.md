@@ -231,6 +231,26 @@ merge (git's `ort` strategy refuses any merge with a dirty index, even a non-ove
 deputy config merge_dirty_disjoint 0   # restore the strict "tree must be pristine" rule
 ```
 
+**A merge you cannot make never becomes your problem.** When a merge genuinely can't proceed —
+you have staged changes, or uncommitted edits to the very files the merge writes — the item is
+**not** dumped in your queue. It parks in `pending-merge` (`&`), a state that is neither runnable
+nor an attention item, and the runner retries it at the top of every tick, including ticks that
+run other work. A dirty tree never stalls the queue. You only ever hear about it when deputy
+genuinely can't finish the job:
+
+| Outcome | What deputy does |
+|---|---|
+| Merge succeeds | item → `done`, silently |
+| Blocked by your working tree | parks in `pending-merge`, retries every tick |
+| Branch conflicts with the default branch | surfaces **immediately** — detected up front with `git merge-tree`, which needs no clean tree, so deputy never wastes retries on a merge it can't resolve |
+| Still blocked after `merge_retry_strikes` tries | surfaces, with the blocker recorded |
+
+```bash
+deputy config merge_retry_strikes 10   # retries before a stuck merge is surfaced (default 10)
+deputy config merge_drain_limit 10     # most parked merges landed per tick (default 10)
+deputy pickup <id>                     # land a parked merge now instead of waiting for a tick
+```
+
 ---
 
 ## The backlog file (`BACKLOG.md`)

@@ -2127,8 +2127,9 @@ commands:
                                   just those test files (e.g. 'deputy test list pickup')
   pickup <id>                     bring up ONE attention task and ACT on it: ready-to-merge →
                                   merge into the default branch (→ done); proposed → approve
-                                  (→ waiting); needs-input → point to /deputy; failed/cancelled/
-                                  deferred/paused → requeue (→ waiting). Local/safe only (never
+                                  (→ waiting); needs-input → point to /deputy; pending-merge →
+                                  merge it now instead of waiting for the next tick; failed/
+                                  cancelled/deferred/paused → requeue (→ waiting). Local/safe (never
                                   pushes). See candidates with 'deputy list <state>'
   watch [--once] [--apply]        the "what needs me" command: prints the queue OVERVIEW
                                   (learnings, untagged items, reprioritization review, duplicate
@@ -3616,11 +3617,20 @@ cmd_pickup() {
       case "$kind" in
         "ready to merge")
           local branch _msg _rc=0; branch="$(_ready_merge_branch "$id" || true)"
-          [[ "$branch" == deputy/* ]] || { printf 'deputy: pickup: #%s is ready-to-merge but its branch is unresolvable (none recorded / ambiguous) — resolve manually.\n' "$id" >&2; return 1; }
+          [[ "$branch" == deputy/* ]] || {
+            printf 'deputy: pickup: #%s is ready-to-merge but its branch is unresolvable (none recorded / ambiguous) — resolve manually.\n' "$id" >&2
+            # #112: route as terminal so the stale ready-merge marker is dropped — otherwise the
+            # item keeps advertising a "merge" action that can never work.
+            _merge_route_outcome "$id" 1 "no resolvable deputy/* branch (none recorded / ambiguous)" || true
+            return 1; }
           # '|| _rc=$?' so a non-zero merge result doesn't trip set -e before we print the reason.
           _msg="$(_merge_ready_branch "$id" "$branch")" || _rc=$?
           printf 'deputy: pickup: %s\n' "$_msg"
           [[ "$_rc" -eq 0 ]] && return 0
+          # #112: route the failure like every other merge attempt — a transient blocker parks
+          # the item (deputy retries it; the human is not asked again) and a conflict drops the
+          # ready-merge marker so it stops advertising itself as "ready to merge".
+          _merge_route_outcome "$id" "$_rc" "$_msg" || true
           return 1 ;;
         "proposed")
           if cmd_set "$line" waiting >/dev/null 2>&1; then
@@ -3631,13 +3641,29 @@ cmd_pickup() {
         *)  # needs input — cannot auto-resume a conversation
           printf 'deputy: pickup: #%s needs your input — run /deputy to resume it from its waypoint (details above).\n' "$id"; return 0 ;;
       esac ;;
+    pending-merge)
+      # #112: deputy already owns this merge and retries it every tick; pickup just does it NOW
+      # (e.g. the human cleared the blocker and does not want to wait for the next tick).
+      local _pm_branch _pm_msg _pm_rc=0
+      _pm_branch="$(_ready_merge_branch "$id" || true)"
+      [[ "$_pm_branch" == deputy/* ]] || {
+        printf 'deputy: pickup: #%s is pending-merge but its branch is unresolvable — surfacing it for you.\n' "$id" >&2
+        # #112: MUST surface. pending-merge is a non-attention state, so returning here would
+        # leave the item parked and silent forever even though nothing can ever complete it.
+        _merge_route_outcome "$id" 1 "no resolvable deputy/* branch (none recorded / ambiguous)" || true
+        return 1; }
+      _pm_msg="$(_merge_ready_branch "$id" "$_pm_branch")" || _pm_rc=$?
+      printf 'deputy: pickup: %s\n' "$_pm_msg"
+      [[ "$_pm_rc" -eq 0 ]] && return 0
+      _merge_route_outcome "$id" "$_pm_rc" "$_pm_msg" || true
+      return 1 ;;
     failed|cancelled|deferred|paused)
       if cmd_set "$line" waiting >/dev/null 2>&1; then
         printf 'deputy: pickup: #%s (%s) → waiting (requeued; runs in priority order).\n' "$id" "$state"; return 0
       fi
       printf 'deputy: pickup: failed to requeue #%s\n' "$id" >&2; return 1 ;;
     *)
-      printf 'deputy: pickup: #%s is %s — pickup only acts on surfaced/failed/cancelled/paused/deferred tasks.\n' "$id" "$state" >&2; return 2 ;;
+      printf 'deputy: pickup: #%s is %s — pickup only acts on surfaced/pending-merge/failed/cancelled/paused/deferred tasks.\n' "$id" "$state" >&2; return 2 ;;
   esac
 }
 
