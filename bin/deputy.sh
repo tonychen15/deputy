@@ -3512,6 +3512,78 @@ _auto_merge_ready() {
   return 1               # genuinely unhandled — caller keeps its existing behaviour
 }
 
+# #112: drain parked merges. The human's rule is that a merge-ready task must NEVER sit in
+# their pickup queue, so a merge blocked by their working tree parks in pending-merge and is
+# retried HERE — at the top of every tick, before any new item is claimed. Placed before the
+# default-branch refusal so the drain can never be dead code.
+#
+# NEVER stalls the queue: an item that still cannot merge simply stays parked and the tick
+# carries on to waiting work. Bounded by merge_drain_limit so a large backlog of parked
+# branches can't all land in one unattended tick.
+_drain_pending_merges() {
+  local raw parsed state id
+  local -a ids=()
+  [[ "$(_config_get auto_merge)" == "1" ]] || return 0
+  # A merge WRITES the human's working tree, so the drain is subject to the same human-session
+  # back-off as claiming an item. Without this an unattended tick could merge files out from
+  # under a live interactive session — the exact hazard human_backoff exists to prevent.
+  if _human_backoff_gate; then return 0; fi
+  _live_claim_exists && return 0
+  # Collect ids FIRST: _merge_route_outcome rewrites BACKLOG.md via cmd_set, and iterating the
+  # file while mutating it would read a torn or stale stream. Numeric sort = oldest parked first.
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    [[ "$state" == "pending-merge" ]] || continue
+    id="${parsed#*|}"; id="${id#*|}"; id="${id%%|*}"
+    _valid_item_id "$id" && ids+=("$id")
+  done < <(_each_item)
+  [[ "${#ids[@]}" -gt 0 ]] || return 0
+  # Take the SAME flock-atomic guard cmd_run uses before claiming an item. Merely TESTING
+  # _active_run_live and then merging is a TOCTOU window: two overlapping ticks could merge
+  # concurrently, or this drain could merge while another tick is claiming/spawning work.
+  # rc 3 = someone else holds it, which is a normal skip, not an error.
+  _active_run_acquire "pending-merge drain" "run" || return 0
+  _drain_pending_merges_locked "${ids[@]}" || true   # single exit -> the release always runs
+  _active_run_release
+  return 0
+}
+
+# The drain body. Never returns non-zero; the caller releases the guard unconditionally.
+_drain_pending_merges_locked() {
+  local limit n=0 id branch msg rc cur st
+  limit="$(_config_get merge_drain_limit)"; _valid_positive_int "$limit" || limit=10
+  for id in "$@"; do
+    if (( n >= limit )); then
+      printf 'deputy: pending-merge drain: stopping at merge_drain_limit=%s — the rest retry next tick\n' "$limit" >&2
+      break
+    fi
+    # RE-VERIFY under the guard. The id list was gathered BEFORE the guard was held (so a tick
+    # with nothing parked never has to take it), which means an overlapping tick may have
+    # merged this item in the meantime. Acting on a stale id would mutate an already-done item.
+    # Skipped stale ids must not consume the budget, so this precedes the increment.
+    cur="$(_line_by_id "$id" || true)"
+    [[ -n "$cur" ]] || continue
+    st="$(_parse_item "$cur")"; st="${st%%|*}"
+    [[ "$st" == "pending-merge" ]] || continue
+    # Count EVERY item processed, not just merge attempts — an unresolvable-branch item still
+    # mutates BACKLOG.md, so excluding it would let the limit be exceeded in practice.
+    n=$(( n + 1 ))
+    branch="$(_ready_merge_branch "$id" || true)"
+    if [[ "$branch" != deputy/* ]]; then
+      _merge_route_outcome "$id" 1 "no resolvable deputy/* branch (none recorded / ambiguous)" || true
+      continue
+    fi
+    rc=0; msg="$(_merge_ready_branch "$id" "$branch")" || rc=$?
+    printf 'deputy: pending-merge drain: #%s: %s\n' "$id" "$msg" >&2
+    # Class 4 is repo-wide (not on the default branch): every parked item is equally blocked,
+    # and charging strikes would eventually surface perfectly healthy items. Abandon the sweep
+    # without touching a single item.
+    [[ "$rc" -eq 4 ]] && return 0
+    [[ "$rc" -eq 0 ]] || _merge_route_outcome "$id" "$rc" "$msg" || true
+  done
+  return 0
+}
+
 # 'deputy pickup #<id>' — bring up ONE task and ACT on it (the interactive counterpart to the
 # read-only 'deputy list' detail and the passive 'deputy watch' summon). Works on a task in an
 # ATTENTION state; shows the item + its detail, then performs the safe action:
@@ -3623,6 +3695,10 @@ cmd_run() {
   # Refuse to run if the repo is on a feature branch. This prevents the cron
   # (cd <repo> && deputy run) from running against un-merged code.
   # Bypass: set DEPUTY_ALLOW_ANY_BRANCH=1 (tests / deliberate use).
+  # #112: land any merge parked by an earlier tick before doing anything else — including
+  # before the default-branch refusal below, so the drain is reachable on every tick.
+  _drain_pending_merges || true
+
   if [[ "${DEPUTY_ALLOW_ANY_BRANCH:-0}" != "1" ]]; then
     if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       local _db; _db="$(_default_branch)"

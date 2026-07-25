@@ -35,6 +35,9 @@ merge_dirty_disjoint=1
 # the top of each tick. After this many CONSECUTIVE failed attempts it escalates to 'surfaced'
 # so a permanently blocked merge can't sit unnoticed. Default 10.
 merge_retry_strikes=10
+# merge_drain_limit: how many parked (pending-merge) branches the runner may land in a single
+# tick. Bounds an unattended catch-up after a long stretch of blocked merges. Default 10.
+merge_drain_limit=10
 # notify_on_spawn: announce (notification + a prominent cron.log "===SPAWN===" line)
 # every time the heartbeat autonomously spawns a worker, so an unattended pickup is never
 # silent. Default 1 (on). Set 0 to silence. Interactive runs never fire it.
