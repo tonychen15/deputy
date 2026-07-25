@@ -56,7 +56,7 @@ bash "$DEPUTY" set "$(lof 'done-b')" done       >/dev/null
 
 # All seven section headers present, in the required order.
 hdrs="$(grep -oE '^### [^(]+' "$DEPUTY_ROOT/BACKLOG.md" | sed 's/ *$//' | tr '\n' '|')"
-assert_eq "$hdrs" "### Running|### Surfaced|### Waiting|### Paused|### Deferred|### Failed / Cancelled / Duplicate|### Done|" "all 7 section headers, in order"
+assert_eq "$hdrs" "### Running|### Pending merge|### Surfaced|### Waiting|### Paused|### Deferred|### Failed / Cancelled / Duplicate|### Done|" "all 8 section headers, in order"
 
 # Counts in headers.
 assert_contains "$(grep '^### Waiting' "$DEPUTY_ROOT/BACKLOG.md")"  "(2)" "Waiting count = 2"

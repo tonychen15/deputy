@@ -155,12 +155,16 @@ _each_item() {
 _parse_item() {
   local line="$1" state="waiting" prio="" id="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
-  if [[ "$line" =~ ^([~@?+!%=^\;#>])[[:space:]]*(.*)$ ]]; then
+  if [[ "$line" =~ ^([~@?+!%=^&\;#>])[[:space:]]*(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
       '~') state=triaging ;;  '@') state=running ;;    '?') state=surfaced ;;
       '+') state=done ;;      '!') state=failed ;;
       '%') state=cancelled ;; '=') state=duplicate ;; '^') state=paused ;;
       ';') state=deferred ;;
+      # #112: work is finished and the branch is waiting only on a mechanical merge. NOT
+      # runnable (no worker is ever spawned on it) and NOT an attention state (it never
+      # enters the human's pickup queue) — the runner drains it on a later tick.
+      '&') state=pending-merge ;;
       # Back-compat read of the pre-migration prefixes ('#' done, '>' deferred);
       # _serialize_item always writes the new symbols, so any old line migrates to
       # '+'/';' the next time it is re-serialized (e.g. on _regroup_backlog).
@@ -201,7 +205,7 @@ _serialize_item() {
     waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
     surfaced)  prefix="?" ;; done)      prefix="+" ;; failed)    prefix="!" ;;
     cancelled) prefix="%" ;; duplicate) prefix="=" ;; paused)    prefix="^" ;;
-    deferred)  prefix=";" ;;
+    deferred)  prefix=";" ;;  pending-merge) prefix="&" ;;
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
   body=""
@@ -753,7 +757,7 @@ _regroup_backlog() {
   # Seven buckets in display order; done_stream interleaves done items AND
   # release-delimiter lines (preserving their relative order). done_count tracks
   # ITEMS only (delimiters excluded from the Done header count).
-  local -a running=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
+  local -a running=() pendmerge=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
   local done_count=0
 
   tmp="$(_backlog_mktemp)" || { [[ "$_src" != "$BACKLOG" ]] && rm -f "$_src" 2>/dev/null; return 1; }
@@ -785,6 +789,9 @@ _regroup_backlog() {
     norm="$(_serialize_item "$state" "$prio" "$id" "$desc")"
     case "$state" in
       running)                    running+=("$norm") ;;
+      # #112: MUST have an arm here — this case has no default branch, so any state without
+      # one is silently DROPPED from BACKLOG.md (the item vanishes on the next regroup).
+      pending-merge)              pendmerge+=("$norm") ;;
       surfaced|triaging)          surfaced+=("$norm") ;;
       waiting)                    waiting+=("$norm") ;;
       paused)                     paused+=("$norm") ;;
@@ -815,7 +822,7 @@ _regroup_backlog() {
     done_stream=("${_fds[@]}")
   fi
 
-  # Always emit all seven '### Section (N)' headers, in order, for a stable
+  # Always emit all eight '### Section (N)' headers, in order, for a stable
   # skeleton — even when a section is empty. Done is last (bottom of file).
   # Emit every section through ONE redirection and capture any partial-write
   # failure (e.g. ENOSPC). An unchecked printf here could leave a non-empty but
@@ -825,6 +832,8 @@ _regroup_backlog() {
   {
     printf '\n### Running (%d)\n' "${#running[@]}" || _werr=1
     (( ${#running[@]} )) && { printf '%s\n' "${running[@]}" || _werr=1; }
+    printf '\n### Pending merge (%d)\n' "${#pendmerge[@]}" || _werr=1
+    (( ${#pendmerge[@]} )) && { printf '%s\n' "${pendmerge[@]}" || _werr=1; }
     printf '\n### Surfaced (%d)\n' "${#surfaced[@]}" || _werr=1
     (( ${#surfaced[@]} )) && { printf '%s\n' "${surfaced[@]}" || _werr=1; }
     printf '\n### Waiting (%d)\n' "${#waiting[@]}" || _werr=1
@@ -1016,8 +1025,8 @@ cmd_add() {
   # silently re-bucketed/rewritten on regroup.
   if [[ "$_pfx" == '~' || "$_pfx" == '@' || "$_pfx" == '?' || "$_pfx" == '+' || \
         "$_pfx" == '!' || "$_pfx" == '%' || "$_pfx" == '=' || "$_pfx" == '^' || \
-        "$_pfx" == ';' || "$_pfx" == '#' || "$_pfx" == '>' ]] || [[ "$text" =~ ^\[(P[0-4]|#[0-9]+)\] ]]; then
-    printf 'deputy: description may not begin with a status prefix (~@?+!%%=^; legacy #>) or a tag ([Px] or [#N]): %s\n' "$text" >&2
+        "$_pfx" == ';' || "$_pfx" == '&' || "$_pfx" == '#' || "$_pfx" == '>' ]] || [[ "$text" =~ ^\[(P[0-4]|#[0-9]+)\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?+!%%=^;& legacy #>) or a tag ([Px] or [#N]): %s\n' "$text" >&2
     return 2
   fi
   if [[ "$text" == *$'\n'* ]]; then
@@ -1134,18 +1143,19 @@ _autorun() {
 
 cmd_status() {
   _with_lock _allocate_ids
-  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 parsed
+  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 pm=0 parsed
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
     case "$state" in
       waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
       surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;;    failed)     f=$((f+1)) ;;
       cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;; paused)  p=$((p+1)) ;;
+      pending-merge) pm=$((pm+1)) ;;
       deferred) df=$((df+1)) ;;
     esac
   done < <(_each_item)
-  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\n' \
-    "$w" "$t" "$r" "$s" "$d" "$f" "$c" "$u" "$p" "$df"
+  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\npending-merge: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\n' \
+    "$w" "$t" "$r" "$s" "$pm" "$d" "$f" "$c" "$u" "$p" "$df"
 }
 
 # Numeric rank for a priority tag: P0=0 P1=1 P2=2 P3=3 P4=4 (none)=5.
@@ -1163,7 +1173,7 @@ _prio_rank() {
 _print_waiting_queue() {
   _with_lock _allocate_ids   # ensure every item has a stable [#N] before rendering
   local raw parsed state prio id desc rank grp idx=0
-  local nw=0 npa=0 nd=0
+  local nw=0 npa=0 nd=0 npm=0
   local -a rows=()
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
@@ -1172,6 +1182,9 @@ _print_waiting_queue() {
       waiting)  grp=0; nw=$((nw+1)) ;;
       paused)   grp=0; npa=$((npa+1)) ;;
       deferred) grp=1; nd=$((nd+1)) ;;
+      # #112: not runnable, but shown so a parked merge is never invisible — it just is
+      # never something the human is asked to action.
+      pending-merge) grp=2; npm=$((npm+1)) ;;
       *)        idx=$((idx+1)); continue ;;
     esac
     prio="${parsed#*|}"; prio="${prio%%|*}"
@@ -1188,18 +1201,18 @@ _print_waiting_queue() {
   done < <(_each_item)
 
   if [[ "${#rows[@]}" -eq 0 ]]; then
-    printf 'Queue: empty (no waiting, paused, or deferred items).\n'
+    printf 'Queue: empty (no waiting, paused, deferred, or pending-merge items).\n'
     return 0
   fi
-  printf 'Queue — %d waiting, %d paused, %d deferred:\n' "$nw" "$npa" "$nd"
-  printf '%-9s %-4s %-6s %s\n' 'STATE' 'PRI' 'ID' 'TASK'
+  printf 'Queue — %d waiting, %d paused, %d deferred, %d pending-merge:\n' "$nw" "$npa" "$nd" "$npm"
+  printf '%-13s %-4s %-6s %s\n' 'STATE' 'PRI' 'ID' 'TASK'
   # sort by group (runnable<deferred), then rank, then file index (FIFO ties);
   # drop the 3 sort-key columns and render the remaining 4 as aligned columns.
   printf '%s\n' "${rows[@]}" \
     | sort -t"$(printf '\t')" -k1,1n -k2,2n -k3,3n \
     | cut -f4- \
     | while IFS="$(printf '\t')" read -r st pr id_col task; do
-        printf '%-9s %-4s %-6s %s\n' "$st" "$pr" "$id_col" "$task"
+        printf '%-13s %-4s %-6s %s\n' "$st" "$pr" "$id_col" "$task"
       done
 }
 
@@ -1221,7 +1234,7 @@ cmd_pick() {
 }
 
 _valid_state() {
-  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate|paused|deferred) return 0 ;; *) return 1 ;; esac
+  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate|paused|deferred|pending-merge) return 0 ;; *) return 1 ;; esac
 }
 
 # ── Notifications ─────────────────────────────────────────────────────────────
@@ -1381,6 +1394,16 @@ cmd_set() {
     # block (which returns 0) mask a failed line flip, so 'set' would falsely report success.
     # Preserve the EXACT rc (#86): _flip_line returns 3 on an unrecoverable BACKLOG write,
     # which the worker keys on to fail-fast — collapsing it to 1 would lose that contract.
+    # #112: pending-merge is only reachable for an item whose branch is KNOWN. The drain
+    # resolves it from the ready-merge-<id> marker (or the unique-branch fallback); with
+    # neither, parking the item would strand it in a state nothing can ever complete.
+    if [[ "$_eff_state" == "pending-merge" ]] && _valid_item_id "$_id"; then
+      local _pm_br; _pm_br="$(_ready_merge_branch "$_id" 2>/dev/null || true)"
+      if [[ "$_pm_br" != deputy/* ]]; then
+        printf 'deputy: refusing to set #%s pending-merge — no ready-merge marker and no unique deputy/* branch to merge (surface it instead)\n' "$_id" >&2
+        return 2
+      fi
+    fi
     local _fl_rc; _flip_line "$from" "$to"; _fl_rc=$?; [[ "$_fl_rc" -eq 0 ]] || return "$_fl_rc"
     # #60: maintain the ready-merge marker under the SAME lock as the line flip, so scheduling
     # never sees a 'surfaced' item without its marker (no blocking-count race window).
@@ -1398,7 +1421,10 @@ cmd_set() {
         fi
         { printf 'ready-merge-at: %s\nbranch ready for human merge-review\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           [[ -n "$_rm_br" ]] && printf 'branch: %s\n' "$_rm_br"; } > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
-      elif [[ "$_eff_state" != "surfaced" ]]; then
+      elif [[ "$_eff_state" != "surfaced" && "$_eff_state" != "pending-merge" ]]; then
+        # #112: pending-merge KEEPS its marker — that marker is the only record of which
+        # branch to merge, and the runner's drain re-reads it on every later tick. Dropping
+        # it here would strand the item with an unresolvable branch, forever.
         rm -f "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
       fi
     fi
@@ -2201,8 +2227,8 @@ CONFIG
     printf 'Run "deputy help --full" for config key documentation.\n\n'
   fi
   cat <<'FOOTER'
-states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
-symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancelled ==duplicate ^=paused ;=deferred  (legacy #=done >=deferred still read and auto-migrated)
+states: waiting triaging running surfaced done failed cancelled duplicate paused deferred pending-merge
+symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancelled ==duplicate ^=paused ;=deferred &=pending-merge  (legacy #=done >=deferred still read and auto-migrated)
 FOOTER
 }
 
@@ -3894,7 +3920,7 @@ cmd_clean() {
       item_id="${parsed#*|}"; item_id="${item_id#*|}"; item_id="${item_id%%|*}"
       if [[ "$item_id" == "$filter_id" ]]; then
         case "$state" in
-          running|triaging|surfaced|paused)
+          running|triaging|surfaced|paused|pending-merge)
             printf 'deputy: refusing to clean item #%s (%s) — active/checkpointed/awaiting; recover or resolve it first\n' \
               "$filter_id" "$state" >&2
             return 1 ;;
@@ -3952,7 +3978,7 @@ cmd_clean() {
   case "$filter_state" in
     waiting|done|failed|cancelled|duplicate|deferred)
       ;;  # cleanable terminal/inert states — ok
-    running|triaging|surfaced|paused)
+    running|triaging|surfaced|paused|pending-merge)
       printf 'deputy: refusing to clean %s items (active/checkpointed/awaiting) — recover or resolve them first\n' \
         "$filter_state" >&2
       return 1 ;;
@@ -4543,6 +4569,19 @@ _spawnfail_count() { local c; c="$(cat "$STATE_DIR/.spawnfail-$1" 2>/dev/null ||
 _spawnfail_bump()  { local n; n=$(( $(_spawnfail_count "$1") + 1 )); printf '%s\n' "$n" > "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 _spawnfail_reset() { rm -f "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 
+# #112: per-item CONSECUTIVE merge-failure counter for a parked (pending-merge) item.
+# A merge blocked by the human's tree is transient, so the runner keeps retrying it — but a
+# merge that stays blocked forever must not sit invisible, so after merge_retry_strikes
+# consecutive failures the item escalates to 'surfaced'. Line 1 is the count; line 2 is the
+# most recent blocker text, shown in the item's detail block.
+_mergefail_count()  { local n; n="$(sed -n '1p' "$STATE_DIR/.mergefail-$1" 2>/dev/null || true)"
+                      [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n" || printf '0'; }
+_mergefail_reason() { sed -n '2p' "$STATE_DIR/.mergefail-$1" 2>/dev/null || true; }
+_mergefail_bump()   { local n; n=$(( $(_mergefail_count "$1") + 1 ))
+                      { printf '%s\n' "$n"; printf '%s\n' "${2:-}"; } > "$STATE_DIR/.mergefail-$1" 2>/dev/null || true
+                      printf '%s' "$n"; }
+_mergefail_reset()  { rm -f "$STATE_DIR/.mergefail-$1" 2>/dev/null || true; }
+
 # Count waiting+paused items (the runnable set cmd_pick draws from).
 # ── Attention-item detail (shared by list / watch / pickup) ───────────────────
 # Locate a task's questions file across the #70 subfolder layout AND the legacy flat layout,
@@ -4625,6 +4664,19 @@ _item_detail_block() {
       printf '      action:  deputy pickup %s   (requeue → waiting)\n' "$id" ;;
     deferred|paused|cancelled)
       printf '      action:  deputy pickup %s   (revive → waiting)\n' "$id" ;;
+    pending-merge)
+      # #112: informational ONLY — deputy owns this merge. The human is never asked to act;
+      # the runner retries it at the top of each tick until it lands (or, after
+      # merge_retry_strikes consecutive failures, escalates it to surfaced).
+      local br strikes cap
+      br="$(_ready_merge_branch "$id" 2>/dev/null || true)"
+      strikes="$(_mergefail_count "$id")"
+      cap="$(_config_get merge_retry_strikes)"; _valid_positive_int "$cap" || cap=10
+      printf '      status:  waiting to merge%s\n' "${br:+ ($br)}"
+      first="$(_mergefail_reason "$id")"
+      [[ -n "$first" ]] && printf '      blocker: %s\n' "$first"
+      printf '      retries: %s of %s before this is surfaced for you\n' "$strikes" "$cap"
+      printf '      action:  none — deputy merges this automatically on a later run\n' ;;
   esac
 }
 
