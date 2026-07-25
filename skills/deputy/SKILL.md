@@ -148,12 +148,34 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
    **interactive/human-supervised** run (no `DEPUTY_HEADLESS=1`, so not sandboxed) proceeds to the
    safe-merge below itself.
    a. Detect the default branch using this sequence: `git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|origin/||'`; if empty, check if local `main` exists (`git show-ref --quiet refs/heads/main`), then `master`; last resort: `git config init.defaultBranch`.
-   b. Check main-tree readiness from the repo root: `git status --porcelain -- . ':!BACKLOG.md' ':!.deputy'` (dirty, excluding deputy-owned files?) and `git rev-parse --abbrev-ref HEAD` (current branch?).
-      - **Proceed** only if the main tree is **clean** (no uncommitted changes outside `BACKLOG.md` and `.deputy/`) **and already on the default branch**. `BACKLOG.md` and `.deputy/` are deputy-owned and self-committed by the runner — their transient state must not block the merge.
-      - **Surface** the item (do not call `deputy done`) if the main tree is dirty or on a different branch: write *"branch `deputy/<slug>` is ready; merge blocked — main tree is [dirty / on `<branch>`]; merge manually: `git checkout <default-branch> && git merge --no-ff deputy/<slug>`"* to `.deputy/<slug>.questions.md`, then `deputy set "<item-line>" surfaced` and **`deputy wt-remove`** — this frees `.deputy/wt` for the next item; the `deputy/<slug>` branch is preserved for the manual merge.
-   c. Merge: `git merge --no-ff deputy/<slug>` (from repo root, already confirmed on default branch + clean).
-   d. On merge failure: run `git merge --abort`, write the conflict details to `.deputy/<slug>.questions.md`, `deputy set "<item-line>" surfaced`, then **`deputy wt-remove`** (do **not** call `deputy done`; the `deputy/<slug>` branch keeps its commits for manual resolution).
-   Then: `deputy done <slug>` → `deputy set "<item-line>" done` → `deputy wt-remove`.
+   b. Check the current branch from the repo root: `git rev-parse --abbrev-ref HEAD`.
+      - **Proceed** if you are already on the default branch.
+      - **Surface** the item (do not call `deputy done`) if you are on a different branch: write
+        *"branch `deputy/<slug>` is ready; merge blocked — main tree is on `<branch>`; merge manually:
+        `git checkout <default-branch> && git merge --no-ff deputy/<slug>`"* to `.deputy/<slug>.questions.md`,
+        then `deputy set "<item-line>" surfaced` and **`deputy wt-remove`** — this frees `.deputy/wt`
+        for the next item; the `deputy/<slug>` branch is preserved for the manual merge.
+      - **#111 — do NOT require a pristine tree.** A human with unrelated work in progress must not
+        force a manual merge: that was the single most common needless surface. Deputy no longer
+        demands `git status --porcelain` be empty and neither should you. **Let git arbitrate** —
+        just attempt the merge in step (c). git merges happily when the index is clean and the
+        paths it writes are disjoint from the human's dirty paths, preserving their uncommitted work
+        and keeping it out of the merge commit; it refuses **atomically** (nothing changed, nothing
+        to abort) when anything is staged or when a dirty path overlaps. See `_merge_tree_blocker`
+        in `bin/deputy.sh` for the exact rule the runner applies.
+   c. Merge: `git merge --no-ff deputy/<slug>` (from repo root, already confirmed on the default branch).
+   d. On merge failure, distinguish the two cases via `git rev-parse -q --verify MERGE_HEAD`:
+      - **No `MERGE_HEAD`** — git refused *before* touching anything (staged changes, or a dirty path
+        the merge needed to write). There is **nothing to abort**; do NOT run `git merge --abort` and
+        do NOT call it a conflict. Write which paths blocked it to `.deputy/<slug>.questions.md`,
+        `deputy set "<item-line>" surfaced`, then **`deputy wt-remove`** — and do **not** call
+        `deputy done`; the `deputy/<slug>` branch keeps its commits so the merge can be retried.
+      - **`MERGE_HEAD` exists** — a real content conflict. Run `git merge --abort`, write the conflict
+        details to `.deputy/<slug>.questions.md`, `deputy set "<item-line>" surfaced`, then
+        **`deputy wt-remove`** — and do **not** call `deputy done`; the `deputy/<slug>` branch keeps
+        its commits for manual resolution.
+   **On a successful merge ONLY** (step (c) exited 0 — never after either failure bullet above):
+   `deputy done <slug>` → `deputy set "<item-line>" done` → `deputy wt-remove`.
    If `delete_merged_branch=1` is set, `deputy wt-remove` will also delete the local
    `deputy/<slug>` branch (uses `git branch -d`, merged-only safe delete). This only
    fires on the clean-merge success path — on surface/abort/conflict paths the branch is
@@ -204,9 +226,10 @@ If no coder is available, `deputy cron --reschedule "<reset text>"` — never bu
      if higher priority exists, `deputy set "<item-line>" paused` and stop.
 4. When `deputy resume <slug>` is empty:
    **Merge into the local default branch** — follow the identical safe-merge procedure
-   described in §2a step 9 (detect default branch, check main-tree readiness, merge or
-   surface, abort on conflict). Then: `deputy done <slug>` → `deputy set "<item-line>" done`
-   → `deputy wt-remove`. **Never auto-push** to the remote.
+   described in §2a step 9 (detect the default branch, let git arbitrate the merge — do NOT
+   require a pristine tree — then surface without `deputy done` on either failure bullet).
+   **On a successful merge only**, follow §2a step 9's done path: `deputy done <slug>` →
+   `deputy set "<item-line>" done` → `deputy wt-remove`. **Never auto-push** to the remote.
 
 **V1 note:** steps run **inline** — in V1 Claude executes each step directly inside the step-loop body; the seam for future cross-provider routing is that step-loop body (a future `_run_step_worker`). Cross-provider step routing is a later item.
 
