@@ -22,6 +22,14 @@ orphan_warn_mins=30
 # branch. Default 0 — the guardrail BLOCKS the merge and the worker must SURFACE the branch
 # for a human to review and merge. Set 1 only if you trust autonomous merges.
 auto_merge=0
+# merge_dirty_disjoint: let the runner merge a ready branch even when the main tree has
+# UNRELATED work in progress. Deputy used to require a pristine tree, which surfaced a
+# "merge blocked, do it by hand" note for merges git would have performed happily. With
+# this on, the merge proceeds when the index is clean AND the paths the merge writes are
+# disjoint from your dirty paths — git preserves your changes and keeps them out of the
+# merge commit. Overlapping or staged changes still surface for a manual merge.
+# Default 1 (on). Set 0 for the strict pristine-tree rule.
+merge_dirty_disjoint=1
 # notify_on_spawn: announce (notification + a prominent cron.log "===SPAWN===" line)
 # every time the heartbeat autonomously spawns a worker, so an unattended pickup is never
 # silent. Default 1 (on). Set 0 to silence. Interactive runs never fire it.
