@@ -155,12 +155,16 @@ _each_item() {
 _parse_item() {
   local line="$1" state="waiting" prio="" id="" desc=""
   line="${line#"${line%%[![:space:]]*}"}"          # left-trim
-  if [[ "$line" =~ ^([~@?+!%=^\;#>])[[:space:]]*(.*)$ ]]; then
+  if [[ "$line" =~ ^([~@?+!%=^&\;#>])[[:space:]]*(.*)$ ]]; then
     case "${BASH_REMATCH[1]}" in
       '~') state=triaging ;;  '@') state=running ;;    '?') state=surfaced ;;
       '+') state=done ;;      '!') state=failed ;;
       '%') state=cancelled ;; '=') state=duplicate ;; '^') state=paused ;;
       ';') state=deferred ;;
+      # #112: work is finished and the branch is waiting only on a mechanical merge. NOT
+      # runnable (no worker is ever spawned on it) and NOT an attention state (it never
+      # enters the human's pickup queue) — the runner drains it on a later tick.
+      '&') state=pending-merge ;;
       # Back-compat read of the pre-migration prefixes ('#' done, '>' deferred);
       # _serialize_item always writes the new symbols, so any old line migrates to
       # '+'/';' the next time it is re-serialized (e.g. on _regroup_backlog).
@@ -201,7 +205,7 @@ _serialize_item() {
     waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
     surfaced)  prefix="?" ;; done)      prefix="+" ;; failed)    prefix="!" ;;
     cancelled) prefix="%" ;; duplicate) prefix="=" ;; paused)    prefix="^" ;;
-    deferred)  prefix=";" ;;
+    deferred)  prefix=";" ;;  pending-merge) prefix="&" ;;
     *) printf 'deputy: bad state: %s\n' "$state" >&2; return 1 ;;
   esac
   body=""
@@ -753,7 +757,7 @@ _regroup_backlog() {
   # Seven buckets in display order; done_stream interleaves done items AND
   # release-delimiter lines (preserving their relative order). done_count tracks
   # ITEMS only (delimiters excluded from the Done header count).
-  local -a running=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
+  local -a running=() pendmerge=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
   local done_count=0
 
   tmp="$(_backlog_mktemp)" || { [[ "$_src" != "$BACKLOG" ]] && rm -f "$_src" 2>/dev/null; return 1; }
@@ -785,6 +789,9 @@ _regroup_backlog() {
     norm="$(_serialize_item "$state" "$prio" "$id" "$desc")"
     case "$state" in
       running)                    running+=("$norm") ;;
+      # #112: MUST have an arm here — this case has no default branch, so any state without
+      # one is silently DROPPED from BACKLOG.md (the item vanishes on the next regroup).
+      pending-merge)              pendmerge+=("$norm") ;;
       surfaced|triaging)          surfaced+=("$norm") ;;
       waiting)                    waiting+=("$norm") ;;
       paused)                     paused+=("$norm") ;;
@@ -815,7 +822,7 @@ _regroup_backlog() {
     done_stream=("${_fds[@]}")
   fi
 
-  # Always emit all seven '### Section (N)' headers, in order, for a stable
+  # Always emit all eight '### Section (N)' headers, in order, for a stable
   # skeleton — even when a section is empty. Done is last (bottom of file).
   # Emit every section through ONE redirection and capture any partial-write
   # failure (e.g. ENOSPC). An unchecked printf here could leave a non-empty but
@@ -825,6 +832,8 @@ _regroup_backlog() {
   {
     printf '\n### Running (%d)\n' "${#running[@]}" || _werr=1
     (( ${#running[@]} )) && { printf '%s\n' "${running[@]}" || _werr=1; }
+    printf '\n### Pending merge (%d)\n' "${#pendmerge[@]}" || _werr=1
+    (( ${#pendmerge[@]} )) && { printf '%s\n' "${pendmerge[@]}" || _werr=1; }
     printf '\n### Surfaced (%d)\n' "${#surfaced[@]}" || _werr=1
     (( ${#surfaced[@]} )) && { printf '%s\n' "${surfaced[@]}" || _werr=1; }
     printf '\n### Waiting (%d)\n' "${#waiting[@]}" || _werr=1
@@ -1016,8 +1025,8 @@ cmd_add() {
   # silently re-bucketed/rewritten on regroup.
   if [[ "$_pfx" == '~' || "$_pfx" == '@' || "$_pfx" == '?' || "$_pfx" == '+' || \
         "$_pfx" == '!' || "$_pfx" == '%' || "$_pfx" == '=' || "$_pfx" == '^' || \
-        "$_pfx" == ';' || "$_pfx" == '#' || "$_pfx" == '>' ]] || [[ "$text" =~ ^\[(P[0-4]|#[0-9]+)\] ]]; then
-    printf 'deputy: description may not begin with a status prefix (~@?+!%%=^; legacy #>) or a tag ([Px] or [#N]): %s\n' "$text" >&2
+        "$_pfx" == ';' || "$_pfx" == '&' || "$_pfx" == '#' || "$_pfx" == '>' ]] || [[ "$text" =~ ^\[(P[0-4]|#[0-9]+)\] ]]; then
+    printf 'deputy: description may not begin with a status prefix (~@?+!%%=^;& legacy #>) or a tag ([Px] or [#N]): %s\n' "$text" >&2
     return 2
   fi
   if [[ "$text" == *$'\n'* ]]; then
@@ -1134,18 +1143,19 @@ _autorun() {
 
 cmd_status() {
   _with_lock _allocate_ids
-  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 parsed
+  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 pm=0 parsed
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
     case "$state" in
       waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
       surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;;    failed)     f=$((f+1)) ;;
       cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;; paused)  p=$((p+1)) ;;
+      pending-merge) pm=$((pm+1)) ;;
       deferred) df=$((df+1)) ;;
     esac
   done < <(_each_item)
-  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\n' \
-    "$w" "$t" "$r" "$s" "$d" "$f" "$c" "$u" "$p" "$df"
+  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\npending-merge: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\n' \
+    "$w" "$t" "$r" "$s" "$pm" "$d" "$f" "$c" "$u" "$p" "$df"
 }
 
 # Numeric rank for a priority tag: P0=0 P1=1 P2=2 P3=3 P4=4 (none)=5.
@@ -1163,7 +1173,7 @@ _prio_rank() {
 _print_waiting_queue() {
   _with_lock _allocate_ids   # ensure every item has a stable [#N] before rendering
   local raw parsed state prio id desc rank grp idx=0
-  local nw=0 npa=0 nd=0
+  local nw=0 npa=0 nd=0 npm=0
   local -a rows=()
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
@@ -1172,6 +1182,9 @@ _print_waiting_queue() {
       waiting)  grp=0; nw=$((nw+1)) ;;
       paused)   grp=0; npa=$((npa+1)) ;;
       deferred) grp=1; nd=$((nd+1)) ;;
+      # #112: not runnable, but shown so a parked merge is never invisible — it just is
+      # never something the human is asked to action.
+      pending-merge) grp=2; npm=$((npm+1)) ;;
       *)        idx=$((idx+1)); continue ;;
     esac
     prio="${parsed#*|}"; prio="${prio%%|*}"
@@ -1188,18 +1201,18 @@ _print_waiting_queue() {
   done < <(_each_item)
 
   if [[ "${#rows[@]}" -eq 0 ]]; then
-    printf 'Queue: empty (no waiting, paused, or deferred items).\n'
+    printf 'Queue: empty (no waiting, paused, deferred, or pending-merge items).\n'
     return 0
   fi
-  printf 'Queue — %d waiting, %d paused, %d deferred:\n' "$nw" "$npa" "$nd"
-  printf '%-9s %-4s %-6s %s\n' 'STATE' 'PRI' 'ID' 'TASK'
+  printf 'Queue — %d waiting, %d paused, %d deferred, %d pending-merge:\n' "$nw" "$npa" "$nd" "$npm"
+  printf '%-13s %-4s %-6s %s\n' 'STATE' 'PRI' 'ID' 'TASK'
   # sort by group (runnable<deferred), then rank, then file index (FIFO ties);
   # drop the 3 sort-key columns and render the remaining 4 as aligned columns.
   printf '%s\n' "${rows[@]}" \
     | sort -t"$(printf '\t')" -k1,1n -k2,2n -k3,3n \
     | cut -f4- \
     | while IFS="$(printf '\t')" read -r st pr id_col task; do
-        printf '%-9s %-4s %-6s %s\n' "$st" "$pr" "$id_col" "$task"
+        printf '%-13s %-4s %-6s %s\n' "$st" "$pr" "$id_col" "$task"
       done
 }
 
@@ -1221,7 +1234,7 @@ cmd_pick() {
 }
 
 _valid_state() {
-  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate|paused|deferred) return 0 ;; *) return 1 ;; esac
+  case "$1" in waiting|triaging|running|surfaced|done|failed|cancelled|duplicate|paused|deferred|pending-merge) return 0 ;; *) return 1 ;; esac
 }
 
 # ── Notifications ─────────────────────────────────────────────────────────────
@@ -1381,6 +1394,16 @@ cmd_set() {
     # block (which returns 0) mask a failed line flip, so 'set' would falsely report success.
     # Preserve the EXACT rc (#86): _flip_line returns 3 on an unrecoverable BACKLOG write,
     # which the worker keys on to fail-fast — collapsing it to 1 would lose that contract.
+    # #112: pending-merge is only reachable for an item whose branch is KNOWN. The drain
+    # resolves it from the ready-merge-<id> marker (or the unique-branch fallback); with
+    # neither, parking the item would strand it in a state nothing can ever complete.
+    if [[ "$_eff_state" == "pending-merge" ]] && _valid_item_id "$_id"; then
+      local _pm_br; _pm_br="$(_ready_merge_branch "$_id" 2>/dev/null || true)"
+      if [[ "$_pm_br" != deputy/* ]]; then
+        printf 'deputy: refusing to set #%s pending-merge — no ready-merge marker and no unique deputy/* branch to merge (surface it instead)\n' "$_id" >&2
+        return 2
+      fi
+    fi
     local _fl_rc; _flip_line "$from" "$to"; _fl_rc=$?; [[ "$_fl_rc" -eq 0 ]] || return "$_fl_rc"
     # #60: maintain the ready-merge marker under the SAME lock as the line flip, so scheduling
     # never sees a 'surfaced' item without its marker (no blocking-count race window).
@@ -1398,7 +1421,10 @@ cmd_set() {
         fi
         { printf 'ready-merge-at: %s\nbranch ready for human merge-review\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           [[ -n "$_rm_br" ]] && printf 'branch: %s\n' "$_rm_br"; } > "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
-      elif [[ "$_eff_state" != "surfaced" ]]; then
+      elif [[ "$_eff_state" != "surfaced" && "$_eff_state" != "pending-merge" ]]; then
+        # #112: pending-merge KEEPS its marker — that marker is the only record of which
+        # branch to merge, and the runner's drain re-reads it on every later tick. Dropping
+        # it here would strand the item with an unresolvable branch, forever.
         rm -f "$STATE_DIR/ready-merge-$_id" 2>/dev/null || true
       fi
     fi
@@ -2101,8 +2127,9 @@ commands:
                                   just those test files (e.g. 'deputy test list pickup')
   pickup <id>                     bring up ONE attention task and ACT on it: ready-to-merge →
                                   merge into the default branch (→ done); proposed → approve
-                                  (→ waiting); needs-input → point to /deputy; failed/cancelled/
-                                  deferred/paused → requeue (→ waiting). Local/safe only (never
+                                  (→ waiting); needs-input → point to /deputy; pending-merge →
+                                  merge it now instead of waiting for the next tick; failed/
+                                  cancelled/deferred/paused → requeue (→ waiting). Local/safe (never
                                   pushes). See candidates with 'deputy list <state>'
   watch [--once] [--apply]        the "what needs me" command: prints the queue OVERVIEW
                                   (learnings, untagged items, reprioritization review, duplicate
@@ -2201,8 +2228,8 @@ CONFIG
     printf 'Run "deputy help --full" for config key documentation.\n\n'
   fi
   cat <<'FOOTER'
-states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
-symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancelled ==duplicate ^=paused ;=deferred  (legacy #=done >=deferred still read and auto-migrated)
+states: waiting triaging running surfaced done failed cancelled duplicate paused deferred pending-merge
+symbols: (none)=waiting ~=triaging @=running ?=surfaced +=done !=failed %=cancelled ==duplicate ^=paused ;=deferred &=pending-merge  (legacy #=done >=deferred still read and auto-migrated)
 FOOTER
 }
 
@@ -3271,9 +3298,14 @@ _run_orchestrator_logged() {
 # Preconditions (checked here): branch exists, HEAD on the default branch, and the main tree
 # permits the merge (see _merge_tree_blocker — NOT "pristine"). On success: item→done,
 # ready-merge/proposed markers cleared, opt-in merged-branch delete. Status text is printed to
-# stdout (callers route it). rc: 0 = merge happened (item done, OR merged-but-done-write-failed
-# → marker kept so it's never falsely failed); 1 = precondition failed (no merge); 2 = conflict
-# (aborted, note written).
+# stdout (callers route it). rc classes (#112):
+#   0 = MERGED (item done, OR merged-but-done-write-failed → marker kept, never falsely failed)
+#   1 = TERMINAL-INVARIANT — branch missing/unresolvable; a human must look
+#   2 = CONTENT CONFLICT — deputy cannot resolve it; note written; a human must look
+#   3 = TRANSIENT precondition — the human's tree blocks it right now; park in pending-merge
+#       and retry on a later tick, charging one strike
+#   4 = GLOBAL SKIP — the repo is not on the default branch, which blocks EVERY parked item
+#       equally; skip the drain WITHOUT charging any item a strike
 
 # #111: print the human's dirty paths (modified / untracked / rename destinations), one per
 # line. Uses --porcelain -z so paths with spaces or non-ASCII bytes are never quoted or split,
@@ -3332,13 +3364,40 @@ _merge_tree_blocker() {
   return 0
 }
 
+# #112: will <branch> merge cleanly into <def>? Answered WITHOUT touching the index or the
+# worktree, so it is valid even while the human's tree is dirty — which is the entire point:
+# a branch that can NEVER merge cleanly needs a human, so it must surface immediately instead
+# of being parked and retried until the strike budget runs out.
+# rc 0 = merges cleanly · 1 = conflicts · 2 = UNKNOWN (git <2.38 has no --write-tree, or the
+# probe failed). On UNKNOWN the caller must not conclude anything and should fall back to
+# parking + retrying, exactly as before.
+_merge_conflict_predetect() {
+  local def="$1" branch="$2" rc=0
+  git -C "$ROOT" merge-tree --write-tree "$def" "$branch" >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
 _merge_ready_branch() {
   local id="$1" branch="$2" def cur blocker marker="$STATE_DIR/ready-merge-$id"
   git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || { printf 'branch %s is missing\n' "$branch"; return 1; }
   def="$(_default_branch)"; cur="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  [[ -n "$def" && "$cur" == "$def" ]] || { printf 'not on the default branch (on %s; need %s) — merge manually: git checkout %s && git merge --no-ff %s\n' "${cur:-?}" "${def:-?}" "${def:-<default>}" "$branch"; return 1; }
+  # NOT on the default branch is a property of the REPO, not of this item — every parked item
+  # is equally blocked by it. Class 4 so the caller skips the whole drain without charging any
+  # item a strike (otherwise a fortnight on a feature branch would surface every parked item).
+  [[ -n "$def" && "$cur" == "$def" ]] || { printf 'not on the default branch (on %s; need %s) — merge manually: git checkout %s && git merge --no-ff %s\n' "${cur:-?}" "${def:-?}" "${def:-<default>}" "$branch"; return 4; }
+  # Ask git whether this branch can EVER merge cleanly, before worrying about the tree state.
+  # A conflict needs a human no matter how long we wait, so it must not be parked.
+  # '|| _pd=$?' — NOT a bare call: under `set -e` a bare non-zero here would abort before the
+  # conflict/UNKNOWN handling below for any caller that does not already wrap this function in
+  # a `||` list (the drain calls it directly).
+  local _pd=0; _merge_conflict_predetect "$def" "$branch" || _pd=$?
+  if [[ "$_pd" -eq 1 ]]; then
+    local note; note="$(_trail_path questions "${branch#deputy/}")"; mkdir -p "$(dirname "$note")" 2>/dev/null || true
+    printf 'MERGE CONFLICT: %s does not merge cleanly into %s. Resolve manually: git checkout %s && git merge --no-ff %s\n' "$branch" "$def" "$def" "$branch" >> "$note" 2>/dev/null || true
+    printf '%s conflicts with %s — needs you; deputy cannot resolve it (see %s)\n' "$branch" "$def" "$note"; return 2
+  fi
   if ! blocker="$(_merge_tree_blocker "$branch")"; then
-    printf '%s — commit/stash those, then: git merge --no-ff %s\n' "$blocker" "$branch"; return 1
+    printf '%s — commit/stash those, then: git merge --no-ff %s\n' "$blocker" "$branch"; return 3
   fi
   if ! git -C "$ROOT" merge --no-ff "$branch" -m "deputy: merge $branch (#$id)" >/dev/null 2>&1; then
     # Distinguish git's ATOMIC pre-merge refusal (index and worktree untouched, MERGE_HEAD never
@@ -3346,7 +3405,7 @@ _merge_ready_branch() {
     # calling every failure a CONFLICT — would mislabel a tree that merely changed under us
     # between the check above and the merge.
     if ! git -C "$ROOT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
-      printf 'git refused the merge (the main tree changed since the check) — retry, or merge manually: git merge --no-ff %s\n' "$branch"; return 1
+      printf 'git refused the merge (the main tree changed since the check) — retry, or merge manually: git merge --no-ff %s\n' "$branch"; return 3
     fi
     git -C "$ROOT" merge --abort 2>/dev/null || true
     local note; note="$(_trail_path questions "${branch#deputy/}")"; mkdir -p "$(dirname "$note")" 2>/dev/null || true
@@ -3370,8 +3429,63 @@ _merge_ready_branch() {
 # CAN'T merge — the #64 sandbox makes the repo read-only to it); the UNSANDBOXED runner merges
 # here after the worker returns, WHEN auto_merge=1. No-op unless: auto_merge=1, a ready-merge
 # marker exists (so a blocking surface is never merged), and the branch resolves (#98/#99).
-# Returns 0 whenever a MERGE HAPPENED (so the caller skips retry-budget and never fails an
-# already-merged item); 1 for every no-op / precondition-miss / conflict.
+# Returns 0 whenever the outcome was HANDLED (#112) — merged, or routed to pending-merge /
+# surfaced — so the caller skips the waypoint retry-budget. That budget marks an item FAILED
+# when spent, and an item we just parked or surfaced is no longer running, so it must never
+# reach it. Returns 1 only when nothing was done (auto_merge=0, no ready-merge marker, or the
+# routing itself failed), leaving the caller's pre-existing behaviour intact.
+# #112: apply ONE merge attempt's outcome to the item. Shared by the post-run auto-merge and
+# the runner's drain so both route identically. The human's rule: a merge-ready task must never
+# sit in their pickup queue, so only outcomes deputy genuinely cannot resolve are surfaced.
+#   rc 1 TERMINAL   -> surface now, and DROP the ready-merge marker so _surfaced_kind reports
+#                      "needs input" rather than advertising a "ready to merge" item that
+#                      pickup could never merge.
+#   rc 2 CONFLICT   -> surface now (a human must resolve it); marker dropped for the same reason.
+#   rc 3 TRANSIENT  -> park in pending-merge and charge one strike; at merge_retry_strikes
+#                      consecutive strikes, escalate to surfaced so it can never sit forever.
+#   rc 4 GLOBAL     -> park in pending-merge, charge NOTHING: the repo being off the default
+#                      branch blocks every parked item equally and says nothing about this item.
+# Always re-resolves the item's CURRENT line by id — the caller's line is stale the moment the
+# worker transitioned the item, and a stale whole-line match silently no-ops.
+_merge_route_outcome() {
+  local id="$1" rc="$2" msg="$3" line cap n
+  line="$(_line_by_id "$id" || true)"
+  [[ -n "$line" ]] || { printf 'deputy: #%s vanished from the queue — cannot route merge outcome\n' "$id" >&2; return 1; }
+  # The ready-merge marker is the ONLY record of which branch to merge, so it is dropped only
+  # AFTER the surfacing transition actually succeeds. Dropping it first would strand the item
+  # with no branch whenever cmd_set failed (a stale line, an unwritable BACKLOG).
+  _surface_and_drop_marker() {
+    local _l="$1" _n="$2"
+    if cmd_set "$_l" surfaced >/dev/null 2>&1; then
+      rm -f "$STATE_DIR/ready-merge-$_n" 2>/dev/null || true
+      _mergefail_reset "$_n"; return 0
+    fi
+    printf 'deputy: failed to surface #%s — marker kept so the merge can be retried\n' "$_n" >&2
+    return 1
+  }
+  case "$rc" in
+    1|2) _surface_and_drop_marker "$line" "$id"; return $? ;;
+    4)   cmd_set "$line" pending-merge >/dev/null 2>&1 || return 1
+         return 0 ;;
+    3)
+      cap="$(_config_get merge_retry_strikes)"; _valid_positive_int "$cap" || cap=10
+      n="$(_mergefail_bump "$id" "$msg")"
+      if [[ "$n" -ge "$cap" ]]; then
+        # Write the note under a slug _questions_file can actually FIND: it globs
+        # '<id>-*.md' / '*-<id>.md', so a bare '<id>.md' would be invisible in the detail block.
+        local note; note="$(_trail_path questions "$(_wp_slug "$id" "merge still blocked")")"
+        mkdir -p "$(dirname "$note")" 2>/dev/null || true
+        printf 'MERGE STILL BLOCKED after %s attempts: %s\nDeputy kept retrying and could not land it — your call.\n' "$n" "$msg" >> "$note" 2>/dev/null || true
+        _surface_and_drop_marker "$line" "$id" || return 1
+        printf 'deputy: #%s still unmergeable after %s attempts — surfaced for you\n' "$id" "$n" >&2
+      else
+        cmd_set "$line" pending-merge >/dev/null 2>&1 || return 1
+      fi
+      return 0 ;;
+  esac
+  return 1
+}
+
 _auto_merge_ready() {
   local item="$1" id branch
   id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
@@ -3379,12 +3493,96 @@ _auto_merge_ready() {
   [[ "$(_config_get auto_merge)" == "1" ]] || return 1
   [[ -f "$STATE_DIR/ready-merge-$id" ]] || return 1     # not ready (blocking surface / n/a)
   branch="$(_ready_merge_branch "$id" || true)"
-  [[ "$branch" == deputy/* ]] || { printf 'deputy: auto_merge: #%s has no resolvable branch (none recorded / ambiguous) — left surfaced for a human\n' "$id" >&2; return 1; }
+  [[ "$branch" == deputy/* ]] || {
+    printf 'deputy: auto_merge: #%s has no resolvable branch (none recorded / ambiguous) — surfaced for a human\n' "$id" >&2
+    _merge_route_outcome "$id" 1 "no resolvable deputy/* branch (none recorded / ambiguous)" && return 0
+    return 1; }
   local _msg _rc=0
   # '|| _rc=$?' so a non-zero merge result doesn't trip set -e before we capture/print it.
   _msg="$(_merge_ready_branch "$id" "$branch")" || _rc=$?
   printf 'deputy: auto_merge: %s\n' "$_msg" >&2
-  [[ "$_rc" -eq 0 ]]     # 0 = merge happened (skip retry-budget); 1/2 = no merge
+  # #112: a blocked merge is deputy's problem, not the human's — route it rather than leaving
+  # it surfaced. rc 0 needs no routing (the merge already marked the item done).
+  [[ "$_rc" -eq 0 ]] && return 0
+  # RETURN 0 WHENEVER THE OUTCOME WAS HANDLED, not only when a merge happened. The caller uses
+  # this to decide whether to fall through to the waypoint retry-budget, and that logic marks
+  # the item FAILED when the budget is spent. An item we just parked in pending-merge (or
+  # surfaced) is no longer running, so letting it reach that path would fail a perfectly
+  # healthy, already-dispositioned item.
+  _merge_route_outcome "$id" "$_rc" "$_msg" && return 0
+  return 1               # genuinely unhandled — caller keeps its existing behaviour
+}
+
+# #112: drain parked merges. The human's rule is that a merge-ready task must NEVER sit in
+# their pickup queue, so a merge blocked by their working tree parks in pending-merge and is
+# retried HERE — at the top of every tick, before any new item is claimed. Placed before the
+# default-branch refusal so the drain can never be dead code.
+#
+# NEVER stalls the queue: an item that still cannot merge simply stays parked and the tick
+# carries on to waiting work. Bounded by merge_drain_limit so a large backlog of parked
+# branches can't all land in one unattended tick.
+_drain_pending_merges() {
+  local raw parsed state id
+  local -a ids=()
+  [[ "$(_config_get auto_merge)" == "1" ]] || return 0
+  # A merge WRITES the human's working tree, so the drain is subject to the same human-session
+  # back-off as claiming an item. Without this an unattended tick could merge files out from
+  # under a live interactive session — the exact hazard human_backoff exists to prevent.
+  if _human_backoff_gate; then return 0; fi
+  _live_claim_exists && return 0
+  # Collect ids FIRST: _merge_route_outcome rewrites BACKLOG.md via cmd_set, and iterating the
+  # file while mutating it would read a torn or stale stream. Numeric sort = oldest parked first.
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
+    [[ "$state" == "pending-merge" ]] || continue
+    id="${parsed#*|}"; id="${id#*|}"; id="${id%%|*}"
+    _valid_item_id "$id" && ids+=("$id")
+  done < <(_each_item)
+  [[ "${#ids[@]}" -gt 0 ]] || return 0
+  # Take the SAME flock-atomic guard cmd_run uses before claiming an item. Merely TESTING
+  # _active_run_live and then merging is a TOCTOU window: two overlapping ticks could merge
+  # concurrently, or this drain could merge while another tick is claiming/spawning work.
+  # rc 3 = someone else holds it, which is a normal skip, not an error.
+  _active_run_acquire "pending-merge drain" "run" || return 0
+  _drain_pending_merges_locked "${ids[@]}" || true   # single exit -> the release always runs
+  _active_run_release
+  return 0
+}
+
+# The drain body. Never returns non-zero; the caller releases the guard unconditionally.
+_drain_pending_merges_locked() {
+  local limit n=0 id branch msg rc cur st
+  limit="$(_config_get merge_drain_limit)"; _valid_positive_int "$limit" || limit=10
+  for id in "$@"; do
+    if (( n >= limit )); then
+      printf 'deputy: pending-merge drain: stopping at merge_drain_limit=%s — the rest retry next tick\n' "$limit" >&2
+      break
+    fi
+    # RE-VERIFY under the guard. The id list was gathered BEFORE the guard was held (so a tick
+    # with nothing parked never has to take it), which means an overlapping tick may have
+    # merged this item in the meantime. Acting on a stale id would mutate an already-done item.
+    # Skipped stale ids must not consume the budget, so this precedes the increment.
+    cur="$(_line_by_id "$id" || true)"
+    [[ -n "$cur" ]] || continue
+    st="$(_parse_item "$cur")"; st="${st%%|*}"
+    [[ "$st" == "pending-merge" ]] || continue
+    # Count EVERY item processed, not just merge attempts — an unresolvable-branch item still
+    # mutates BACKLOG.md, so excluding it would let the limit be exceeded in practice.
+    n=$(( n + 1 ))
+    branch="$(_ready_merge_branch "$id" || true)"
+    if [[ "$branch" != deputy/* ]]; then
+      _merge_route_outcome "$id" 1 "no resolvable deputy/* branch (none recorded / ambiguous)" || true
+      continue
+    fi
+    rc=0; msg="$(_merge_ready_branch "$id" "$branch")" || rc=$?
+    printf 'deputy: pending-merge drain: #%s: %s\n' "$id" "$msg" >&2
+    # Class 4 is repo-wide (not on the default branch): every parked item is equally blocked,
+    # and charging strikes would eventually surface perfectly healthy items. Abandon the sweep
+    # without touching a single item.
+    [[ "$rc" -eq 4 ]] && return 0
+    [[ "$rc" -eq 0 ]] || _merge_route_outcome "$id" "$rc" "$msg" || true
+  done
+  return 0
 }
 
 # 'deputy pickup #<id>' — bring up ONE task and ACT on it (the interactive counterpart to the
@@ -3419,11 +3617,20 @@ cmd_pickup() {
       case "$kind" in
         "ready to merge")
           local branch _msg _rc=0; branch="$(_ready_merge_branch "$id" || true)"
-          [[ "$branch" == deputy/* ]] || { printf 'deputy: pickup: #%s is ready-to-merge but its branch is unresolvable (none recorded / ambiguous) — resolve manually.\n' "$id" >&2; return 1; }
+          [[ "$branch" == deputy/* ]] || {
+            printf 'deputy: pickup: #%s is ready-to-merge but its branch is unresolvable (none recorded / ambiguous) — resolve manually.\n' "$id" >&2
+            # #112: route as terminal so the stale ready-merge marker is dropped — otherwise the
+            # item keeps advertising a "merge" action that can never work.
+            _merge_route_outcome "$id" 1 "no resolvable deputy/* branch (none recorded / ambiguous)" || true
+            return 1; }
           # '|| _rc=$?' so a non-zero merge result doesn't trip set -e before we print the reason.
           _msg="$(_merge_ready_branch "$id" "$branch")" || _rc=$?
           printf 'deputy: pickup: %s\n' "$_msg"
           [[ "$_rc" -eq 0 ]] && return 0
+          # #112: route the failure like every other merge attempt — a transient blocker parks
+          # the item (deputy retries it; the human is not asked again) and a conflict drops the
+          # ready-merge marker so it stops advertising itself as "ready to merge".
+          _merge_route_outcome "$id" "$_rc" "$_msg" || true
           return 1 ;;
         "proposed")
           if cmd_set "$line" waiting >/dev/null 2>&1; then
@@ -3434,13 +3641,29 @@ cmd_pickup() {
         *)  # needs input — cannot auto-resume a conversation
           printf 'deputy: pickup: #%s needs your input — run /deputy to resume it from its waypoint (details above).\n' "$id"; return 0 ;;
       esac ;;
+    pending-merge)
+      # #112: deputy already owns this merge and retries it every tick; pickup just does it NOW
+      # (e.g. the human cleared the blocker and does not want to wait for the next tick).
+      local _pm_branch _pm_msg _pm_rc=0
+      _pm_branch="$(_ready_merge_branch "$id" || true)"
+      [[ "$_pm_branch" == deputy/* ]] || {
+        printf 'deputy: pickup: #%s is pending-merge but its branch is unresolvable — surfacing it for you.\n' "$id" >&2
+        # #112: MUST surface. pending-merge is a non-attention state, so returning here would
+        # leave the item parked and silent forever even though nothing can ever complete it.
+        _merge_route_outcome "$id" 1 "no resolvable deputy/* branch (none recorded / ambiguous)" || true
+        return 1; }
+      _pm_msg="$(_merge_ready_branch "$id" "$_pm_branch")" || _pm_rc=$?
+      printf 'deputy: pickup: %s\n' "$_pm_msg"
+      [[ "$_pm_rc" -eq 0 ]] && return 0
+      _merge_route_outcome "$id" "$_pm_rc" "$_pm_msg" || true
+      return 1 ;;
     failed|cancelled|deferred|paused)
       if cmd_set "$line" waiting >/dev/null 2>&1; then
         printf 'deputy: pickup: #%s (%s) → waiting (requeued; runs in priority order).\n' "$id" "$state"; return 0
       fi
       printf 'deputy: pickup: failed to requeue #%s\n' "$id" >&2; return 1 ;;
     *)
-      printf 'deputy: pickup: #%s is %s — pickup only acts on surfaced/failed/cancelled/paused/deferred tasks.\n' "$id" "$state" >&2; return 2 ;;
+      printf 'deputy: pickup: #%s is %s — pickup only acts on surfaced/pending-merge/failed/cancelled/paused/deferred tasks.\n' "$id" "$state" >&2; return 2 ;;
   esac
 }
 
@@ -3498,6 +3721,10 @@ cmd_run() {
   # Refuse to run if the repo is on a feature branch. This prevents the cron
   # (cd <repo> && deputy run) from running against un-merged code.
   # Bypass: set DEPUTY_ALLOW_ANY_BRANCH=1 (tests / deliberate use).
+  # #112: land any merge parked by an earlier tick before doing anything else — including
+  # before the default-branch refusal below, so the drain is reachable on every tick.
+  _drain_pending_merges || true
+
   if [[ "${DEPUTY_ALLOW_ANY_BRANCH:-0}" != "1" ]]; then
     if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       local _db; _db="$(_default_branch)"
@@ -3894,7 +4121,7 @@ cmd_clean() {
       item_id="${parsed#*|}"; item_id="${item_id#*|}"; item_id="${item_id%%|*}"
       if [[ "$item_id" == "$filter_id" ]]; then
         case "$state" in
-          running|triaging|surfaced|paused)
+          running|triaging|surfaced|paused|pending-merge)
             printf 'deputy: refusing to clean item #%s (%s) — active/checkpointed/awaiting; recover or resolve it first\n' \
               "$filter_id" "$state" >&2
             return 1 ;;
@@ -3952,7 +4179,7 @@ cmd_clean() {
   case "$filter_state" in
     waiting|done|failed|cancelled|duplicate|deferred)
       ;;  # cleanable terminal/inert states — ok
-    running|triaging|surfaced|paused)
+    running|triaging|surfaced|paused|pending-merge)
       printf 'deputy: refusing to clean %s items (active/checkpointed/awaiting) — recover or resolve them first\n' \
         "$filter_state" >&2
       return 1 ;;
@@ -4543,6 +4770,19 @@ _spawnfail_count() { local c; c="$(cat "$STATE_DIR/.spawnfail-$1" 2>/dev/null ||
 _spawnfail_bump()  { local n; n=$(( $(_spawnfail_count "$1") + 1 )); printf '%s\n' "$n" > "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 _spawnfail_reset() { rm -f "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true; }
 
+# #112: per-item CONSECUTIVE merge-failure counter for a parked (pending-merge) item.
+# A merge blocked by the human's tree is transient, so the runner keeps retrying it — but a
+# merge that stays blocked forever must not sit invisible, so after merge_retry_strikes
+# consecutive failures the item escalates to 'surfaced'. Line 1 is the count; line 2 is the
+# most recent blocker text, shown in the item's detail block.
+_mergefail_count()  { local n; n="$(sed -n '1p' "$STATE_DIR/.mergefail-$1" 2>/dev/null || true)"
+                      [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n" || printf '0'; }
+_mergefail_reason() { sed -n '2p' "$STATE_DIR/.mergefail-$1" 2>/dev/null || true; }
+_mergefail_bump()   { local n; n=$(( $(_mergefail_count "$1") + 1 ))
+                      { printf '%s\n' "$n"; printf '%s\n' "${2:-}"; } > "$STATE_DIR/.mergefail-$1" 2>/dev/null || true
+                      printf '%s' "$n"; }
+_mergefail_reset()  { rm -f "$STATE_DIR/.mergefail-$1" 2>/dev/null || true; }
+
 # Count waiting+paused items (the runnable set cmd_pick draws from).
 # ── Attention-item detail (shared by list / watch / pickup) ───────────────────
 # Locate a task's questions file across the #70 subfolder layout AND the legacy flat layout,
@@ -4625,6 +4865,19 @@ _item_detail_block() {
       printf '      action:  deputy pickup %s   (requeue → waiting)\n' "$id" ;;
     deferred|paused|cancelled)
       printf '      action:  deputy pickup %s   (revive → waiting)\n' "$id" ;;
+    pending-merge)
+      # #112: informational ONLY — deputy owns this merge. The human is never asked to act;
+      # the runner retries it at the top of each tick until it lands (or, after
+      # merge_retry_strikes consecutive failures, escalates it to surfaced).
+      local br strikes cap
+      br="$(_ready_merge_branch "$id" 2>/dev/null || true)"
+      strikes="$(_mergefail_count "$id")"
+      cap="$(_config_get merge_retry_strikes)"; _valid_positive_int "$cap" || cap=10
+      printf '      status:  waiting to merge%s\n' "${br:+ ($br)}"
+      first="$(_mergefail_reason "$id")"
+      [[ -n "$first" ]] && printf '      blocker: %s\n' "$first"
+      printf '      retries: %s of %s before this is surfaced for you\n' "$strikes" "$cap"
+      printf '      action:  none — deputy merges this automatically on a later run\n' ;;
   esac
 }
 

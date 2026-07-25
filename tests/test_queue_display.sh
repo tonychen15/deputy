@@ -26,7 +26,7 @@ bash "$DEPUTY" set "$(line_of 'delta task')" deferred >/dev/null
 bash "$DEPUTY" set "$(line_of 'zeta task')"  deferred >/dev/null
 
 out="$(bash "$DEPUTY" set "$(line_of 'trigger task')" done 2>&1)"
-assert_contains "$out" "Queue — 3 waiting, 1 paused, 2 deferred:" "header carries per-state counts"
+assert_contains "$out" "Queue — 3 waiting, 1 paused, 2 deferred, 0 pending-merge:" "header carries per-state counts"
 assert_contains "$out" "STATE"    "table has a STATE column header"
 assert_contains "$out" "TASK"     "table has a TASK column header"
 assert_contains "$out" "waiting"  "lists waiting items"
@@ -59,7 +59,7 @@ setup_repo
 bash "$DEPUTY" add "solo task" --p0
 bash "$DEPUTY" list >/dev/null
 out="$(bash "$DEPUTY" set "$(line_of 'solo task')" done 2>&1)"
-assert_contains "$out" "Queue: empty (no waiting, paused, or deferred items)." "empty queue message"
+assert_contains "$out" "Queue: empty (no waiting, paused, deferred, or pending-merge items)." "empty queue message"
 
 # --- done-only: a failure transition does NOT print the table ---
 setup_repo

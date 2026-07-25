@@ -437,9 +437,10 @@ mass/irreversible rewrites.
 | `%` | `cancelled` | Won't-do, terminal |
 | `=` | `duplicate` | Redundant, terminal |
 | `^` | `paused` | Mid-execution checkpoint; auto-resumes |
+| `&` | `pending-merge` | Work is done; the branch awaits a mechanical merge that the human's working tree currently blocks. **Not runnable** (no worker is ever spawned on it) and **not an attention state** (never in the human's pickup queue) — the runner retries it at the top of every tick, and only surfaces it after `merge_retry_strikes` failures or on a conflict deputy cannot resolve |
 | `;` | `deferred` | Parked for future consideration; inert + intentional; never auto-scheduled; revive with `deputy set "<line>" waiting` (legacy `>` still read, auto-migrated) |
 
-states: waiting triaging running surfaced done failed cancelled duplicate paused deferred
+states: waiting triaging running surfaced done failed cancelled duplicate paused deferred pending-merge
 
 ## CLI quick reference
 
