@@ -3428,8 +3428,63 @@ _merge_ready_branch() {
 # CAN'T merge — the #64 sandbox makes the repo read-only to it); the UNSANDBOXED runner merges
 # here after the worker returns, WHEN auto_merge=1. No-op unless: auto_merge=1, a ready-merge
 # marker exists (so a blocking surface is never merged), and the branch resolves (#98/#99).
-# Returns 0 whenever a MERGE HAPPENED (so the caller skips retry-budget and never fails an
-# already-merged item); 1 for every no-op / precondition-miss / conflict.
+# Returns 0 whenever the outcome was HANDLED (#112) — merged, or routed to pending-merge /
+# surfaced — so the caller skips the waypoint retry-budget. That budget marks an item FAILED
+# when spent, and an item we just parked or surfaced is no longer running, so it must never
+# reach it. Returns 1 only when nothing was done (auto_merge=0, no ready-merge marker, or the
+# routing itself failed), leaving the caller's pre-existing behaviour intact.
+# #112: apply ONE merge attempt's outcome to the item. Shared by the post-run auto-merge and
+# the runner's drain so both route identically. The human's rule: a merge-ready task must never
+# sit in their pickup queue, so only outcomes deputy genuinely cannot resolve are surfaced.
+#   rc 1 TERMINAL   -> surface now, and DROP the ready-merge marker so _surfaced_kind reports
+#                      "needs input" rather than advertising a "ready to merge" item that
+#                      pickup could never merge.
+#   rc 2 CONFLICT   -> surface now (a human must resolve it); marker dropped for the same reason.
+#   rc 3 TRANSIENT  -> park in pending-merge and charge one strike; at merge_retry_strikes
+#                      consecutive strikes, escalate to surfaced so it can never sit forever.
+#   rc 4 GLOBAL     -> park in pending-merge, charge NOTHING: the repo being off the default
+#                      branch blocks every parked item equally and says nothing about this item.
+# Always re-resolves the item's CURRENT line by id — the caller's line is stale the moment the
+# worker transitioned the item, and a stale whole-line match silently no-ops.
+_merge_route_outcome() {
+  local id="$1" rc="$2" msg="$3" line cap n
+  line="$(_line_by_id "$id" || true)"
+  [[ -n "$line" ]] || { printf 'deputy: #%s vanished from the queue — cannot route merge outcome\n' "$id" >&2; return 1; }
+  # The ready-merge marker is the ONLY record of which branch to merge, so it is dropped only
+  # AFTER the surfacing transition actually succeeds. Dropping it first would strand the item
+  # with no branch whenever cmd_set failed (a stale line, an unwritable BACKLOG).
+  _surface_and_drop_marker() {
+    local _l="$1" _n="$2"
+    if cmd_set "$_l" surfaced >/dev/null 2>&1; then
+      rm -f "$STATE_DIR/ready-merge-$_n" 2>/dev/null || true
+      _mergefail_reset "$_n"; return 0
+    fi
+    printf 'deputy: failed to surface #%s — marker kept so the merge can be retried\n' "$_n" >&2
+    return 1
+  }
+  case "$rc" in
+    1|2) _surface_and_drop_marker "$line" "$id"; return $? ;;
+    4)   cmd_set "$line" pending-merge >/dev/null 2>&1 || return 1
+         return 0 ;;
+    3)
+      cap="$(_config_get merge_retry_strikes)"; _valid_positive_int "$cap" || cap=10
+      n="$(_mergefail_bump "$id" "$msg")"
+      if [[ "$n" -ge "$cap" ]]; then
+        # Write the note under a slug _questions_file can actually FIND: it globs
+        # '<id>-*.md' / '*-<id>.md', so a bare '<id>.md' would be invisible in the detail block.
+        local note; note="$(_trail_path questions "$(_wp_slug "$id" "merge still blocked")")"
+        mkdir -p "$(dirname "$note")" 2>/dev/null || true
+        printf 'MERGE STILL BLOCKED after %s attempts: %s\nDeputy kept retrying and could not land it — your call.\n' "$n" "$msg" >> "$note" 2>/dev/null || true
+        _surface_and_drop_marker "$line" "$id" || return 1
+        printf 'deputy: #%s still unmergeable after %s attempts — surfaced for you\n' "$id" "$n" >&2
+      else
+        cmd_set "$line" pending-merge >/dev/null 2>&1 || return 1
+      fi
+      return 0 ;;
+  esac
+  return 1
+}
+
 _auto_merge_ready() {
   local item="$1" id branch
   id="$(_parse_item "$item")"; id="${id#*|}"; id="${id#*|}"; id="${id%%|*}"
@@ -3437,12 +3492,24 @@ _auto_merge_ready() {
   [[ "$(_config_get auto_merge)" == "1" ]] || return 1
   [[ -f "$STATE_DIR/ready-merge-$id" ]] || return 1     # not ready (blocking surface / n/a)
   branch="$(_ready_merge_branch "$id" || true)"
-  [[ "$branch" == deputy/* ]] || { printf 'deputy: auto_merge: #%s has no resolvable branch (none recorded / ambiguous) — left surfaced for a human\n' "$id" >&2; return 1; }
+  [[ "$branch" == deputy/* ]] || {
+    printf 'deputy: auto_merge: #%s has no resolvable branch (none recorded / ambiguous) — surfaced for a human\n' "$id" >&2
+    _merge_route_outcome "$id" 1 "no resolvable deputy/* branch (none recorded / ambiguous)" && return 0
+    return 1; }
   local _msg _rc=0
   # '|| _rc=$?' so a non-zero merge result doesn't trip set -e before we capture/print it.
   _msg="$(_merge_ready_branch "$id" "$branch")" || _rc=$?
   printf 'deputy: auto_merge: %s\n' "$_msg" >&2
-  [[ "$_rc" -eq 0 ]]     # 0 = merge happened (skip retry-budget); 1/2 = no merge
+  # #112: a blocked merge is deputy's problem, not the human's — route it rather than leaving
+  # it surfaced. rc 0 needs no routing (the merge already marked the item done).
+  [[ "$_rc" -eq 0 ]] && return 0
+  # RETURN 0 WHENEVER THE OUTCOME WAS HANDLED, not only when a merge happened. The caller uses
+  # this to decide whether to fall through to the waypoint retry-budget, and that logic marks
+  # the item FAILED when the budget is spent. An item we just parked in pending-merge (or
+  # surfaced) is no longer running, so letting it reach that path would fail a perfectly
+  # healthy, already-dispositioned item.
+  _merge_route_outcome "$id" "$_rc" "$_msg" && return 0
+  return 1               # genuinely unhandled — caller keeps its existing behaviour
 }
 
 # 'deputy pickup #<id>' — bring up ONE task and ACT on it (the interactive counterpart to the

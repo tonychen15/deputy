@@ -30,6 +30,11 @@ auto_merge=0
 # merge commit. Overlapping or staged changes still surface for a manual merge.
 # Default 1 (on). Set 0 for the strict pristine-tree rule.
 merge_dirty_disjoint=1
+# merge_retry_strikes: a merge blocked by YOUR working tree is deputy's problem, not yours —
+# the item parks in 'pending-merge' (never in your pickup queue) and the runner retries it at
+# the top of each tick. After this many CONSECUTIVE failed attempts it escalates to 'surfaced'
+# so a permanently blocked merge can't sit unnoticed. Default 10.
+merge_retry_strikes=10
 # notify_on_spawn: announce (notification + a prominent cron.log "===SPAWN===" line)
 # every time the heartbeat autonomously spawns a worker, so an unattended pickup is never
 # silent. Default 1 (on). Set 0 to silence. Interactive runs never fire it.

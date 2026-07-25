@@ -8,8 +8,9 @@
 #   * the INDEX must be clean (ANY staged change makes the ort strategy refuse, even a
 #     non-overlapping one), and
 #   * the paths the merge WRITES must be disjoint from the human's dirty paths.
-# Overlapping or staged changes still surface for a manual merge, and merge_dirty_disjoint=0
-# restores the strict pristine-tree rule.
+# Overlapping or staged changes cannot merge right now, but they are NOT put in the human's
+# pickup queue either (#112): they PARK in the non-attention 'pending-merge' state and the
+# runner retries them on a later tick. merge_dirty_disjoint=0 restores the strict rule.
 #
 # The mock orchestrator commits two files on the branch: feature-<id>.txt (new) and an append
 # to shared.txt (tracked at init) — so both the "merge creates this path" and the "merge
@@ -72,7 +73,7 @@ _md_setup ""
 printf 'staged work\n' >> "$MDR/frontend.txt"; git -C "$MDR" add frontend.txt
 _md_run
 assert_eq "$(_md_merged)" "MISSING" "staged change: NOT merged (git refuses a dirty index)"
-assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list surfaced)" "mdtest feature" "staged change: item left surfaced for a human"
+assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list pending-merge)" "mdtest feature" "staged change: item PARKED in pending-merge, not put in the human's queue"
 
 # D) OVERLAP on a tracked file the merge rewrites → must refuse (merging would clobber the work).
 _md_setup ""
@@ -80,7 +81,7 @@ printf 'human edit\n' >> "$MDR/shared.txt"
 _md_run
 assert_eq "$(_md_merged)" "MISSING" "overlapping tracked file: NOT merged"
 assert_contains "$(cat "$MDR/shared.txt")" "human edit" "overlapping tracked file: human's edit preserved"
-assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list surfaced)" "mdtest feature" "overlapping tracked file: item left surfaced"
+assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list pending-merge)" "mdtest feature" "overlapping tracked file: item PARKED in pending-merge"
 
 # E) OVERLAP where an UNTRACKED file occupies a path the merge would create → must refuse.
 _md_setup ""
@@ -88,13 +89,14 @@ printf 'mine\n' > "$MDR/feature-$MDID.txt"
 _md_run
 assert_eq "$(git -C "$MDR" show "master:feature-$MDID.txt" 2>/dev/null || echo MISSING)" "MISSING" "untracked file in the merge's path: NOT merged"
 assert_eq "$(cat "$MDR/feature-$MDID.txt")" "mine" "untracked file in the merge's path: human's file untouched"
+assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list pending-merge)" "mdtest feature" "untracked file in the merge's path: item PARKED in pending-merge"
 
 # F) merge_dirty_disjoint=0 restores the strict pristine-tree rule.
 _md_setup 0
 printf 'work in progress\n' >> "$MDR/frontend.txt"
 _md_run
 assert_eq "$(_md_merged)" "MISSING" "merge_dirty_disjoint=0: dirty tree blocks the merge (strict rule)"
-assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list surfaced)" "mdtest feature" "merge_dirty_disjoint=0: item left surfaced"
+assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list pending-merge)" "mdtest feature" "merge_dirty_disjoint=0: item PARKED in pending-merge"
 
 # H) OVERLAP on an untracked file NESTED in an untracked directory → must still refuse.
 #    `git status --porcelain` defaults to -unormal, which collapses these into 'sub/' — that
@@ -105,7 +107,7 @@ mkdir -p "$MDR/sub"; printf 'mine\n' > "$MDR/sub/nested-$MDID.txt"
 _md_run
 assert_eq "$(git -C "$MDR" show "master:sub/nested-$MDID.txt" 2>/dev/null || echo MISSING)" "MISSING" "nested untracked file in the merge's path: NOT merged"
 assert_eq "$(cat "$MDR/sub/nested-$MDID.txt")" "mine" "nested untracked file in the merge's path: human's file untouched"
-assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list surfaced)" "mdtest feature" "nested untracked overlap: item left surfaced"
+assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list pending-merge)" "mdtest feature" "nested untracked overlap: item PARKED in pending-merge"
 # The PRECHECK must be what refuses, naming the offending path. Without -uall the overlap slips
 # past the precheck, git refuses the merge itself, and deputy reports the misleading generic
 # "the main tree changed since the check" instead — same outcome, useless diagnosis. This
@@ -120,6 +122,7 @@ printf 'not a directory\n' > "$MDR/sub"
 _md_run
 assert_eq "$(git -C "$MDR" show "master:sub/nested-$MDID.txt" 2>/dev/null || echo MISSING)" "MISSING" "file-vs-directory namespace overlap: NOT merged"
 assert_eq "$(cat "$MDR/sub")" "not a directory" "file-vs-directory namespace overlap: human's file untouched"
+assert_contains "$(DEPUTY_ROOT="$MDR" bash "$DEPUTY" list pending-merge)" "mdtest feature" "file-vs-directory namespace overlap: item PARKED in pending-merge"
 assert_contains "$(cat "$MDR/.runout")" "files this merge writes: sub/nested-$MDID.txt" "file-vs-directory namespace overlap: precheck names the offending path"
 
 # G) Control: a pristine tree still merges (the relaxation did not break the base case).
