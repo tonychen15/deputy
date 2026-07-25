@@ -3257,7 +3257,8 @@ _run_orchestrator_logged() {
 # read-only to it (a `git merge` into the main tree would fail). So the runner does the merge
 # here after the worker returns. No-op unless ALL hold: auto_merge=1, a .deputy/ready-merge-<id>
 # marker exists (so a *blocking* surface without the marker is never merged), the main tree is
-# on the default branch, and it is clean (excluding the deputy-owned BACKLOG.md/.deputy). On a
+# on the default branch, and the tree permits the merge (#111 — a clean index with dirty paths
+# DISJOINT from what the merge writes; not "pristine", see _merge_tree_blocker). On a
 # clean merge: item→done, markers cleared, opt-in branch delete. On conflict: abort + leave
 # surfaced with a note. Never pushes.
 # Returns 0 whenever a MERGE HAPPENED — item marked done (cleanup done), OR merged-but-the
@@ -3267,18 +3268,86 @@ _run_orchestrator_logged() {
 # Merge a resolved deputy/<slug> branch into the default branch. UNSANDBOXED callers only
 # (the runner's cmd_run and the interactive 'deputy pickup') — a sandboxed worker can't write
 # the repo. Shared by _auto_merge_ready and cmd_pickup so the merge/done/cleanup is identical.
-# Preconditions (checked here): branch exists, HEAD on the default branch, main tree clean
-# (excluding deputy-owned BACKLOG.md/.deputy). On success: item→done, ready-merge/proposed
-# markers cleared, opt-in merged-branch delete. Status text is printed to stdout (callers route
-# it). rc: 0 = merge happened (item done, OR merged-but-done-write-failed → marker kept so it's
-# never falsely failed); 1 = precondition failed (no merge); 2 = conflict (aborted, note written).
+# Preconditions (checked here): branch exists, HEAD on the default branch, and the main tree
+# permits the merge (see _merge_tree_blocker — NOT "pristine"). On success: item→done,
+# ready-merge/proposed markers cleared, opt-in merged-branch delete. Status text is printed to
+# stdout (callers route it). rc: 0 = merge happened (item done, OR merged-but-done-write-failed
+# → marker kept so it's never falsely failed); 1 = precondition failed (no merge); 2 = conflict
+# (aborted, note written).
+
+# #111: print the human's dirty paths (modified / untracked / rename destinations), one per
+# line. Uses --porcelain -z so paths with spaces or non-ASCII bytes are never quoted or split,
+# and -uall so untracked files are listed INDIVIDUALLY: the default (-unormal) collapses them
+# into their containing directory ('newdir/'), which would never match a merge-affected path
+# like 'newdir/file.txt' in the exact-match intersection and would let a real overlap through.
+# BACKLOG.md and .deputy/ are deputy-owned and self-committed by the runner, so their transient
+# state is not the human's dirt and never blocks a merge.
+_main_tree_dirty_paths() {
+  local entry path
+  while IFS= read -r -d '' entry; do
+    path="${entry:3}"
+    # In -z format a rename/copy entry is followed by a SECOND field holding the original
+    # path — consume it so it is not mistaken for the next status entry.
+    case "${entry:0:1}" in R|C) IFS= read -r -d '' _ || true ;; esac
+    [[ "$path" == "BACKLOG.md" || "$path" == .deputy/* ]] && continue
+    printf '%s\n' "$path"
+  done < <(git -C "$ROOT" status --porcelain -z -uall 2>/dev/null)
+}
+
+# #111: may we run `git merge <branch>` in the main tree RIGHT NOW? Prints a reason and returns
+# 1 when not; prints nothing and returns 0 when yes.
+#
+# Deputy used to demand that `git status --porcelain` be completely EMPTY. That is far stricter
+# than git itself, and it made the ordinary case — a human with unrelated work-in-progress in
+# the tree — surface a "merge blocked, do it by hand" note for a merge git would have performed
+# happily. git's real rules (verified empirically):
+#   * the INDEX must be clean: ANY staged change makes the ort strategy refuse, even one that
+#     does not overlap the merge at all;
+#   * unstaged modifications are fine so long as the merge does not need to write those paths —
+#     git preserves them, and they stay OUT of the merge commit;
+#   * untracked files are fine unless the merge would create that same path.
+# So: require a clean index, and require the paths the merge writes to be DISJOINT from the
+# human's dirty paths. Everything else keeps the old surface-for-a-manual-merge behaviour.
+# Set merge_dirty_disjoint=0 to restore the strict pristine-tree rule.
+_merge_tree_blocker() {
+  local branch="$1" staged affected overlap
+  if [[ "$(_config_get merge_dirty_disjoint)" == "0" ]]; then
+    [[ -z "$(_main_tree_dirty_paths)" ]] && return 0
+    printf 'the main tree is dirty (merge_dirty_disjoint=0 — strict pristine-tree rule)'; return 1
+  fi
+  staged="$(git -C "$ROOT" diff --cached --name-only 2>/dev/null | head -5 | tr '\n' ' ')" || true
+  [[ -z "$staged" ]] || { printf 'the main tree has staged changes (git refuses to merge with a dirty index): %s' "${staged% }"; return 1; }
+  # Paths this merge will write = what changed on the BRANCH side since the merge base.
+  affected="$(git -C "$ROOT" diff --name-only "HEAD...$branch" 2>/dev/null)" || true
+  [[ -n "$affected" ]] || return 0        # merge writes nothing → nothing can be clobbered
+  # Compare by PATH NAMESPACE, not string equality: a dirty path also blocks a merge when one
+  # side is an ancestor of the other. An untracked FILE named 'sub' stops the merge from
+  # creating 'sub/nested.txt' (and vice versa), and an exact-match intersection would miss it.
+  # With no dirty paths the inner loop never runs, so a clean tree short-circuits here.
+  overlap="$(awk 'NR==FNR{d[FNR]=$0; n=FNR; next}
+                  { for(i=1;i<=n;i++){ p=d[i]
+                      if ($0==p || index($0, p "/")==1 || index(p, $0 "/")==1) { print; next } } }' \
+             <(_main_tree_dirty_paths) <(printf '%s\n' "$affected") 2>/dev/null | head -5 | tr '\n' ' ')" || true
+  [[ -z "$overlap" ]] || { printf 'the main tree has uncommitted changes to files this merge writes: %s' "${overlap% }"; return 1; }
+  return 0
+}
+
 _merge_ready_branch() {
-  local id="$1" branch="$2" def cur marker="$STATE_DIR/ready-merge-$id"
+  local id="$1" branch="$2" def cur blocker marker="$STATE_DIR/ready-merge-$id"
   git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || { printf 'branch %s is missing\n' "$branch"; return 1; }
   def="$(_default_branch)"; cur="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   [[ -n "$def" && "$cur" == "$def" ]] || { printf 'not on the default branch (on %s; need %s) — merge manually: git checkout %s && git merge --no-ff %s\n' "${cur:-?}" "${def:-?}" "${def:-<default>}" "$branch"; return 1; }
-  [[ -z "$(git -C "$ROOT" status --porcelain -- . ':!BACKLOG.md' ':!.deputy' 2>/dev/null)" ]] || { printf 'the main tree is dirty — commit/stash, then: git merge --no-ff %s\n' "$branch"; return 1; }
+  if ! blocker="$(_merge_tree_blocker "$branch")"; then
+    printf '%s — commit/stash those, then: git merge --no-ff %s\n' "$blocker" "$branch"; return 1
+  fi
   if ! git -C "$ROOT" merge --no-ff "$branch" -m "deputy: merge $branch (#$id)" >/dev/null 2>&1; then
+    # Distinguish git's ATOMIC pre-merge refusal (index and worktree untouched, MERGE_HEAD never
+    # written, nothing to abort) from a real content conflict. Aborting unconditionally — and
+    # calling every failure a CONFLICT — would mislabel a tree that merely changed under us
+    # between the check above and the merge.
+    if ! git -C "$ROOT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+      printf 'git refused the merge (the main tree changed since the check) — retry, or merge manually: git merge --no-ff %s\n' "$branch"; return 1
+    fi
     git -C "$ROOT" merge --abort 2>/dev/null || true
     local note; note="$(_trail_path questions "${branch#deputy/}")"; mkdir -p "$(dirname "$note")" 2>/dev/null || true
     printf 'MERGE CONFLICT: %s does not merge cleanly into %s. Resolve manually: git checkout %s && git merge --no-ff %s\n' "$branch" "$def" "$def" "$branch" >> "$note" 2>/dev/null || true

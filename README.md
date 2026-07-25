@@ -221,6 +221,16 @@ is just a convenience that flips both. **Push is never automatic** regardless â€
 governs only the *local* merge; publishing is always your explicit call. *(The former key name
 `auto_mode` is still read as an alias for `self_review_fallback`.)*
 
+**Merging while you have work in progress.** Deputy no longer needs a pristine tree to merge a
+ready branch. It applies git's own rule: the merge proceeds when your index is clean **and** the
+paths the merge writes are disjoint from your dirty paths â€” git preserves your uncommitted work
+and keeps it out of the merge commit. Overlapping or *staged* changes still surface for a manual
+merge (git's `ort` strategy refuses any merge with a dirty index, even a non-overlapping one).
+
+```bash
+deputy config merge_dirty_disjoint 0   # restore the strict "tree must be pristine" rule
+```
+
 ---
 
 ## The backlog file (`BACKLOG.md`)
