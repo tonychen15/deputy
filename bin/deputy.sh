@@ -3297,9 +3297,14 @@ _run_orchestrator_logged() {
 # Preconditions (checked here): branch exists, HEAD on the default branch, and the main tree
 # permits the merge (see _merge_tree_blocker — NOT "pristine"). On success: item→done,
 # ready-merge/proposed markers cleared, opt-in merged-branch delete. Status text is printed to
-# stdout (callers route it). rc: 0 = merge happened (item done, OR merged-but-done-write-failed
-# → marker kept so it's never falsely failed); 1 = precondition failed (no merge); 2 = conflict
-# (aborted, note written).
+# stdout (callers route it). rc classes (#112):
+#   0 = MERGED (item done, OR merged-but-done-write-failed → marker kept, never falsely failed)
+#   1 = TERMINAL-INVARIANT — branch missing/unresolvable; a human must look
+#   2 = CONTENT CONFLICT — deputy cannot resolve it; note written; a human must look
+#   3 = TRANSIENT precondition — the human's tree blocks it right now; park in pending-merge
+#       and retry on a later tick, charging one strike
+#   4 = GLOBAL SKIP — the repo is not on the default branch, which blocks EVERY parked item
+#       equally; skip the drain WITHOUT charging any item a strike
 
 # #111: print the human's dirty paths (modified / untracked / rename destinations), one per
 # line. Uses --porcelain -z so paths with spaces or non-ASCII bytes are never quoted or split,
@@ -3358,13 +3363,40 @@ _merge_tree_blocker() {
   return 0
 }
 
+# #112: will <branch> merge cleanly into <def>? Answered WITHOUT touching the index or the
+# worktree, so it is valid even while the human's tree is dirty — which is the entire point:
+# a branch that can NEVER merge cleanly needs a human, so it must surface immediately instead
+# of being parked and retried until the strike budget runs out.
+# rc 0 = merges cleanly · 1 = conflicts · 2 = UNKNOWN (git <2.38 has no --write-tree, or the
+# probe failed). On UNKNOWN the caller must not conclude anything and should fall back to
+# parking + retrying, exactly as before.
+_merge_conflict_predetect() {
+  local def="$1" branch="$2" rc=0
+  git -C "$ROOT" merge-tree --write-tree "$def" "$branch" >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
 _merge_ready_branch() {
   local id="$1" branch="$2" def cur blocker marker="$STATE_DIR/ready-merge-$id"
   git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || { printf 'branch %s is missing\n' "$branch"; return 1; }
   def="$(_default_branch)"; cur="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  [[ -n "$def" && "$cur" == "$def" ]] || { printf 'not on the default branch (on %s; need %s) — merge manually: git checkout %s && git merge --no-ff %s\n' "${cur:-?}" "${def:-?}" "${def:-<default>}" "$branch"; return 1; }
+  # NOT on the default branch is a property of the REPO, not of this item — every parked item
+  # is equally blocked by it. Class 4 so the caller skips the whole drain without charging any
+  # item a strike (otherwise a fortnight on a feature branch would surface every parked item).
+  [[ -n "$def" && "$cur" == "$def" ]] || { printf 'not on the default branch (on %s; need %s) — merge manually: git checkout %s && git merge --no-ff %s\n' "${cur:-?}" "${def:-?}" "${def:-<default>}" "$branch"; return 4; }
+  # Ask git whether this branch can EVER merge cleanly, before worrying about the tree state.
+  # A conflict needs a human no matter how long we wait, so it must not be parked.
+  # '|| _pd=$?' — NOT a bare call: under `set -e` a bare non-zero here would abort before the
+  # conflict/UNKNOWN handling below for any caller that does not already wrap this function in
+  # a `||` list (the drain calls it directly).
+  local _pd=0; _merge_conflict_predetect "$def" "$branch" || _pd=$?
+  if [[ "$_pd" -eq 1 ]]; then
+    local note; note="$(_trail_path questions "${branch#deputy/}")"; mkdir -p "$(dirname "$note")" 2>/dev/null || true
+    printf 'MERGE CONFLICT: %s does not merge cleanly into %s. Resolve manually: git checkout %s && git merge --no-ff %s\n' "$branch" "$def" "$def" "$branch" >> "$note" 2>/dev/null || true
+    printf '%s conflicts with %s — needs you; deputy cannot resolve it (see %s)\n' "$branch" "$def" "$note"; return 2
+  fi
   if ! blocker="$(_merge_tree_blocker "$branch")"; then
-    printf '%s — commit/stash those, then: git merge --no-ff %s\n' "$blocker" "$branch"; return 1
+    printf '%s — commit/stash those, then: git merge --no-ff %s\n' "$blocker" "$branch"; return 3
   fi
   if ! git -C "$ROOT" merge --no-ff "$branch" -m "deputy: merge $branch (#$id)" >/dev/null 2>&1; then
     # Distinguish git's ATOMIC pre-merge refusal (index and worktree untouched, MERGE_HEAD never
@@ -3372,7 +3404,7 @@ _merge_ready_branch() {
     # calling every failure a CONFLICT — would mislabel a tree that merely changed under us
     # between the check above and the merge.
     if ! git -C "$ROOT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
-      printf 'git refused the merge (the main tree changed since the check) — retry, or merge manually: git merge --no-ff %s\n' "$branch"; return 1
+      printf 'git refused the merge (the main tree changed since the check) — retry, or merge manually: git merge --no-ff %s\n' "$branch"; return 3
     fi
     git -C "$ROOT" merge --abort 2>/dev/null || true
     local note; note="$(_trail_path questions "${branch#deputy/}")"; mkdir -p "$(dirname "$note")" 2>/dev/null || true
