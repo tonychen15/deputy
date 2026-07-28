@@ -997,11 +997,167 @@ _blocking_surfaced_count() {
   printf '%s' "$n"
 }
 
+# ── #113: acceptance record — the falsifiable done-criterion ─────────────────
+# WHY: deputy's `done` means steps committed + tests green + merged. NONE of that
+# proves the REPORTED SYMPTOM is gone: the fixing agent writes the test, in the same
+# step, AFTER writing the fix, and the reviewer reads the diff — so both artifacts are
+# fitted to the implementation and neither ever sees what the human observed. The
+# acceptance record freezes the symptom in the HUMAN's words at add time so `deputy
+# verify` can later prove it was present before the fix and absent after.
+#   observe: how to see it (command / query / click path) — becomes the red/green check
+#   actual:  what happened — so a DIFFERENT failure is not mistaken for success
+#   expect:  what should have happened — bounds "correct"
+#   where:   environment + data — decides whether unit tests can see the bug at all
+#   match:   OPTIONAL regex the failing output must match. `actual` is human prose and
+#            cannot be checked mechanically; without `match`, red/bite score ANY nonzero
+#            exit as "the symptom is present", so a blank column that becomes a thrown
+#            exception still reads as the same bug. Set `match` when the difference matters.
+# Stored at .deputy/accept/<slug>.md, keyed by the frozen slug (#99) so it survives
+# every resume/rerun and can never be quietly redefined by the agent doing the work.
+_accept_path() { _trail_path accept "$1"; }
+
+# Placeholder written for a question the human skipped. Treated as "no criterion" by
+# every gate, so a skipped answer never masquerades as a satisfied one.
+_ACC_UNSET='(unspecified)'
+
+# Collapse a value to a single line — the record is one `key: value` per line, and a
+# flag-supplied newline would otherwise forge extra fields.
+_acc_oneline() { printf '%s' "${1:-}" | tr '\n\r' '  ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//'; }
+
+# Read one field back out of an acceptance record (empty when absent/placeholder).
+_accept_field() { # <file> <key>
+  local v; v="$(sed -n "s/^$2: //p" "$1" 2>/dev/null | head -1)"
+  [[ "$v" == "$_ACC_UNSET" ]] && return 0
+  printf '%s' "$v"
+}
+
+# Resolve an <id-or-slug> argument to a slug. A bare item id maps through the frozen
+# meta; anything else is already a slug.
+_accept_slug_of() {
+  local a="${1#\#}"
+  if _valid_item_id "$a"; then cmd_slug "$a" 2>/dev/null | head -1; else printf '%s' "$a"; fi
+}
+
+# Cheap symptom heuristic: does this description READ like a bug report? Used ONLY to
+# decide whether to grill an interactive human — never to block, reclassify, or gate an
+# item. A false negative just means no prompt (pass --observe explicitly); a false
+# positive costs four skippable questions.
+_looks_like_bug() {
+  local t; t="$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')"
+  [[ "$t" =~ (^|[^a-z])(fix|fixes|bug|broken|breaks|broke|fail|fails|failing|failure|error|errors|crash|crashes|wrong|incorrect|blank|missing|regression|regressed|stuck|hang|hangs|throws|throwing|exception|traceback|timeout|nan|null|undefined|mismatch|garbled|duplicated|stale)([^a-z]|$) ]] && return 0
+  case "$t" in
+    *"doesn't"*|*"does not"*|*"not working"*|*"no longer"*|*"isn't"*|*"is not"*|*"can't"*|*"cannot"*|*"won't"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Interactive grill for the four fields. Assigns into the CALLER's _ACC_* variables
+# (bash dynamic scoping — never call this from a subshell or the answers are lost).
+# The caller guarantees both stdin and stdout are a terminal before calling: a pipe,
+# a test, cron, or a headless worker must never block here on input that never comes.
+_accept_grill() {
+  local _desc="$1" _a
+  printf '\n' >&2
+  printf 'deputy: "%s" reads like a bug report.\n' "$_desc" >&2
+  printf '  A merged, tested, all-green fix still does not prove your symptom is gone —\n' >&2
+  printf '  deputy needs to see the symptom itself to prove that. Four short answers:\n' >&2
+  printf '  (Enter skips one; skip all four and deputy records that it cannot verify this.)\n\n' >&2
+  printf '  OBSERVE  how do you see it? (a command, query, or click path)\n  > ' >&2
+  read -r _a || { printf '\n' >&2; return 1; }; _ACC_OBSERVE="$(_acc_oneline "$_a")"
+  printf '  ACTUAL   what happened? (the wrong output — verbatim if you have it)\n  > ' >&2
+  read -r _a || { printf '\n' >&2; return 0; }; _ACC_ACTUAL="$(_acc_oneline "$_a")"
+  printf '  EXPECT   what should have happened instead?\n  > ' >&2
+  read -r _a || { printf '\n' >&2; return 0; }; _ACC_EXPECT="$(_acc_oneline "$_a")"
+  printf '  WHERE    which environment + data? (prod/local, which dataset)\n  > ' >&2
+  read -r _a || { printf '\n' >&2; return 0; }; _ACC_WHERE="$(_acc_oneline "$_a")"
+  printf '\n' >&2
+  return 0
+}
+
+# Persist the record for <id>, merging over any existing one (so a partial update never
+# blanks a field the human already answered). Echoes the path on success.
+_write_accept_record() { # <id>
+  local id="$1" slug f
+  slug="$(_accept_slug_of "$id")"
+  [[ -n "$slug" ]] || return 1
+  # Reject anything that is not a plain slug — the value reaches a filesystem path, so a
+  # '/' or '..' component must never be able to steer the write out of .deputy/accept/.
+  _wp_validate_id "$slug" || return 1
+  f="$(_accept_path "$slug")"
+  # The read-modify-write must be atomic against a concurrent `accept`/`add --observe` on
+  # the same item, or a partial update silently drops the field the other writer set.
+  _do_accept_write() {
+    local o a e w m tmp
+    if [[ -f "$f" ]]; then
+      o="$(_accept_field "$f" observe)"; a="$(_accept_field "$f" actual)"
+      e="$(_accept_field "$f" expect)";  w="$(_accept_field "$f" where)"
+      m="$(_accept_field "$f" match)"
+    fi
+    [[ -n "${_ACC_OBSERVE:-}" ]] && o="$_ACC_OBSERVE"
+    [[ -n "${_ACC_ACTUAL:-}"  ]] && a="$_ACC_ACTUAL"
+    [[ -n "${_ACC_EXPECT:-}"  ]] && e="$_ACC_EXPECT"
+    [[ -n "${_ACC_WHERE:-}"   ]] && w="$_ACC_WHERE"
+    [[ -n "${_ACC_MATCH:-}"   ]] && m="$_ACC_MATCH"
+    tmp="$f.tmp.$$"
+    { printf '# Acceptance — #%s\n' "$id"
+      printf '# The reported symptom, in the reporter'"'"'s words, frozen at add time.\n'
+      printf '# A fix is proven only when `observe` FAILS before it and PASSES after\n'
+      printf '# (deputy verify --red / --green / --bite).\n\n'
+      printf 'observe: %s\n' "${o:-$_ACC_UNSET}"
+      printf 'actual: %s\n'  "${a:-$_ACC_UNSET}"
+      printf 'expect: %s\n'  "${e:-$_ACC_UNSET}"
+      printf 'where: %s\n'   "${w:-$_ACC_UNSET}"
+      printf 'match: %s\n'   "${m:-$_ACC_UNSET}"
+      printf 'recorded-at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+    mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  }
+  _with_lock _do_accept_write || return 1
+  printf '%s' "$f"
+}
+
+# `deputy accept <id|slug> [--observe .. --actual .. --expect .. --where ..]`
+# No flags → print the record. With flags → create/update it (backfill for items added
+# before this existed, or for one the heuristic did not flag).
+cmd_accept() {
+  local a="${1:-}"
+  [[ -n "$a" ]] || { printf 'deputy: accept requires an <id> or <slug>\n' >&2; return 2; }
+  shift
+  local _ACC_OBSERVE="" _ACC_ACTUAL="" _ACC_EXPECT="" _ACC_WHERE="" _ACC_MATCH="" _w=0
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --observe) [[ $# -ge 2 ]] || { printf 'deputy: accept --observe needs a value\n' >&2; return 2; }; _ACC_OBSERVE="$(_acc_oneline "$2")"; _w=1; shift 2 ;;
+    --actual)  [[ $# -ge 2 ]] || { printf 'deputy: accept --actual needs a value\n'  >&2; return 2; }; _ACC_ACTUAL="$(_acc_oneline "$2")";  _w=1; shift 2 ;;
+    --expect)  [[ $# -ge 2 ]] || { printf 'deputy: accept --expect needs a value\n'  >&2; return 2; }; _ACC_EXPECT="$(_acc_oneline "$2")";  _w=1; shift 2 ;;
+    --where)   [[ $# -ge 2 ]] || { printf 'deputy: accept --where needs a value\n'   >&2; return 2; }; _ACC_WHERE="$(_acc_oneline "$2")";   _w=1; shift 2 ;;
+    --match)   [[ $# -ge 2 ]] || { printf 'deputy: accept --match needs a value\n'   >&2; return 2; }; _ACC_MATCH="$(_acc_oneline "$2")";   _w=1; shift 2 ;;
+    *) printf 'deputy: accept: unexpected arg: %s\n' "$1" >&2; return 2 ;;
+  esac; done
+  local slug; slug="$(_accept_slug_of "$a")"
+  [[ -n "$slug" ]] || { printf 'deputy: accept: no task %s\n' "$a" >&2; return 1; }
+  # The slug becomes a path under .deputy/accept/ — never let a '/' or '..' through.
+  _wp_validate_id "$slug" || return 2
+  if [[ "$_w" -eq 1 ]]; then
+    local f; f="$(_write_accept_record "${a#\#}")" \
+      || { printf 'deputy: accept: could not write the acceptance record for %s\n' "$a" >&2; return 1; }
+    printf 'deputy: acceptance recorded → %s\n' "$f"
+    return 0
+  fi
+  local f; f="$(_accept_path "$slug")"
+  [[ -f "$f" ]] || {
+    printf 'deputy: accept: no acceptance record for %s — deputy cannot prove a fix works on it.\n' "$a" >&2
+    printf '  add one:  deputy accept %s --observe "<how to see it>" --actual "<what happens>" --expect "<what should>" --where "<env+data>"\n' "${a#\#}" >&2
+    return 1; }
+  cat "$f"
+}
+
 cmd_add() {
   # Priority flags: -ui/-u/-i (urgent+important / urgent / important) are aliases
   # for --p0/--p1/--p2. A `--` marker ends flag parsing so a description may begin
   # with a dash (e.g. `deputy add -- "-5% drop alert"`). Last flag wins.
   local text="" prio="" no_more_flags=0
+  # #113: acceptance fields may be supplied non-interactively (scripts, CI, an agent
+  # filing a proposal); --no-accept opts a chore out of the grill entirely.
+  local _ACC_OBSERVE="" _ACC_ACTUAL="" _ACC_EXPECT="" _ACC_WHERE="" _ACC_MATCH="" _acc_skip=0
   while [[ $# -gt 0 ]]; do
     if [[ "$no_more_flags" -eq 0 ]]; then
       case "$1" in
@@ -1011,6 +1167,12 @@ cmd_add() {
         --p2|-i)    prio=P2; shift; continue ;;
         --p3)       prio=P3; shift; continue ;;
         --p4)       prio=P4; shift; continue ;;
+        --observe)  [[ $# -ge 2 ]] || { printf 'deputy: add --observe needs a value\n' >&2; return 2; }; _ACC_OBSERVE="$(_acc_oneline "$2")"; shift 2; continue ;;
+        --actual)   [[ $# -ge 2 ]] || { printf 'deputy: add --actual needs a value\n'  >&2; return 2; }; _ACC_ACTUAL="$(_acc_oneline "$2")";  shift 2; continue ;;
+        --expect)   [[ $# -ge 2 ]] || { printf 'deputy: add --expect needs a value\n'  >&2; return 2; }; _ACC_EXPECT="$(_acc_oneline "$2")";  shift 2; continue ;;
+        --where)    [[ $# -ge 2 ]] || { printf 'deputy: add --where needs a value\n'   >&2; return 2; }; _ACC_WHERE="$(_acc_oneline "$2")";   shift 2; continue ;;
+        --match)    [[ $# -ge 2 ]] || { printf 'deputy: add --match needs a value\n'   >&2; return 2; }; _ACC_MATCH="$(_acc_oneline "$2")";   shift 2; continue ;;
+        --no-accept) _acc_skip=1; shift; continue ;;
         -*) printf 'deputy: unknown flag: %s (use -- before a description starting with "-")\n' "$1" >&2; return 2 ;;
       esac
     fi
@@ -1043,6 +1205,23 @@ cmd_add() {
   # a distinct $$, never erase each other's flag.
   local _worker=0
   _is_worker_context && _worker=1
+  # #113: grill for the acceptance record BEFORE the item is written — `add` may autorun a
+  # worker on the new item at the end of this function, so the criterion must already exist
+  # when that worker starts. Grill ONLY a human at a real terminal: a pipe, a test, cron, or
+  # a headless worker would block forever on a read that never gets an answer.
+  local _acc_given=0
+  [[ -n "$_ACC_OBSERVE$_ACC_ACTUAL$_ACC_EXPECT$_ACC_WHERE$_ACC_MATCH" ]] && _acc_given=1
+  if [[ "$_acc_skip" -eq 0 && "$_worker" -eq 0 && "${DEPUTY_NO_GRILL:-0}" != "1" ]] \
+     && [[ "$(_config_get accept_grill)" != "0" ]] && _looks_like_bug "$text"; then
+    if [[ -t 0 && -t 1 ]]; then
+      _accept_grill "$text" || true
+      [[ -n "$_ACC_OBSERVE$_ACC_ACTUAL$_ACC_EXPECT$_ACC_WHERE$_ACC_MATCH" ]] && _acc_given=1
+    elif [[ "$_acc_given" -eq 0 ]]; then
+      # Never block a non-interactive caller — but never let the gap be silent either.
+      printf 'deputy: note: "%s" reads like a bug but carries no acceptance record, so deputy cannot prove the symptom is gone.\n' "$text" >&2
+      printf '  add one with: deputy accept <id> --observe "<how to see it>" --actual "<what happens>" --expect "<what should>" --where "<env+data>"\n' >&2
+    fi
+  fi
   rm -f "$STATE_DIR/.proposed_pending.$$" "$STATE_DIR/.add_pending.$$" 2>/dev/null || true
   _do_add() {
     _allocate_ids || return 1
@@ -1091,6 +1270,20 @@ cmd_add() {
     return "$_add_rc"
   fi
   _commit_queue "add"
+  # #113: persist the acceptance record for a genuinely-NEW item. Either handoff file
+  # carries the new id; a duplicate ("already present") wrote neither, so an add that
+  # matched an existing item never overwrites that item's frozen criterion.
+  if [[ "$_acc_given" -eq 1 ]]; then
+    local _acc_id _acc_f
+    _acc_id="$(cat "$STATE_DIR/.proposed_pending.$$" 2>/dev/null || cat "$STATE_DIR/.add_pending.$$" 2>/dev/null || true)"
+    if _valid_item_id "${_acc_id:-}"; then
+      if _acc_f="$(_write_accept_record "$_acc_id")" && [[ -n "$_acc_f" ]]; then
+        printf 'deputy: acceptance recorded → %s\n' "$_acc_f"
+      else
+        printf 'deputy: warning: could not write the acceptance record for #%s\n' "$_acc_id" >&2
+      fi
+    fi
+  fi
   if [[ "$_worker" -eq 1 ]]; then
     # A worker proposal never autoruns. Notify only if a NEW proposal was created
     # (the handoff file is absent on a duplicate, which returns early above).
@@ -2105,6 +2298,40 @@ commands:
                                   no flag → default priority P3 assigned at numbering;
                                   use -- before a description that starts with "-";
                                   set DEPUTY_NO_AUTORUN=1 to enqueue without running)
+                                  Acceptance (#113): --observe/--actual/--expect/--where
+                                  (+ optional --match <regex>)
+                                  record the reported symptom; when the text reads like a
+                                  bug and you are at a terminal, deputy asks for those four
+                                  instead. --no-accept skips it (chores); DEPUTY_NO_GRILL=1
+                                  or config accept_grill=0 disables the prompt everywhere
+  accept <id|slug>                print a task's acceptance record — the reported symptom
+    [--observe <cmd>]             frozen in the reporter's words. With any flag, create or
+    [--actual <text>]             update it instead (use this to backfill an item added
+    [--expect <text>]             before the record existed). observe is the command deputy
+    [--where <text>]              runs to SEE the symptom; it is what 'verify' checks.
+    [--match <regex>]             --match is OPTIONAL and machine-checked: red/bite score any
+                                  nonzero exit as "symptom present", so without it a blank
+                                  column that has become a thrown exception still counts as
+                                  the same bug. Set it when that difference matters
+  verify <id|slug> --<phase>      prove the symptom moved — not just that code landed:
+                                  --red    before the fix: observe MUST FAIL (symptom is
+                                           real + the check captures it). Passing here
+                                           means do NOT proceed — the check is wrong
+                                  --green  after the fix: observe MUST PASS
+                                  --bite   revert this branch's own commits in a scratch
+                                           worktree; observe MUST FAIL again. Catches a
+                                           test written to fit the diff rather than the bug
+                                  --smoke  run config smoke_cmd against the real
+                                           environment (green unit tests are not evidence
+                                           when the bug only exists against live data)
+                                  --status print the recorded verdicts
+                                  exit 0 = pass (or a skipped gate), 1 = the gate FAILED,
+                                  2 = cannot run (no record/observe/smoke_cmd, bad usage),
+                                  3 = INCONCLUSIVE (timed out, command not found, or no
+                                  clean reverted tree) — no evidence either way, which is
+                                  never the same as a pass
+                                  --red is SKIPPED (exit 0) once the item has committed
+                                  work: on a resumed run the pre-fix state is already gone
   slug <id>                       print a task's canonical, frozen branch slug
                                   (<id>-<hash>-<desc>, fixed at add-time from the immutable
                                   user description). The orchestrator uses this so every
@@ -2223,6 +2450,9 @@ config keys (.deputy/config)  — set with 'deputy config <key> <value>':
   notify=desktop,push,email       channels for item-surfaced/finished notifications
   notify_push_url=<url>           ntfy.sh-compatible push URL (required for push)
   notify_email=<address>          recipient address (required for email)
+  smoke_cmd=<command>             #113: end-to-end check run against the REAL environment/data by 'deputy verify --smoke'. When set, a passing smoke run is required before 'deputy done' (waive with 'done --no-verify'). Unset = no smoke gate. Exists because green unit tests are not evidence for a bug that only reproduces against live data
+  accept_grill=0                  #113: disable the interactive acceptance prompt on 'deputy add' (default on for bug-shaped descriptions at a TTY; DEPUTY_NO_GRILL=1 does the same per-invocation). The four fields can still be passed as flags
+  verify_timeout_secs=<n>         #113: per-run cap for a 'deputy verify' observe/smoke command (default 300), so a hung check can never wedge a headless worker
 CONFIG
   else
     printf 'Run "deputy help --full" for config key documentation.\n\n'
@@ -3415,6 +3645,35 @@ _merge_ready_branch() {
   # Merge succeeded. Clear markers + delete the branch ONLY if the done-write succeeds, so a
   # failed BACKLOG write leaves the marker for retry rather than losing the item.
   local cur_line; cur_line="$(_line_by_id "$id" || true)"
+  # #113(D): finalize the WAYPOINT ledger too, and run the outcome gate.
+  # Until now this path wrote only BACKLOG.md, so every runner-auto-merged item left
+  # waypoint.json saying "in_progress" while the queue said Done — the two records
+  # disagreeing on literally every auto-merge. cmd_wp_done also enforces the acceptance
+  # gate: when the item HAS a criterion that was never proven, the merge still stands (the
+  # code was reviewed and tested) but the item must NOT be closed as done — it surfaces.
+  # Items with no waypoint, or no acceptance record, are unaffected.
+  local _slug="" _wp_rc=0 _wp_err=""
+  _slug="$(cmd_slug "$id" 2>/dev/null | head -1 || true)"
+  if [[ -n "$_slug" && -f "$(_wp_json "$_slug")" ]]; then
+    _wp_err="$(cmd_wp_done "$_slug" 2>&1 >/dev/null)" || _wp_rc=$?
+  fi
+  if [[ "$_wp_rc" -ne 0 ]]; then
+    local note; note="$(_trail_path questions "$_slug")"
+    mkdir -p "$(dirname "$note")" 2>/dev/null || true
+    { printf 'MERGED BUT NOT CLOSED: %s is merged into %s, but deputy will not call it done.\n\n' "$branch" "$def"
+      printf '%s\n\n' "$_wp_err"
+      printf 'The code landed; what is unproven is that YOUR reported symptom is gone.\n'
+      printf 'Resolve with:  deputy verify %s --green && deputy verify %s --bite && deputy done %s\n' "$_slug" "$_slug" "$_slug"
+      printf 'Or close it deliberately:  deputy done %s --no-verify\n' "$_slug"
+    } >> "$note" 2>/dev/null || true
+    if [[ -n "$cur_line" ]] && cmd_set "$cur_line" surfaced >/dev/null 2>&1; then
+      rm -f "$marker" "$STATE_DIR/proposed-$id" 2>/dev/null || true
+      printf 'merged %s into %s — #%s SURFACED (not done): the reported symptom is not proven fixed (see %s)\n' "$branch" "$def" "$id" "$note"
+      return 0
+    fi
+    printf 'merged %s into %s but could not surface #%s — marker kept; resolve manually\n' "$branch" "$def" "$id"
+    return 0
+  fi
   if [[ -n "$cur_line" ]] && cmd_set "$cur_line" done >/dev/null 2>&1; then
     rm -f "$marker" "$STATE_DIR/proposed-$id" 2>/dev/null || true
     if _should_delete_merged_branch && git -C "$ROOT" merge-base --is-ancestor "$branch" HEAD 2>/dev/null; then
@@ -4441,16 +4700,72 @@ cmd_wp_start() {
 }
 
 cmd_wp_done() {
-  local id="${1:?done needs <id>}"; _wp_require_jq || return 1
+  local id="" waive=0
+  id="${1:?done needs <id>}"; shift
+  while [[ $# -gt 0 ]]; do case "$1" in
+    # #113(D): an explicit, RECORDED waiver. The gate can be overridden — but never
+    # silently: the waiver lands in the ledger so "done" always says which kind it was.
+    --no-verify) waive=1; shift ;;
+    *) printf 'deputy: done: unexpected arg %s\n' "$1" >&2; return 2 ;;
+  esac; done
+  _wp_require_jq || return 1
   _wp_validate_id "$id" || return 1
+
+  # #113(D): outcome gate. `done` may only mean "the reported symptom is gone", so when
+  # this task HAS an acceptance criterion, the green + bite verdicts must both be recorded
+  # as passing. Tasks with NO acceptance record are unaffected (the gate is opt-in via the
+  # record itself), so this can never block pre-existing or criterion-free work.
+  local af obs; af="$(_accept_path "$id")"; obs=""
+  [[ -f "$af" ]] && obs="$(_accept_field "$af" observe)"
+  if [[ -n "$obs" && "$waive" -eq 0 ]]; then
+    local vg vb; vg="$(_verify_verdict "$id" green)"; vb="$(_verify_verdict "$id" bite)"
+    # A passing verdict taken on code that has since changed is not evidence about the
+    # code being closed — re-verify rather than inherit it.
+    [[ "$vg" == "pass" ]] && ! _verify_is_current "$id" green && vg="stale (code changed since it was taken)"
+    [[ "$vb" == "pass" ]] && ! _verify_is_current "$id" bite  && vb="stale (code changed since it was taken)"
+    if [[ "$vg" != "pass" || "$vb" != "pass" ]]; then
+      printf 'deputy: done: REFUSED for %s — the reported symptom is not proven fixed.\n' "$id" >&2
+      printf '  acceptance: %s\n' "$af" >&2
+      printf '  green (symptom gone):        %s\n' "${vg:-not run}" >&2
+      printf '  bite  (fix is load-bearing): %s\n' "${vb:-not run}" >&2
+      printf '  run:  deputy verify %s --green && deputy verify %s --bite\n' "$id" "$id" >&2
+      printf '  (steps committed + tests green + merged does NOT prove the symptom moved.\n' >&2
+      printf '   override only with a reason you can defend: deputy done %s --no-verify)\n' "$id" >&2
+      return 1
+    fi
+  fi
+  # (E) When a smoke command is configured, a passing smoke run is part of done: unit
+  # tests cannot see a bug that only exists against real data.
+  if [[ -n "$(_config_get smoke_cmd)" && "$waive" -eq 0 ]]; then
+    local vs; vs="$(_verify_verdict "$id" smoke)"
+    [[ "$vs" == "pass" ]] && ! _verify_is_current "$id" smoke && vs="stale (code changed since it was taken)"
+    if [[ "$vs" != "pass" ]]; then
+      printf 'deputy: done: REFUSED for %s — smoke_cmd is configured but its verdict is "%s".\n' "$id" "${vs:-not run}" >&2
+      printf '  run:  deputy verify %s --smoke   (or override: deputy done %s --no-verify)\n' "$id" "$id" >&2
+      return 1
+    fi
+  fi
+
   _do_done() {
     # Guard (inside lock): all steps must be succeeded before marking the task done.
     if jq -e 'any(.steps[]; .status!="succeeded")' "$(_wp_json "$id")" >/dev/null; then
       printf 'deputy: done: not all steps succeeded for %s\n' "$id" >&2; return 1
     fi
-    _wp_jq "$id" '.status="completed" | .current_step=null | .updated_at=$now' --arg now "$(_wp_now)"
+    _wp_jq "$id" '.status="completed" | .current_step=null | .verify_waived=$w | .updated_at=$now' \
+      --arg now "$(_wp_now)" --argjson w "$([[ "$waive" -eq 1 ]] && printf true || printf false)"
   }
-  _with_lock _do_done
+  _with_lock _do_done || return 1
+  # #113(F): empty steps are reported at done — N "implemented" steps that produced no
+  # file changes is a plan that was wrong, and the reader should never have to diff to
+  # discover that.
+  local _n_empty _n_steps
+  _n_empty="$(jq -r '[.steps[] | select(.empty == true)] | length' "$(_wp_json "$id")" 2>/dev/null || printf 0)"
+  _n_steps="$(jq -r '.steps | length' "$(_wp_json "$id")" 2>/dev/null || printf 0)"
+  [[ "${_n_empty:-0}" -gt 0 ]] && \
+    printf 'deputy: note: %s of %s steps produced NO file changes (--allow-empty) for %s\n' "$_n_empty" "$_n_steps" "$id" >&2
+  [[ "$waive" -eq 1 ]] && \
+    printf 'deputy: note: %s marked done with the verification gate WAIVED (--no-verify)\n' "$id" >&2
+  return 0
 }
 
 cmd_wp_plan() {
@@ -4543,12 +4858,18 @@ cmd_wp_commit() {
   # Stage ALL changes. A step MUST produce a committed change to succeed: if nothing
   # is staged, fail (step stays in_progress) unless --allow-empty was given.
   git -C "$wt" add -A
+  # #113(F): an empty step commit is recorded as `empty:true`, never silently. A plan
+  # whose steps mostly no-op looks like N implemented steps in the ledger while being
+  # one commit plus filler — the reader must be able to see that.
+  local _was_empty=false
   if git -C "$wt" diff --cached --quiet; then
     if [[ "$allow_empty" -ne 1 ]]; then
       printf 'deputy: commit: no changes staged in %s — a step must produce a committed change (use --allow-empty to override)\n' "$wt" >&2
       return 1
     fi
+    _was_empty=true
     git -C "$wt" commit -q --allow-empty -m "${summary:-deputy step (no changes)}"
+    printf 'deputy: warning: step committed with NO file changes (--allow-empty) — recorded as empty in the ledger\n' >&2
   else
     git -C "$wt" commit -q -m "${summary:-deputy step}"
   fi
@@ -4560,16 +4881,329 @@ cmd_wp_commit() {
   _do_commit() {
     _wp_jq "$id" \
       '(.steps[] | select(.status=="in_progress")) |=
-         (.status="succeeded" | .completed_at=$now
+         (.status="succeeded" | .completed_at=$now | .empty=$empty
           | .actual_result={summary:$sum, artifacts:$arts})
        | .current_step=null | .updated_at=$now' \
-      --arg sum "$summary" --arg now "$(_wp_now)" --argjson arts "$arts_json"
+      --arg sum "$summary" --arg now "$(_wp_now)" --argjson arts "$arts_json" \
+      --argjson empty "$_was_empty"
   }
   _with_lock _do_commit
 }
 
 # Hidden helper for tests: print the raw waypoint.json.
 cmd_wp_show() { cat "$(_wp_json "${1:?}")"; }
+
+# ── #113: verification gates — prove the SYMPTOM moved, not just that code landed ────
+# `deputy verify <id|slug> --<phase>` runs the acceptance record's `observe` command and
+# records the outcome in waypoint.json under .verification.<phase>:
+#   --red    BEFORE the fix — observe MUST FAIL. If it passes here, the check does not
+#            capture the reported symptom (or the item is stale): stop, do not "fix" it.
+#   --green  AFTER the fix — observe MUST PASS.
+#   --bite   revert THIS branch's own commits in a scratch worktree and re-run observe —
+#            it MUST FAIL again. This is the gate that catches a test written to fit the
+#            diff: if the symptom stays fixed with the fix removed, nothing was proven.
+#   --smoke  run config `smoke_cmd` against the real environment/data. Green unit tests
+#            are not evidence when the bug only exists against live data.
+# Exit: 0 pass (or a deliberately skipped gate), 1 the gate genuinely FAILED, 2 cannot run
+# (no record / no observe / no smoke_cmd / bad usage), 3 INCONCLUSIVE — the check could not
+# produce evidence (timed out, not found, or no clean reverted tree). 3 is deliberately
+# distinct from 1: "the fix is wrong" and "we learned nothing" call for different responses.
+_verify_timeout() { local t; t="$(_config_get verify_timeout_secs)"; [[ "$t" =~ ^[0-9]+$ && "$t" -gt 0 ]] && printf '%s' "$t" || printf '300'; }
+
+# Run <cmd> in <dir>, echo its exit status. ALWAYS bounded by verify_timeout_secs: an
+# observe/smoke command comes from a config file or a human's acceptance record and may do
+# anything, so a hung one must never wedge a headless worker. Where timeout(1) is missing we
+# supervise by hand rather than running unbounded — the poll below is finite by construction
+# and always reaps its child, so it cannot become an orphaned waiter.
+_verify_run() { # <dir> <cmd> <logfile>
+  local dir="$1" cmd="$2" log="$3" rc=0 t; t="$(_verify_timeout)"
+  if command -v timeout >/dev/null 2>&1; then
+    # No -k: uutils' timeout (0.2.x) returns 125 instead of 124 when --kill-after is given,
+    # which would hide a real timeout behind "timeout itself failed". Plain timeout reports
+    # 124 consistently across GNU and uutils, and 124..127 are all handled as non-evidence
+    # by the caller anyway.
+    ( cd "$dir" && timeout "$t" bash -c "$cmd" ) >"$log" 2>&1 || rc=$?
+  else
+    # Enable job control just long enough to background the check, so it lands in its OWN
+    # process group (pgid == pid). Signalling the group rather than the pid alone is what
+    # actually reaps a check that spawned children of its own (`foo & wait`), instead of
+    # leaving them running against the repo after we have moved on.
+    local _had_m=0; [[ "$-" == *m* ]] && _had_m=1
+    set -m
+    ( cd "$dir" && bash -c "$cmd" ) >"$log" 2>&1 &
+    local pid=$! waited=0
+    [[ "$_had_m" -eq 0 ]] && set +m
+    while [[ "$waited" -lt "$t" ]] && kill -0 "$pid" 2>/dev/null; do sleep 1; waited=$((waited + 1)); done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rc=124                                  # same signal as timeout(1)
+    else
+      wait "$pid" || rc=$?
+    fi
+  fi
+  printf '%s' "$rc"
+}
+
+# Fingerprint of the item's committed work. A verdict is only evidence about the tree it
+# was taken on: if further commits land afterwards, a recorded green/bite describes code
+# that no longer exists. Stored with each verdict and re-checked at `done`.
+_verify_fingerprint() { # <slug>
+  local c; c="$(_verify_item_commits "$1" 2>/dev/null | tr '\n' ' ' || true)"
+  _short_hash "${c:-none}"
+}
+
+# Record one phase's outcome, stamped with the fingerprint of the code it was taken on.
+# Caller must NOT hold the lock (_with_lock is taken here).
+_verify_record() { # <slug> <phase> <cmd> <rc> <verdict> <note>
+  local slug="$1" ph="$2" cmd="$3" rc="$4" verdict="$5" note="$6" fp
+  fp="$(_verify_fingerprint "$slug")"
+  _do_vrec() {
+    _wp_jq "$slug" \
+      '.verification = ((.verification // {}) | .[$ph] = {cmd:$c, rc:($rc|tonumber), verdict:$v, note:$n, fp:$fp, at:$now})
+       | .updated_at=$now' \
+      --arg ph "$ph" --arg c "$cmd" --arg rc "$rc" --arg v "$verdict" --arg n "$note" \
+      --arg fp "$fp" --arg now "$(_wp_now)"
+  }
+  _with_lock _do_vrec
+}
+
+# Read one field of a recorded verdict ("" when unrecorded).
+_verify_field() { # <slug> <phase> <field>
+  local f; f="$(_wp_json "$1")"
+  [[ -f "$f" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -r --arg ph "$2" --arg k "$3" '((.verification // {})[$ph] // {})[$k] // ""' "$f" 2>/dev/null
+}
+_verify_verdict() { _verify_field "$1" "$2" verdict; }
+
+# A verdict counts as evidence only if it still describes the CURRENT code. Anything else
+# is a verdict about a tree that no longer exists — which is the false positive this whole
+# mechanism exists to stop, just with extra steps.
+_verify_is_current() { # <slug> <phase>
+  local fp; fp="$(_verify_field "$1" "$2" fp)"
+  [[ -n "$fp" ]] || return 1                     # pre-fingerprint record → treat as stale
+  [[ "$fp" == "$(_verify_fingerprint "$1")" ]]
+}
+
+# This item's OWN commits, newest-first, taken from the ledger's recorded step commits.
+# The ledger is used in preference to a `merge-base(default, branch)..branch` range because
+# that range collapses to empty the moment the branch is merged — which would make --bite
+# permanently unavailable exactly when a human is reviewing an already-merged item.
+# Emitted NEWEST-FIRST, which is the order `git revert` needs: reverting an older commit
+# before a newer one that builds on it conflicts. The order comes from the ledger's step
+# order (steps are appended oldest-first, so reversing them is exact) — NOT from
+# `rev-list --no-walk=sorted`, which sorts by commit DATE and therefore returns an arbitrary
+# order for two step commits made within the same second. That is rare enough to look like
+# a flake and common enough to happen on any fast pair of steps.
+_verify_item_commits() { # <slug>
+  local f s; f="$(_wp_json "$1")"
+  [[ -f "$f" ]] || return 1
+  local -a raw=() ok=()
+  mapfile -t raw < <(jq -r '.steps[]? | .actual_result?.artifacts[]?.step_commit // empty' "$f" 2>/dev/null || true)
+  [[ "${#raw[@]}" -gt 0 ]] || return 1
+  # Walk newest→oldest, keeping the first sighting of each SHA (one step can declare several
+  # artifacts, all tagged with that step's single commit).
+  local i seen=" "
+  for (( i=${#raw[@]}-1; i>=0; i-- )); do
+    s="${raw[$i]}"
+    [[ -n "$s" && "$seen" != *" $s "* ]] || continue
+    seen+="$s "
+    git -C "$ROOT" rev-parse -q --verify "${s}^{commit}" >/dev/null 2>&1 && ok+=("$s")
+  done
+  [[ "${#ok[@]}" -gt 0 ]] || return 1
+  printf '%s\n' "${ok[@]}"
+}
+
+# Build the scratch worktree for --bite: the current tree with THIS item's commits reverted.
+# Reverting only the item's own commits (rather than checking out the pre-fix default branch)
+# keeps everything else that landed meanwhile, so the single difference is the fix itself.
+# Echoes the scratch path on success; rc1 = could not construct it (caller → inconclusive,
+# never a pass — an unbuildable comparison must not be reported as evidence).
+_verify_bite_tree() { # <slug> <outdir>
+  local slug="$1" scratch="$2" branch="deputy/$slug" def base tip
+  def="$(_default_branch)"; [[ -n "$def" ]] || return 1
+  # Check out the branch tip when it still exists (pre-merge), else the default branch
+  # (post-merge, or after delete_merged_branch cleaned the branch up).
+  if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch"; then tip="$branch"; else tip="$def"; fi
+  local -a shas=()
+  mapfile -t shas < <(_verify_item_commits "$slug" || true)
+  if [[ "${#shas[@]}" -eq 0 ]]; then
+    # No ledger commits (e.g. work done outside the spine): fall back to the branch range.
+    git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch" || return 1
+    base="$(git -C "$ROOT" merge-base "$def" "$branch" 2>/dev/null)" || return 1
+    [[ -n "$base" ]] || return 1
+    [[ "$(git -C "$ROOT" rev-list --count "$base..$branch" 2>/dev/null || printf 0)" -gt 0 ]] || return 1
+    mapfile -t shas < <(git -C "$ROOT" rev-list "$base..$branch" 2>/dev/null)
+    [[ "${#shas[@]}" -gt 0 ]] || return 1
+  fi
+  # Keep only commits actually contained in the tree we are about to check out; reverting a
+  # commit that is not in this history would fail or revert something unrelated.
+  local -a use=(); local s
+  for s in "${shas[@]}"; do
+    [[ -n "$s" ]] || continue
+    git -C "$ROOT" merge-base --is-ancestor "$s" "$tip" 2>/dev/null && use+=("$s")
+  done
+  [[ "${#use[@]}" -gt 0 ]] || return 1
+  git -C "$ROOT" worktree prune 2>/dev/null || true
+  # The scratch path is PID-unique: a fixed name would let two concurrent --bite runs
+  # force-remove each other's tree mid-check (a human verifying while a worker verifies).
+  [[ -e "$scratch" ]] && _verify_drop_scratch "$scratch"
+  git -C "$ROOT" worktree add --detach "$scratch" "$tip" >/dev/null 2>&1 || return 1
+  # -n applies every revert to the index/worktree without committing. A conflict here means
+  # we cannot construct a clean "without the fix" tree → inconclusive, never a pass.
+  if ! git -C "$scratch" revert -n "${use[@]}" >/dev/null 2>&1; then
+    git -C "$scratch" revert --abort >/dev/null 2>&1 || true
+    _verify_drop_scratch "$scratch"
+    return 1
+  fi
+  printf '%s' "$scratch"
+}
+
+# Remove a --bite scratch worktree and deregister it. Also sweeps scratch dirs abandoned by
+# a dead run, so a killed verify can't leave worktrees accumulating under .deputy/.
+_verify_drop_scratch() { # [<path>]
+  local p
+  [[ -n "${1:-}" && -e "$1" ]] && git -C "$ROOT" worktree remove --force "$1" >/dev/null 2>&1
+  [[ -n "${1:-}" && -e "$1" ]] && rm -rf -- "$1" 2>/dev/null || true
+  shopt -s nullglob
+  for p in "$STATE_DIR"/verify-wt.*; do
+    [[ "$p" == "${1:-}" ]] && continue
+    # Only reclaim another run's scratch when that pid is gone.
+    local _vp="${p##*verify-wt.}"
+    [[ "$_vp" =~ ^[0-9]+$ ]] && kill -0 "$_vp" 2>/dev/null && continue
+    git -C "$ROOT" worktree remove --force "$p" >/dev/null 2>&1 || rm -rf -- "$p" 2>/dev/null || true
+  done
+  shopt -u nullglob
+  git -C "$ROOT" worktree prune 2>/dev/null || true
+}
+
+cmd_verify() {
+  local a="${1:-}" phase=""
+  [[ -n "$a" ]] || { printf 'deputy: verify requires an <id|slug> and a phase (--red|--green|--bite|--smoke|--status)\n' >&2; return 2; }
+  shift
+  while [[ $# -gt 0 ]]; do case "$1" in
+    --red|--green|--bite|--smoke|--status) phase="${1#--}"; shift ;;
+    *) printf 'deputy: verify: unexpected arg: %s (want --red|--green|--bite|--smoke|--status)\n' "$1" >&2; return 2 ;;
+  esac; done
+  [[ -n "$phase" ]] || { printf 'deputy: verify needs a phase: --red|--green|--bite|--smoke|--status\n' >&2; return 2; }
+  _wp_require_jq || return 2
+  local slug; slug="$(_accept_slug_of "$a")"
+  [[ -n "$slug" ]] || { printf 'deputy: verify: no task %s\n' "$a" >&2; return 2; }
+  _wp_validate_id "$slug" || return 2
+  [[ -f "$(_wp_json "$slug")" ]] || { printf 'deputy: verify: no waypoint ledger for %s (run: deputy start %s "<goal>")\n' "$slug" "$slug" >&2; return 2; }
+
+  if [[ "$phase" == "status" ]]; then
+    jq -r '(.verification // {}) | to_entries | if length==0 then "no verification recorded"
+           else (.[] | "\(.key): \(.value.verdict)  (rc=\(.value.rc)) \(.value.note // "")") end' \
+      "$(_wp_json "$slug")"
+    return 0
+  fi
+
+  local wt cmd dir rc verdict note="" log
+  wt="$(_wt_path)"
+  log="$(mktemp)"
+
+  if [[ "$phase" == "smoke" ]]; then
+    cmd="$(_config_get smoke_cmd)"
+    [[ -n "$cmd" ]] || { printf 'deputy: verify --smoke: no smoke_cmd configured (deputy config smoke_cmd "<command>")\n' >&2; rm -f "$log"; return 2; }
+  else
+    local af; af="$(_accept_path "$slug")"
+    [[ -f "$af" ]] || { printf 'deputy: verify: no acceptance record for %s — nothing to verify against.\n  add one: deputy accept %s --observe "<how to see it>" ...\n' "$slug" "${a#\#}" >&2; rm -f "$log"; return 2; }
+    cmd="$(_accept_field "$af" observe)"
+    [[ -n "$cmd" ]] || { printf 'deputy: verify: acceptance record for %s has no `observe` command — nothing to run.\n' "$slug" >&2; rm -f "$log"; return 2; }
+  fi
+
+  # The red gate only means anything BEFORE the first fix commit. On a RESUMED run the work
+  # is already committed, so `observe` is expected to pass — treating that as "the check is
+  # wrong" would surface every resumed item. Skip rather than judge.
+  if [[ "$phase" == "red" ]] && _verify_item_commits "$slug" >/dev/null 2>&1; then
+    printf 'deputy: verify --red: SKIPPED for %s — the item already has committed work, so the\n' "$slug"
+    printf '  pre-fix state no longer exists here. The red gate applies only before the first\n'
+    printf '  commit; on a resumed run go straight to --green/--bite.\n'
+    rm -f "$log"; return 0
+  fi
+
+  if [[ "$phase" == "bite" ]]; then
+    local scratch="$STATE_DIR/verify-wt.$$"
+    if ! dir="$(_verify_bite_tree "$slug" "$scratch")"; then
+      _verify_record "$slug" bite "$cmd" 0 inconclusive "could not build a reverted tree (no commits on deputy/$slug, or the revert conflicts) — verify by hand"
+      printf 'deputy: verify --bite: INCONCLUSIVE for %s — could not construct a clean "without the fix" tree.\n' "$slug" >&2
+      rm -f "$log"; return 3
+    fi
+    rc="$(_verify_run "$dir" "$cmd" "$log")"
+    _verify_drop_scratch "$scratch"
+  else
+    dir="$wt"; [[ -d "$dir" ]] || dir="$ROOT"
+    rc="$(_verify_run "$dir" "$cmd" "$log")"
+  fi
+
+  # A check that could not RUN proves nothing in either direction. This matters most for
+  # red/bite, which read "observe failed" as evidence the symptom is present: without this,
+  # a check that hung (124), or was mistyped so the shell never found it (127), would count
+  # as proof the bug is real — the exact false positive this command exists to prevent,
+  # inverted. 124 timed out, 125 timeout(1) itself failed, 126 not executable, 127 not found.
+  if [[ "$rc" -ge 124 && "$rc" -le 127 ]]; then
+    local why
+    case "$rc" in
+      124|125) why="timed out after $(_verify_timeout)s" ;;
+      126)     why="the command is not executable" ;;
+      *)       why="the command was not found" ;;
+    esac
+    _verify_record "$slug" "$phase" "$cmd" "$rc" inconclusive "$why"
+    printf 'deputy: verify --%s: INCONCLUSIVE for %s — `%s`: %s (rc=%s).\n' "$phase" "$slug" "$cmd" "$why" "$rc" >&2
+    printf '  A check that could not run is not evidence. Fix the check%s.\n' \
+      "$([[ "$rc" -le 125 ]] && printf ', or raise: deputy config verify_timeout_secs <n>')" >&2
+    printf -- '--- last 20 lines of output ---\n' >&2
+    tail -20 "$log" >&2 2>/dev/null || true
+    rm -f "$log"; return 3
+  fi
+  # red and bite both assert the symptom is PRESENT (observe fails); green and smoke
+  # assert it is GONE (observe passes).
+  case "$phase" in
+    red|bite) [[ "$rc" -ne 0 ]] && verdict=pass || verdict=fail ;;
+    *)        [[ "$rc" -eq 0 ]] && verdict=pass || verdict=fail ;;
+  esac
+  # A nonzero exit only says "something failed" — not that it failed the REPORTED way. When
+  # the record carries a `match` regex, require the failure to look like the reported one, so
+  # a blank column that has become a thrown exception is not scored as the same symptom.
+  if [[ "$verdict" == "pass" && ( "$phase" == "red" || "$phase" == "bite" ) ]]; then
+    local _mre; _mre="$(_accept_field "$(_accept_path "$slug")" match 2>/dev/null || true)"
+    if [[ -n "$_mre" ]] && ! grep -Eq -- "$_mre" "$log" 2>/dev/null; then
+      verdict=fail
+      note="output does not match the reported failure /$_mre/"
+      _verify_record "$slug" "$phase" "$cmd" "$rc" "$verdict" "$note"
+      printf 'deputy: verify --%s FAIL — `%s` failed (rc=%s), but NOT in the reported way:\n' "$phase" "$cmd" "$rc" >&2
+      printf '  its output does not match /%s/. A different failure is not the same bug.\n' "$_mre" >&2
+      printf -- '--- last 20 lines of output ---\n' >&2
+      tail -20 "$log" >&2 2>/dev/null || true
+      rm -f "$log"; return 1
+    fi
+  fi
+  _verify_record "$slug" "$phase" "$cmd" "$rc" "$verdict" "$note"
+
+  if [[ "$verdict" == "pass" ]]; then
+    case "$phase" in
+      red)   printf 'deputy: verify --red PASS — the symptom reproduces (rc=%s). Proceed with the fix.\n' "$rc" ;;
+      green) printf 'deputy: verify --green PASS — the symptom is gone (rc=0).\n' ;;
+      bite)  printf 'deputy: verify --bite PASS — the symptom returns with the fix reverted (rc=%s); the fix is load-bearing.\n' "$rc" ;;
+      smoke) printf 'deputy: verify --smoke PASS — smoke_cmd succeeded against the real environment.\n' ;;
+    esac
+    rm -f "$log"; return 0
+  fi
+  case "$phase" in
+    red)   printf 'deputy: verify --red FAIL — `%s` already SUCCEEDS before any fix.\n  The check does not capture the reported symptom, or the item is stale. Do NOT proceed: surface it.\n' "$cmd" >&2 ;;
+    green) printf 'deputy: verify --green FAIL — `%s` still fails (rc=%s). The reported symptom is NOT fixed.\n' "$cmd" "$rc" >&2 ;;
+    bite)  printf 'deputy: verify --bite FAIL — `%s` still passes with the fix reverted.\n  The check does not bite: it proves nothing about this fix. Fix the check, not the code.\n' "$cmd" >&2 ;;
+    smoke) printf 'deputy: verify --smoke FAIL — smoke_cmd failed (rc=%s) against the real environment.\n' "$rc" >&2 ;;
+  esac
+  printf -- '--- last 20 lines of output ---\n' >&2
+  tail -20 "$log" >&2 2>/dev/null || true
+  rm -f "$log"
+  return 1
+}
 
 # ── Retry budget helpers ─────────────────────────────────────────────────────
 # Budget: if an item has been cron-resumed _WP_RETRY_BUDGET times with no new committed step,
@@ -5521,6 +6155,8 @@ main() {
     list) shift; cmd_list "$@"; return $? ;;
     _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
+    accept) shift; cmd_accept "$@"; return $? ;;     # #113: the frozen acceptance record
+    verify) shift; cmd_verify "$@"; return $? ;;     # #113: red / green / bite / smoke gates
     slug) shift; cmd_slug "${1:-}"; return $? ;;
     status) cmd_status; return 0 ;;
     test) shift; cmd_test "$@"; return $? ;;
