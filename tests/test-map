@@ -10,7 +10,7 @@
 # ── commands whose tests are not simply test_<name> ──────────────────────────
 cmd_list: test_list test_list_detail test_cmd_help
 cmd_watch: test_watch_digest test_livelog test_reflect test_review
-cmd_add: test_add test_add_priority test_autorun test_worker_proposal
+cmd_add: test_add test_add_priority test_autorun test_worker_proposal test_accept
 cmd_run: test_run test_run_add test_run_priority test_run_branch_guard test_heartbeat test_headed
 cmd_reflect: test_reflect test_review
 cmd_pick: test_pick
@@ -21,7 +21,7 @@ _config_set: test_config
 _config_has: test_config test_delete_merged_branch
 cmd_config: test_config
 _should_delete_merged_branch: test_delete_merged_branch
-_merge_ready_branch: test_auto_merge test_pickup test_merge_dirty test_pending_merge
+_merge_ready_branch: test_auto_merge test_pickup test_merge_dirty test_pending_merge test_verify
 _merge_tree_blocker: test_merge_dirty test_auto_merge
 _merge_conflict_predetect: test_pending_merge test_merge_dirty
 _merge_route_outcome: test_pending_merge test_auto_merge test_pickup
@@ -65,3 +65,22 @@ _live_claim_exists: test_claim test_active_run_lock
 cmd_recover: test_recover
 _route: test_route
 _availability: test_route
+
+# ── #113: acceptance record + verification gates ─────────────────────────────
+cmd_accept: test_accept
+cmd_verify: test_verify
+_accept_path: test_accept test_verify
+_accept_field: test_accept test_verify
+_accept_slug_of: test_accept test_verify
+_acc_oneline: test_accept
+_looks_like_bug: test_accept
+_accept_grill: test_accept
+_write_accept_record: test_accept
+_verify_run: test_verify
+_verify_record: test_verify
+_verify_verdict: test_verify
+_verify_timeout: test_verify
+_verify_item_commits: test_verify
+_verify_bite_tree: test_verify
+cmd_wp_done: test_verify test_wp_start
+cmd_wp_commit: test_wp_commit test_verify

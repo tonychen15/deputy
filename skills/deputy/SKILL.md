@@ -38,6 +38,18 @@ ONLY through the `deputy` CLI — never hand-edit `BACKLOG.md` or `.deputy/waypo
 
 ### 1. Triage — simple vs complex
 Read the item's description and the repo. Decide **simple** or **complex**.
+
+**First, read the acceptance record: `deputy accept <id>`.** If it exists it holds the
+reported symptom in the *human's* words — `observe` (how to see it), `actual` (what
+happened), `expect` (what should have), `where` (environment + data), and optionally
+`match` (a regex the failing output must match, so a *different* failure is not scored as
+the reported one). This, not your restatement of it, is what "done" means for this item.
+**Never edit or re-scope it.** In particular, `actual` tells you what failure looks like:
+if your fix turns a blank column into a thrown exception, the item is NOT fixed, however
+green the suite is.
+If it is missing on a bug-shaped item, either ask the human (interactive) or note the gap
+in your summary (headless) — an item with no criterion can only be closed on process
+evidence, which is exactly the false positive the record exists to prevent.
 - Honor an override in `.deputy/<slug>.meta` if present (`simple` / `complex` /
   `interactive`).
 - **Bias to complex when unsure** — an unneeded clarifying question is far cheaper than
@@ -61,6 +73,22 @@ Simple items are **not** a bypass lane — they use the same spine as complex it
 with exactly **1 step**. After `deputy wt-create <slug>`:
 
 1. **Start or resume** (see §2c below).
+1b. **RED GATE — before you write any fix** (only when `deputy accept <id>` has an
+   `observe` command): `deputy verify <slug> --red`. **Always branch on the exit code, never
+   on "did it print something"** — 1 and 3 mean very different things:
+   - **rc 0** — the symptom reproduces and the check captures it. Proceed. (On a RESUMED run
+     this gate prints SKIPPED and returns 0: the fix is already committed, so the pre-fix
+     state is gone. That is expected — go straight to the §2a step 8b gates.)
+   - **rc 1** — `observe` already SUCCEEDS with no fix in place. **Stop. Do not "fix" it.**
+     Either the check does not capture the reported symptom or the item is already
+     resolved/stale. Write which to `.deputy/<slug>.questions.md` and surface the item.
+     Proceeding here is how you produce a green false positive.
+   - **rc 2** — no record / no `observe`: skip the gate and say so in your summary.
+   - **rc 3** — INCONCLUSIVE (the check timed out or could not run). You learned nothing,
+     so do not treat it as either outcome: fix the check, or surface the item saying the
+     criterion is unrunnable here. Never carry on as if it had passed.
+   This gate is what makes the later test a test of the *report* instead of a test of
+   your own diff.
 2. `deputy plan <slug> --step 1 --purpose "<what this step does>"` → **plan xReview**
    (the reviewer reviews the single-step plan — see §3 for reviewer selection and the
    `.review.md` trail; author here is `claude`). No advance without an APPROVED verdict.
@@ -128,6 +156,34 @@ with exactly **1 step**. After `deputy wt-create <slug>`:
      (P0=0 P1=1 P2=2 P3=3 P4=4; missing priority is normalized to P3 during ID allocation, otherwise ranks as 5 — lower number wins), run
      `deputy set "<item-line>" paused` and stop cleanly (do not call `deputy done`).
      The runner will execute the higher-priority item next, then resume this one.
+8b. **OUTCOME GATE — the symptom, not the diff.** Only when `deputy accept <id>` carries an
+   `observe` command, and only **after the final step's commit** (step 8) — `--bite` reverts
+   *the item's recorded step commits*, so it has nothing to work with before the commit
+   exists, and a `--green` taken earlier goes stale the moment another commit lands. Run
+   these last, immediately before the merge/surface in step 9:
+   - `deputy verify <slug> --green` — `observe` must now PASS. **rc 1 means the reported
+     symptom is NOT fixed**, no matter how green the suite is. Treat it exactly like a
+     failed quality gate (§4 retry budget), never as "close enough".
+   - `deputy verify <slug> --bite` — deputy reverts this item's own commits in a scratch
+     worktree and re-runs `observe`; it must FAIL again. **rc 1 means your test does not
+     bite**: it passes with the fix removed, so it proves nothing about this change. Fix
+     the *check*, not the code — this is the gate that catches a test written to fit the
+     diff instead of the bug.
+   **rc 3 on any of these is INCONCLUSIVE, not a pass and not a failure** — the check timed
+   out, wasn't found, or deputy could not build a clean reverted tree. Treat it as "no
+   evidence": fix the check if you can, otherwise surface the item and say so explicitly in
+   your summary. `deputy done` will refuse on an inconclusive verdict, and it is right to.
+   - `deputy verify <slug> --smoke` — only if `deputy config smoke_cmd` is set. Runs the
+     real end-to-end path against real data. A suite that is green while the live pipeline
+     throws is the exact failure this catches; when `smoke_cmd` is set, `deputy done`
+     requires it.
+   If a gate fails and you then change code to fix it, you have made a new commit — **re-run
+   `--green` and `--bite`**; `deputy done` rejects verdicts taken on superseded code.
+   `deputy done` REFUSES while `green`/`bite` (and `smoke`, when configured) are not
+   recorded as passing on the current commits. Do not reach for `deputy done --no-verify` to
+   get past a red gate — it is for a criterion genuinely unrunnable here (e.g. `where:` names
+   an environment this worker cannot reach), it is recorded in the ledger, and it must be
+   justified in your summary. A failing gate means **surface the item**, not waive it.
 9. When `deputy resume <slug>` returns empty (all steps succeeded):
    **Merge into the local default branch** (safe-only):
    **#60/#97 — a headless worker NEVER merges; it surfaces ready-merge and the RUNNER merges.**
@@ -211,6 +267,9 @@ If no coder is available, `deputy cron --reschedule "<reset text>"` — never bu
 **Spine loop for complex items** (after human approval / in `auto` mode):
 
 1. **Start or resume** (see §2c below).
+1b. **RED GATE** — identical to §2a step 1b: `deputy verify <slug> --red` before writing
+   any fix, whenever `deputy accept <id>` carries an `observe` command. rc 1 → surface, do
+   not proceed.
 2. `deputy plan <slug> --step <n> --purpose "..."` for each step → **plan xReview**
    (reviewer reviews the full step list, §3; author `claude`). No advance without APPROVED.
 3. **For each uncommitted step (pending, or in_progress from a prior interrupted run)** (drive off `deputy steps <slug>` / `deputy resume <slug>`):
@@ -222,10 +281,16 @@ If no coder is available, `deputy cron --reschedule "<reset text>"` — never bu
      file(s)** — never re-run the whole suite each retry) → protected-path gate (mandatory)
      → implementation xReview (§3).
    - `deputy commit <slug> --summary "..."` (commits the already-staged changes).
+     **Never reach for `--allow-empty` to "complete" a step that produced nothing.** It is
+     recorded in the ledger and reported at `done`, and N steps that no-op mean the plan
+     was wrong: re-plan or drop the step instead of filling the ledger with green.
    - **Preemption check:** same as §2a step 8 — after the commit, check `deputy pick`;
      if higher priority exists, `deputy set "<item-line>" paused` and stop.
 4. When `deputy resume <slug>` is empty:
-   **Merge into the local default branch** — follow the identical safe-merge procedure
+   **Outcome gate first** — run §2a step 8b (`verify --green`, `--bite`, and `--smoke` when
+   configured) after the FINAL step's commit and before the merge/surface. A red gate
+   surfaces the item; it never waives.
+   **Then merge into the local default branch** — follow the identical safe-merge procedure
    described in §2a step 9 (detect the default branch, let git arbitrate the merge — do NOT
    require a pristine tree — then surface without `deputy done` on either failure bullet).
    **On a successful merge only**, follow §2a step 9's done path: `deputy done <slug>` →
@@ -291,11 +356,21 @@ down. Two special returns:
   never burn a retry.
 
 **Invoke the chosen reviewer** (staged diff for implementation; the plan/design text
-otherwise):
+otherwise). **Always hand the reviewer the acceptance record alongside the diff** — a
+reviewer given only a diff can judge whether the code is good, never whether it fixes the
+reported bug, which is how a well-reviewed change ships without touching the symptom:
 ```bash
+acc="$(deputy accept <id> 2>/dev/null || echo 'no acceptance record')"
+ask="Review as a staff engineer. The REPORTED SYMPTOM is below; judge the diff against it as
+well as on its own merits, and call out explicitly if the diff would NOT make that symptom
+go away. List only CRITICAL or WARNING items, each with a one-line fix, or reply LGTM.
+--- reported symptom ---
+$acc
+--- diff ---
+$(git -C .deputy/wt diff --cached)"
 case "$reviewer" in
-  codex)  codex exec "Review as a staff engineer. List only CRITICAL or WARNING items, each with a one-line fix, or reply LGTM: $(git -C .deputy/wt diff --cached)" -C "$(pwd)" -s read-only ;;
-  gemini) gemini -p "Review as a staff engineer: $(git -C .deputy/wt diff --cached)" ;;
+  codex)  codex exec "$ask" -C "$(pwd)" -s read-only ;;
+  gemini) gemini -p "$ask" ;;
   claude) ;; # in-session critical re-read of the diff (only when claude is NOT the author)
   self)   ;; # DEGRADED: critically re-read your own diff; record the WARNING
 esac
@@ -356,6 +431,15 @@ counts against the retry budget in §4).
   Never spend more than a couple of tool calls on an UNWRITABLE-BACKLOG error.
 
 ## Hard rules
+- **"Done" means the reported symptom is gone — not that your code landed.** Steps
+  committed + tests green + merged is *process* evidence, and it is produced entirely by
+  you: you wrote the fix, then wrote the test about the fix, and the reviewer read the
+  diff. None of it ever looked at what the human observed. When the item has an acceptance
+  record, only `verify --green` **and** `verify --bite` (plus `--smoke` where configured)
+  are evidence. `deputy done` enforces this; do not route around it.
+- **Never edit or re-scope `.deputy/accept/<slug>.md`** — it is the human's report, frozen
+  at add time. Write your findings to `.deputy/<slug>.questions.md` instead. Silently
+  redefining the criterion to match what you built is the exact failure this prevents.
 - **Never** hand-edit `BACKLOG.md`, `.deputy/waypoints/`, or any other `.deputy/` state
   files — use `deputy set`, `deputy claim`, `deputy wt-create/wt-remove`, and the spine
   verbs (`start/plan/set-step/commit/resume/done`). The runner owns those files.
@@ -445,7 +529,11 @@ states: waiting triaging running surfaced done failed cancelled duplicate paused
 ## CLI quick reference
 
 **Public** (in `deputy help`):
-`deputy add|list|status|slug|pickup|run|watch|tail|cron|set|clean`
+`deputy add|accept|verify|list|status|slug|pickup|run|watch|tail|cron|set|clean`
+
+`deputy accept <id>` — print the item's frozen acceptance record (`observe`/`actual`/`expect`/`where`, plus an optional `match` regex): the reported symptom in the human's words. Read it at triage; **never rewrite it**. With `--observe/--actual/--expect/--where/--match` it creates or updates the record — use that only to *backfill* an item that has none (and prefer asking the human for the values), never to re-scope one that does.
+
+`deputy verify <id|slug> --red|--green|--bite|--smoke|--status` — the outcome gates. `--red` before the fix (observe must FAIL, else the check is wrong → surface; auto-SKIPPED once the item has committed work, so a resumed run is never falsely surfaced); `--green` after (observe must PASS); `--bite` reverts this item's own commits in a scratch worktree and re-runs observe, which must FAIL again (proves the fix is load-bearing and the check isn't fitted to the diff); `--smoke` runs `config smoke_cmd` against the real environment. **rc 0 = pass/skipped, 1 = the gate failed, 2 = cannot run, 3 = INCONCLUSIVE (no evidence — never a pass).** Verdicts are stamped with a fingerprint of the item's commits, so `deputy done` rejects a verdict taken on code that has since changed; it requires green+bite (+smoke when configured) on the current commits.
 
 `deputy watch [--once] [--apply]` (aliases: `deputy tail`, `deputy review`; replaces the former `deputy reflect`) — the "what needs me" command: prints the queue OVERVIEW (learnings, untagged items, reprioritization review, duplicate candidates, status) then runs as a passive monitor — live-tails a running worker and, on quiescence (runnable→0 with a surfaced/failed/deferred item), beeps 3× + prints the attention digest (each item's next action → `deputy pickup #<id>`); re-arms after each new worker run via logs/ dir mtime. `--once` = overview + one poll then exit (test/script seam); `--apply` = overview + write `.deputy/learnings.md` then exit; `Ctrl-C` exits.
 

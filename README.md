@@ -168,6 +168,8 @@ it never overwrites your `BACKLOG.md` or existing config:
 ```bash
 deputy add "fix the login redirect loop" -ui   # add an urgent+important item (-ui=P0, -u=P1, -i=P2)
 deputy add "tidy the README"                    # bare items default to P3 at numbering (P4 is the lowest lane); --p0/--p1/--p2/--p3/--p4 also accepted
+deputy accept <id>     # the item's acceptance record — the reported symptom, frozen at add time
+deputy verify <id> --red|--green|--bite|--smoke # prove the symptom moved (see "Proving a fix" below)
 deputy list [--<state>] # items in BACKLOG.md format: @[#N][Pn] desc (running), [#N][Pn] desc (waiting), etc.
                        # --<state> (e.g. --waiting, --running, --deferred) filters to that state
 deputy status          # counts by state
@@ -250,6 +252,75 @@ deputy config merge_retry_strikes 10   # retries before a stuck merge is surface
 deputy config merge_drain_limit 10     # most parked merges landed per tick (default 10)
 deputy pickup <id>                     # land a parked merge now instead of waiting for a tick
 ```
+
+---
+
+## Proving a fix (the acceptance record)
+
+Deputy's `done` used to mean *steps committed, tests green, branch merged*. None of that
+proves the **reported symptom** is gone — the agent writes the fix, then writes the test
+about the fix, and the reviewer reads the diff. Every artifact is downstream of the
+implementation, so an item can go green and merged while the bug is untouched.
+
+The acceptance record fixes that by capturing what *you* observed, before any work starts:
+
+```bash
+deputy add "FCF column is blank on the fundamentals tab" --p1 \
+  --observe 'psql -f q/fcf.sql AAPL' \
+  --actual  'FCF column empty' \
+  --expect  'a non-null number for any ticker with quarterly revenue + NI' \
+  --where   'prod nightly pipeline, live catalog DB'
+```
+
+When a description reads like a bug and you're at a terminal, `deputy add` asks for those
+four instead of requiring the flags (skip any with Enter; `--no-accept`, `DEPUTY_NO_GRILL=1`
+or `accept_grill=0` turn it off). Backfill an existing item with `deputy accept <id>
+--observe ...`. The record is keyed by the frozen slug, so it survives every resume, and the
+orchestrator is forbidden from rewriting it.
+
+`observe` is the whole mechanism — it becomes a check deputy runs at three points:
+
+| Gate | When | Must | Catches |
+|------|------|------|---------|
+| `verify --red` | before the fix | **fail** | a check that doesn't capture the symptom, or a stale item — "fixing" it would ship a green false positive |
+| `verify --green` | after the fix | **pass** | the symptom is still there |
+| `verify --bite` | after the fix | **fail** with the item's own commits reverted in a scratch worktree | a test fitted to the diff: if the symptom stays fixed without the fix, nothing was proven |
+| `verify --smoke` | after the fix | **pass** | green unit tests over a live-data failure (set `deputy config smoke_cmd`) |
+
+Exit codes are `0` pass (or a deliberately skipped gate — `--red` skips itself once the item
+has committed work, so a resumed run is never falsely flagged), `1` the gate genuinely
+failed, `2` cannot run, `3` **inconclusive**: the check timed out or couldn't run, so it
+produced no evidence. `3` is deliberately not `1` — "the fix is wrong" and "we learned
+nothing" call for different responses, and neither is a pass.
+
+Verdicts are stamped with a fingerprint of the item's commits, so a `green` taken before a
+later commit no longer counts — otherwise the gate would be defeated by verifying early and
+committing after.
+
+`deputy done` refuses to close an item whose `green` and `bite` verdicts aren't both
+recorded as passing on the current code (`--no-verify` waives it, and records the waiver in
+the ledger). The
+runner's auto-merge does the same: an unverified branch still merges — it was reviewed and
+tested — but the item **surfaces** instead of closing, with a note on what's unproven.
+
+`actual` earns its place separately: it tells the agent what *failure* looks like, so a
+**different** failure isn't scored as success. An item whose blank column becomes a thrown
+exception is not fixed, and without `actual` that reads as "no longer blank".
+
+`actual` is prose, though, and prose can't be checked mechanically — `--red`/`--bite` score
+*any* nonzero exit as "the symptom is present", so that blank-becomes-exception case would
+still pass them. Where the difference matters, add the optional fifth field:
+
+```bash
+deputy accept 194 --match 'FCF.*(NULL|empty)'
+```
+
+`match` is a regex the failing output must match for red/bite to count as the reported
+symptom. Left unset (the default), the gates work on exit codes alone exactly as described
+above — it's there for when you want the check pinned to *this* bug rather than any failure.
+
+Items with no acceptance record behave exactly as before — the gate is opt-in via the
+record itself.
 
 ---
 
