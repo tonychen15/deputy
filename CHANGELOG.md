@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.6.0 — 2026-07-29
+
+Outcome-gated "done", automatic pending-merge state for blocked auto-merges, and tighter xReview retry budget.
+
+**Features**
+
+- **Acceptance records & verification gates** (#113): `deputy add` now grills for observe/actual/expect/where fields when adding a bug-shaped item interactively; `deputy verify --red` confirms the symptom reproduces before any fix; `--green` and `--bite` (scratch-worktree revert + re-run) confirm the fix targets the actual bug rather than a fitted test; `--smoke` runs an end-to-end check against real data when `smoke_cmd` is configured; `deputy done` refuses without passing green+bite (waivable via `--no-verify`, recorded in the ledger); `deputy accept <id>` backfills pre-existing items; verdicts are commit-fingerprinted so a stale green never counts after new commits land; hung checks are bounded by `verify_timeout_secs` and reported as INCONCLUSIVE (rc 3) rather than passing
+- **pending-merge state** (#111, #112): blocked auto-merges now park in a new non-runnable, non-attention `pending-merge` (`&`) state instead of surfacing to the human queue; the runner drains pending-merge items at the top of every tick before picking new work; unresolvable content conflicts surface immediately via `git merge-tree` pre-detection (git ≥ 2.38) without touching the working tree; items escalate to `surfaced` after `merge_retry_strikes` (default 10) consecutive failures; `deputy pickup` on a pending-merge item routes to the merge action, not requeue-to-waiting; `_merge_ready_branch` now finalizes the waypoint ledger and surfaces rather than silently closes unverified items
+- **xReview retry budget**: raised reviewer retry budget to initial attempt + 3 retries
+
+**Fixes**
+
+- Fixed latent revert-ordering bug where `rev-list --no-walk=sorted` ordered by commit date, causing two same-second step commits to conflict during bite revert
+- Fixed orchestrator incorrectly requiring a pristine tree before merging a ready branch
+- Fixed `cmd_set` stripping the `ready-merge-<id>` marker for surfaced/pending-merge items, which would strand items with no resolvable branch
+- Fixed every runner-auto-merged item leaving `waypoint.json` at `in_progress` while the queue showed Done
+
 ## v1.5.2 — 2026-07-18
 
 Adds support for hand-written sub-ids as independent grouping labels in the backlog.
