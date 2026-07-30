@@ -12,19 +12,20 @@
 
 ### Running (0)
 
-### Pending merge (0)
-
 ### Surfaced (0)
 
-### Waiting (0)
-
-### Paused (0)
+### Waiting (1)
+[#114][P1] add the prerequisite tasks concept for each task in deputy
 
 ### Deferred (4)
 ;[#4][P3] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
 ;[#3][P3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 ;[#2][P2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 ;[#1][P2] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
+
+### Paused (0)
+
+### Pending merge (0)
 
 ### Failed / Cancelled / Duplicate (0)
 
