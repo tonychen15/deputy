@@ -172,8 +172,10 @@ _parse_item() {
     esac
     line="${BASH_REMATCH[2]}"
   fi
-  # Tag zone: consume a priority tag ([Pn]) and an id tag ([#N] or bare [N]) in either
-  # order (both optional, at most one each) — keyed on the tag's CONTENT, not its position.
+  # Tag zone: consume a priority tag ([Pn]), an id tag ([#N]), and a prereq tag
+  # ([prereq:#N,#M,...]) in any order (all optional, at most one each).
+  # The prereq tag is stripped from the tag zone so desc stays clean — callers
+  # that need it use _prereq_ids_from_line on the raw line directly.
   local consumed=1
   while [[ "$consumed" -eq 1 ]]; do
     consumed=0
@@ -189,18 +191,85 @@ _parse_item() {
     if [[ -z "$id" && "$line" =~ ^\[#([0-9]+(\.[0-9]+)?)\][[:space:]]*(.*) ]]; then
       id="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[3]}"; consumed=1
     fi
+    # #114: prereq tag — strip from tag zone so desc stays clean and _desc_exists dedup
+    # works. Callers needing prereq IDs use _prereq_ids_from_line on the RAW line.
+    # Strict grammar: [prereq:#N(.M)?(,#N(.M)?)*] — BASH_REMATCH[5] is the remainder.
+    if [[ "$line" =~ ^\[prereq:(#[0-9]+([.][0-9]+)?(,#[0-9]+([.][0-9]+)?)*)\][[:space:]]*(.*) ]]; then
+      line="${BASH_REMATCH[5]}"; consumed=1
+    fi
   done
   desc="$line"
   printf '%s|%s|%s|%s' "$state" "$prio" "$id" "$desc"
 }
 
-# Build a canonical line from (state, priority, id, description).
-# Canonical order (#62): <status>[#N][Pn] description — id first, then priority.
-# The status symbol directly abuts what follows (no space): `@[#3][P0] x`, `[#7] x`, `Plain`.
+# #114: extract comma-separated prereq IDs (without '#') from the TAG ZONE of a raw line.
+# Returns e.g. "3,7" from "[#5][P1][prereq:#3,#7] desc". Returns empty if no prereq tag.
+# Callers must pass the RAW line (before _parse_item), since _parse_item strips the tag.
+# Scans only the tag zone (after optional state prefix and [#N]/[Pn] tags) to avoid
+# false-positives from descriptions containing "[prereq:...]" text literally.
+_prereq_ids_from_line() {
+  local line="$1"
+  line="${line#"${line%%[![:space:]]*}"}"          # left-trim
+  # Strip optional state prefix — use if/then to avoid Bash operator-parsing quirks
+  # with & and > inside [[ ... ]] && ... (same char class as _parse_item line 158).
+  if [[ "$line" =~ ^([~@?+!%=^&\;#>])[[:space:]]*(.*) ]]; then line="${BASH_REMATCH[2]}"; fi
+  # Scan through [#N] and [Pn] tags in the tag zone, looking for [prereq:...]
+  local consumed=1
+  while [[ "$consumed" -eq 1 ]]; do
+    consumed=0
+    [[ "$line" =~ ^\[P[0-4]\][[:space:]]*(.*) ]] && { line="${BASH_REMATCH[1]}"; consumed=1; }
+    [[ "$line" =~ ^\[#[0-9]+(\.[0-9]+)?\][[:space:]]*(.*) ]] && { line="${BASH_REMATCH[2]}"; consumed=1; }
+    # Strict prereq grammar: [prereq:#N(.M)?(,#N(.M)?)*] — no trailing commas, no spaces.
+    if [[ "$line" =~ ^\[prereq:(#[0-9]+(\.[0-9]+)?(,#[0-9]+(\.[0-9]+)?)*)\] ]]; then
+      printf '%s' "${BASH_REMATCH[1]//#/}"   # strip all '#' → "3,7"
+      return 0
+    fi
+  done
+}
+
+# #114: get the state of an item by its numeric ID. Prints the state string or "missing"
+# if the ID is not found in BACKLOG. O(N) — only called from _prereqs_satisfied.
+_item_state_by_id() {
+  local want_id="$1" raw parsed rid
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    rid="${parsed#*|}"; rid="${rid#*|}"; rid="${rid%%|*}"
+    if [[ "$rid" == "$want_id" ]]; then
+      printf '%s' "${parsed%%|*}"; return 0
+    fi
+  done < <(_each_item)
+  printf 'missing'
+}
+
+# #114: return 0 (satisfied) or 1 (blocked) for the item whose raw line is $1.
+# Satisfied means all prereq IDs are in state done/cancelled/duplicate.
+# "missing" prereq IDs (dangling) are treated as NOT satisfied (unsatisfiable).
+_prereqs_satisfied_for_line() {
+  local raw="$1"
+  local prereq; prereq="$(_prereq_ids_from_line "$raw")"
+  [[ -z "$prereq" ]] && return 0   # no prereqs → always satisfied
+  local prid pstate
+  local IFS=','
+  for prid in $prereq; do
+    pstate="$(_item_state_by_id "$prid")"
+    case "$pstate" in
+      done|cancelled|duplicate) ;;  # satisfied
+      *) return 1 ;;                # unsatisfied (waiting/running/failed/missing/etc.)
+    esac
+  done
+  return 0
+}
+
+# Build a canonical line from (state, priority, id, description[, prereq]).
+# Canonical order (#62): <status>[#N][Pn][prereq:#M,...] description — id first, then
+# priority, then optional prereq tag (#114). The status symbol directly abuts what follows
+# (no space): `@[#3][P0] x`, `[#7] x`, `Plain`.
 # Reads are order-agnostic (see _parse_item), so old `[Pn][#N]` lines migrate on the
-# next re-serialize.
+# next re-serialize. Prereq ($5) is a comma-separated list of IDs WITHOUT '#' (e.g. "3,7");
+# callers that do a parse→serialize round-trip must extract it via _prereq_ids_from_line
+# and pass it here so the tag is preserved. Omit or pass "" to emit no prereq tag.
 _serialize_item() {
-  local state="$1" prio="$2" id="$3" desc="$4" prefix="" body=""
+  local state="$1" prio="$2" id="$3" desc="$4" prereq="${5:-}" prefix="" body=""
   case "$state" in
     waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
     surfaced)  prefix="?" ;; done)      prefix="+" ;; failed)    prefix="!" ;;
@@ -211,6 +280,10 @@ _serialize_item() {
   body=""
   [[ -n "$id"   ]] && body="${body}[#${id}]"
   [[ -n "$prio" ]] && body="${body}[${prio}]"
+  # #114: re-attach prereq tag after [Pn]; format "3,7" → "[prereq:#3,#7]"
+  if [[ -n "$prereq" ]]; then
+    body="${body}[prereq:#${prereq//,/,#}]"
+  fi
   if [[ -n "$body" ]]; then
     [[ -n "$desc" ]] && body="${body} ${desc}"
   else
@@ -330,7 +403,7 @@ cmd_list() {
     esac
   done
   _with_lock _allocate_ids
-  local raw parsed count=0 _ls _lp _li _ld _lrest
+  local raw parsed count=0 _ls _lp _li _ld _lrest _ll_prereq
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     _ls="${parsed%%|*}"; _lrest="${parsed#*|}"
@@ -342,10 +415,12 @@ cmd_list() {
     # skipped items never produce a phantom separator; count>0 means we already printed one).
     # Suppressed under --porcelain (#93) so machine output stays cleanly delimiter-parseable.
     [[ -n "$filter" && "$count" -gt 0 && "$porcelain" -eq 0 ]] && printf '\n'
+    _ll_prereq="$(_prereq_ids_from_line "$raw")"
     if [[ "$porcelain" -eq 1 ]]; then
       printf '%s|%s|%s|%s\n' "$_ls" "$_lp" "$_li" "$_ld"
     else
-      printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
+      # #114: pass prereq so the [prereq:...] tag round-trips in the output line.
+      printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld" "$_ll_prereq")"
       # For attention states (surfaced/failed/deferred/paused/cancelled), print the indented
       # detail block (status/details/summary/action) beneath the item; no-op otherwise, and
       # skipped under --porcelain so machine output stays clean.
@@ -784,9 +859,11 @@ _regroup_backlog() {
     rest="${parsed#*|}"; prio="${rest%%|*}"
     rest="${rest#*|}";   id="${rest%%|*}"
     desc="${rest#*|}"
+    local _rg_prereq; _rg_prereq="$(_prereq_ids_from_line "$raw")"
     # Re-serialize each item so the canonical (current) symbols are written back —
     # this is what migrates pre-migration '#'/'>' lines to '+'/';' on regroup.
-    norm="$(_serialize_item "$state" "$prio" "$id" "$desc")"
+    # #114: pass prereq extracted from the raw line so the tag is never lost on regroup.
+    norm="$(_serialize_item "$state" "$prio" "$id" "$desc" "$_rg_prereq")"
     case "$state" in
       running)                    running+=("$norm") ;;
       # #112: MUST have an arm here — this case has no default branch, so any state without
@@ -909,6 +986,7 @@ _allocate_ids() {
     # Check if this item line needs an ID or a default priority
     parsed="$(_parse_item "$_ai_line")"
     _ai_id="${parsed#*|}"; _ai_id="${_ai_id#*|}"; _ai_id="${_ai_id%%|*}"
+    local _ai_prereq; _ai_prereq="$(_prereq_ids_from_line "$_ai_line")"
     if [[ -z "$_ai_id" ]]; then
       local _ai_state="${parsed%%|*}"
       local _ai_prio="${parsed#*|}"; _ai_prio="${_ai_prio%%|*}"
@@ -916,7 +994,8 @@ _allocate_ids() {
       # Items with no explicit priority get the default [P3] tag.
       [[ -z "$_ai_prio" ]] && _ai_prio="P3"
       local _ai_new_line
-      _ai_new_line="$(_serialize_item "$_ai_state" "$_ai_prio" "$next_id" "$_ai_desc_rest")"
+      # #114: preserve prereq tag when assigning a new ID.
+      _ai_new_line="$(_serialize_item "$_ai_state" "$_ai_prio" "$next_id" "$_ai_desc_rest" "$_ai_prereq")"
       printf '%s\n' "$_ai_new_line" >> "$tmp" || _werr=1
       next_id=$(( next_id + 1 ))
       changed=1
@@ -927,7 +1006,8 @@ _allocate_ids() {
       local _ai_desc_rest="${parsed#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"
       if [[ -z "$_ai_prio" ]]; then
         local _ai_new_line
-        _ai_new_line="$(_serialize_item "$_ai_state" "P3" "$_ai_id" "$_ai_desc_rest")"
+        # #114: preserve prereq tag when backfilling priority.
+        _ai_new_line="$(_serialize_item "$_ai_state" "P3" "$_ai_id" "$_ai_desc_rest" "$_ai_prereq")"
         printf '%s\n' "$_ai_new_line" >> "$tmp" || _werr=1
         changed=1
       else
@@ -1583,15 +1663,17 @@ cmd_set() {
     prio="${parsed#*|}"; prio="${prio%%|*}"
     _id_rest="${parsed#*|}"; _id_rest="${_id_rest#*|}"; _id="${_id_rest%%|*}"
     desc="${_id_rest#*|}"
+    # #114: preserve prereq tag across state/prio changes.
+    local _ds_prereq; _ds_prereq="$(_prereq_ids_from_line "$from")"
     # #69: 'prio' keeps the current state and rewrites the [Px] tag; 'state' (default)
     # keeps the priority and rewrites the state — the original behavior. _eff_state is
     # the RESULTING state (current state for a prio change), used for the #60 marker.
     if [[ "$action" == "prio" ]]; then
       local _np; _np="$(printf '%s' "$newval" | tr 'a-z' 'A-Z')"
-      to="$(_serialize_item "$curr_state" "$_np" "$_id" "$desc")"
+      to="$(_serialize_item "$curr_state" "$_np" "$_id" "$desc" "$_ds_prereq")"
       _eff_state="$curr_state"
     else
-      to="$(_serialize_item "$newval" "$prio" "$_id" "$desc")"
+      to="$(_serialize_item "$newval" "$prio" "$_id" "$desc" "$_ds_prereq")"
       _eff_state="$newval"
     fi
     # Propagate a write failure: a swallowed rc here would let the trailing #60 marker
@@ -1842,7 +1924,8 @@ cmd_claim() {
     prio="${parsed#*|}"; prio="${prio%%|*}"
     _cid_rest="${parsed#*|}"; _cid_rest="${_cid_rest#*|}"; _cid="${_cid_rest%%|*}"
     desc="${_cid_rest#*|}"
-    to="$(_serialize_item running "$prio" "$_cid" "$desc")"
+    local _dc_prereq; _dc_prereq="$(_prereq_ids_from_line "$from")"
+    to="$(_serialize_item running "$prio" "$_cid" "$desc" "$_dc_prereq")"
     # #67: an AGENT claim must also hold the active-run lock so the cron guard sees all
     # three working parties uniformly. The worker path (cmd_run) already acquired the
     # active run before calling cmd_claim, so only --agent acquires here (no double-
@@ -1884,7 +1967,8 @@ _revert_to_waiting() {
   prio="${parsed#*|}"; prio="${prio%%|*}"
   _rid_rest="${parsed#*|}"; _rid_rest="${_rid_rest#*|}"; _rid="${_rid_rest%%|*}"
   desc="${_rid_rest#*|}"
-  to="$(_serialize_item waiting "$prio" "$_rid" "$desc")"
+  local _rtw_prereq; _rtw_prereq="$(_prereq_ids_from_line "$raw")"
+  to="$(_serialize_item waiting "$prio" "$_rid" "$desc" "$_rtw_prereq")"
   _flip_line "$raw" "$to"
 }
 
@@ -3181,8 +3265,9 @@ _human_backoff_gate() {
       _surf_set_rc=0
       cmd_set "$_stale_item" surfaced || _surf_set_rc=$?
       if [[ "$_surf_set_rc" -eq 0 ]]; then
-        local _surf_line_surfaced
-        _surf_line_surfaced="$(_serialize_item surfaced "$_surf_prio" "$_surf_id" "$_surf_desc")"
+        local _surf_line_surfaced _surf_prereq
+        _surf_prereq="$(_prereq_ids_from_line "$_stale_item")"
+        _surf_line_surfaced="$(_serialize_item surfaced "$_surf_prio" "$_surf_id" "$_surf_desc" "$_surf_prereq")"
         printf 'Stale Claude session file found (PID %s, process dead) with cwd in this repo — a sign of an abnormal Claude Code crash. Deputy surfaced this item instead of running, so you can check. Resolve by removing the stale ~/.claude/sessions/%s.json (or confirming nothing'"'"'s wrong), then revive with: deputy set "%s" waiting.\n' \
           "$_isa_stale_pid" "$_isa_stale_pid" "$_surf_line_surfaced" >> "$_surf_qf"
         printf 'deputy: stale Claude session file (PID %s) — surfaced "%s" for human review.\n' \
@@ -5405,7 +5490,8 @@ _do_set_item_failed() {
   prio="${parsed#*|}"; prio="${prio%%|*}"
   _fsid_rest="${parsed#*|}"; _fsid_rest="${_fsid_rest#*|}"; _fsid="${_fsid_rest%%|*}"
   desc="${_fsid_rest#*|}"
-  to="$(_serialize_item failed "$prio" "$_fsid" "$desc")"
+  local _dsif_prereq; _dsif_prereq="$(_prereq_ids_from_line "$raw")"
+  to="$(_serialize_item failed "$prio" "$_fsid" "$desc" "$_dsif_prereq")"
   _flip_line "$raw" "$to"
 }
 
@@ -6164,7 +6250,7 @@ main() {
     version|--version|-V) cmd_version; return $? ;;
     _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
     list) shift; cmd_list "$@"; return $? ;;
-    _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
+    _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
     accept) shift; cmd_accept "$@"; return $? ;;     # #113: the frozen acceptance record
     verify) shift; cmd_verify "$@"; return $? ;;     # #113: red / green / bite / smoke gates
