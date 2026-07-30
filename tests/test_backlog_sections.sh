@@ -54,9 +54,11 @@ bash "$DEPUTY" set "$(lof 'dupe-task')"    duplicate >/dev/null
 bash "$DEPUTY" set "$(lof 'done-a')" done       >/dev/null
 bash "$DEPUTY" set "$(lof 'done-b')" done       >/dev/null
 
-# All seven section headers present, in the required order.
+# All eight section headers present, in the required order. Order groups by WHO resolves the
+# state: the human's lane (Running/Surfaced/Waiting/Deferred) stays contiguous, then the two
+# deputy-resolved-in-flight states (Paused/Pending merge), then the terminal sections.
 hdrs="$(grep -oE '^### [^(]+' "$DEPUTY_ROOT/BACKLOG.md" | sed 's/ *$//' | tr '\n' '|')"
-assert_eq "$hdrs" "### Running|### Pending merge|### Surfaced|### Waiting|### Paused|### Deferred|### Failed / Cancelled / Duplicate|### Done|" "all 8 section headers, in order"
+assert_eq "$hdrs" "### Running|### Surfaced|### Waiting|### Deferred|### Paused|### Pending merge|### Failed / Cancelled / Duplicate|### Done|" "all 8 section headers, in order"
 
 # Counts in headers.
 assert_contains "$(grep '^### Waiting' "$DEPUTY_ROOT/BACKLOG.md")"  "(2)" "Waiting count = 2"

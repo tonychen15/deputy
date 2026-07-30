@@ -327,7 +327,8 @@ record itself.
 ## The backlog file (`BACKLOG.md`)
 
 Human-editable. A fixed markdown legend at the top, then a `## Items` section that the
-tool keeps grouped into `### ` sub-sections (with live counts), in workflow order:
+tool keeps grouped into `### ` sub-sections (with live counts), ordered by **who resolves
+the state**:
 
 ```markdown
 ## Items
@@ -341,9 +342,11 @@ tool keeps grouped into `### ` sub-sections (with live counts), in workflow orde
 [#7][P0] Fix the login redirect loop
 [#9][P2] Refactor the data layer
 
+### Deferred (0)
+
 ### Paused (0)
 
-### Deferred (0)
+### Pending merge (0)
 
 ### Failed / Cancelled / Duplicate (0)
 
@@ -353,10 +356,21 @@ tool keeps grouped into `### ` sub-sections (with live counts), in workflow orde
 +[#5][P0] Initial setup
 ```
 
-All seven sections are **always present** (even when empty). The tool regroups on every
+All eight sections are **always present** (even when empty). The tool regroups on every
 write, so you can add a bare line anywhere under `## Items` and it lands in the right
-section. **Surfaced** also holds triaging items; **Failed / Cancelled / Duplicate** holds
-all three non-done terminals; **Done** is last, newest-completed first.
+section.
+
+The grouping is deliberate. **Running / Surfaced / Waiting / Deferred** are the states you
+read and act on, kept contiguous so your queue is one block. **Paused** and **Pending
+merge** are resolved by deputy itself — paused auto-resumes on the next tick, pending-merge
+retries every tick and escalates to `surfaced` only if it truly can't land — so neither is
+an attention state and neither is asking for you; they sit below your lane but still above
+the terminal sections, because the work is in flight. Then the terminals: **Failed /
+Cancelled / Duplicate** holds all three non-done terminals, and **Done** is last,
+newest-completed first. **Surfaced** also holds triaging items.
+
+Section order is cosmetic — items are parsed by their line prefix, never by which section
+they sit under — so reordering or hand-moving a line never changes an item's state.
 
 `<!-- release vX — date -->` delimiters in **Done** mark release boundaries; completed
 tasks above the most-recent delimiter are the unreleased set for the next version.

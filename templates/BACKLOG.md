@@ -9,7 +9,10 @@
 **Add an item:** `deputy add [-ui|-u|-i|--p0|--p1|--p2|--p3|--p4] "your task"` — or just add a line below
 **Sections:** items are auto-grouped under the `###` headers below (with live counts); add a
 line in any section and it is re-sorted on the next write. `<!-- release ... -->` lines in
-**Done** mark release boundaries.
+**Done** mark release boundaries. Order is by WHO resolves it: **Running/Surfaced/Waiting/
+Deferred** are yours to read and act on; **Paused/Pending merge** deputy resolves by itself
+(paused auto-resumes, pending-merge retries each tick) and never ask for you; then the
+terminal sections.
 ---
 
 ## Items
@@ -20,9 +23,11 @@ line in any section and it is re-sorted on the next write. `<!-- release ... -->
 
 ### Waiting (0)
 
+### Deferred (0)
+
 ### Paused (0)
 
-### Deferred (0)
+### Pending merge (0)
 
 ### Failed / Cancelled / Duplicate (0)
 

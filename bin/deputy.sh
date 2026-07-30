@@ -824,6 +824,17 @@ _regroup_backlog() {
 
   # Always emit all eight '### Section (N)' headers, in order, for a stable
   # skeleton — even when a section is empty. Done is last (bottom of file).
+  # ORDER RATIONALE: grouped by WHO resolves it, then by how live it is.
+  #   Running/Surfaced/Waiting/Deferred — what the human reads and acts on, kept
+  #     adjacent so the queue you care about is one block, not interleaved.
+  #   Paused/Pending merge — deputy resolves these ITSELF (paused auto-resumes via
+  #     cmd_pick; pending-merge drains every tick and escalates to surfaced after
+  #     merge_retry_strikes). Neither is in _ATTENTION_STATES, so neither ever asks
+  #     for you — but both are still IN FLIGHT, so they sit ABOVE the terminal
+  #     section rather than below it.
+  #   Failed / Cancelled / Duplicate, then Done — terminal, nothing will move them.
+  # Purely cosmetic: _each_item parses by LINE PREFIX, never by section, and
+  # cmd_release anchors on the '### Done ' pattern — so this order is free to change.
   # Emit every section through ONE redirection and capture any partial-write
   # failure (e.g. ENOSPC). An unchecked printf here could leave a non-empty but
   # TRUNCATED tmp that still passes _backlog_commit's -s guard and then overwrites
@@ -832,16 +843,16 @@ _regroup_backlog() {
   {
     printf '\n### Running (%d)\n' "${#running[@]}" || _werr=1
     (( ${#running[@]} )) && { printf '%s\n' "${running[@]}" || _werr=1; }
-    printf '\n### Pending merge (%d)\n' "${#pendmerge[@]}" || _werr=1
-    (( ${#pendmerge[@]} )) && { printf '%s\n' "${pendmerge[@]}" || _werr=1; }
     printf '\n### Surfaced (%d)\n' "${#surfaced[@]}" || _werr=1
     (( ${#surfaced[@]} )) && { printf '%s\n' "${surfaced[@]}" || _werr=1; }
     printf '\n### Waiting (%d)\n' "${#waiting[@]}" || _werr=1
     (( ${#waiting[@]} )) && { printf '%s\n' "${waiting[@]}" || _werr=1; }
-    printf '\n### Paused (%d)\n' "${#paused[@]}" || _werr=1
-    (( ${#paused[@]} )) && { printf '%s\n' "${paused[@]}" || _werr=1; }
     printf '\n### Deferred (%d)\n' "${#deferred[@]}" || _werr=1
     (( ${#deferred[@]} )) && { printf '%s\n' "${deferred[@]}" || _werr=1; }
+    printf '\n### Paused (%d)\n' "${#paused[@]}" || _werr=1
+    (( ${#paused[@]} )) && { printf '%s\n' "${paused[@]}" || _werr=1; }
+    printf '\n### Pending merge (%d)\n' "${#pendmerge[@]}" || _werr=1
+    (( ${#pendmerge[@]} )) && { printf '%s\n' "${pendmerge[@]}" || _werr=1; }
     printf '\n### Failed / Cancelled / Duplicate (%d)\n' "${#failcanc[@]}" || _werr=1
     (( ${#failcanc[@]} )) && { printf '%s\n' "${failcanc[@]}" || _werr=1; }
     printf '\n### Done (%d)\n' "$done_count" || _werr=1
