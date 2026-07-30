@@ -970,6 +970,9 @@ _regroup_backlog() {
   # release-delimiter lines (preserving their relative order). done_count tracks
   # ITEMS only (delimiters excluded from the Done header count).
   local -a running=() pendmerge=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
+  # #114: in-memory dep graph built during the scan for cycle detection after the loop.
+  declare -A _rg_st=() _rg_pq=()   # id→state, id→prereq_csv
+  local -a _rg_ids=()
   local done_count=0
 
   tmp="$(_backlog_mktemp)" || { [[ "$_src" != "$BACKLOG" ]] && rm -f "$_src" 2>/dev/null; return 1; }
@@ -1001,6 +1004,7 @@ _regroup_backlog() {
     # this is what migrates pre-migration '#'/'>' lines to '+'/';' on regroup.
     # #114: pass prereq extracted from the raw line so the tag is never lost on regroup.
     norm="$(_serialize_item "$state" "$prio" "$id" "$desc" "$_rg_prereq")"
+    _rg_st["$id"]="$state"; _rg_pq["$id"]="${_rg_prereq:-}"; _rg_ids+=("$id")
     case "$state" in
       running)                    running+=("$norm") ;;
       # #112: MUST have an arm here — this case has no default branch, so any state without
@@ -1014,6 +1018,82 @@ _regroup_backlog() {
       done)                       done_stream+=("$norm"); done_count=$((done_count + 1)) ;;
     esac
   done < "$_src"
+
+  # #114: Cycle detection — run after the scan so _rg_st/_rg_pq are complete.
+  # Surface waiting/paused items that are in or downstream of a cycle (they can never
+  # complete without human intervention). NEVER blocks the write.
+  if [[ ${#waiting[@]} -gt 0 || ${#paused[@]} -gt 0 ]]; then
+    declare -A _rgc_cnt=() _rgc_dedup=() _rgc_done=()
+    local _rgc_id _rgc_ap
+    for _rgc_id in "${_rg_ids[@]}"; do
+      local _rgc_c=0
+      declare -A _rgc_seen=()
+      for _rgc_ap in ${_rg_pq[$_rgc_id]//,/ }; do
+        [[ -z "$_rgc_ap" || "$_rgc_ap" == "$_rgc_id" ]] && continue
+        [[ -n "${_rg_st[$_rgc_ap]+x}" ]] || continue
+        [[ -n "${_rgc_seen[$_rgc_ap]+x}" ]] && continue
+        _rgc_seen["$_rgc_ap"]=1; (( _rgc_c++ )) || true
+      done
+      _rgc_cnt["$_rgc_id"]=$_rgc_c
+      local _rgc_d=""; for _rgc_ap in "${!_rgc_seen[@]}"; do _rgc_d="${_rgc_d}${_rgc_d:+ }$_rgc_ap"; done
+      _rgc_dedup["$_rgc_id"]="$_rgc_d"
+      unset _rgc_seen
+    done
+    local -a _rgc_q=()
+    for _rgc_id in "${_rg_ids[@]}"; do
+      [[ "${_rgc_cnt[$_rgc_id]:-0}" -eq 0 ]] && _rgc_q+=("$_rgc_id")
+    done
+    while [[ ${#_rgc_q[@]} -gt 0 ]]; do
+      local _rgc_curr="${_rgc_q[0]}"; _rgc_q=("${_rgc_q[@]:1}")
+      _rgc_done["$_rgc_curr"]=1
+      for _rgc_id in "${_rg_ids[@]}"; do
+        [[ -n "${_rgc_done[$_rgc_id]+x}" ]] && continue
+        local _rgc_h=0 _rgc_ap2
+        for _rgc_ap2 in ${_rgc_dedup[$_rgc_id]:-}; do
+          [[ "$_rgc_ap2" == "$_rgc_curr" ]] && { _rgc_h=1; break; }
+        done
+        [[ "$_rgc_h" -eq 0 ]] && continue
+        _rgc_cnt["$_rgc_id"]=$(( _rgc_cnt["$_rgc_id"] - 1 ))
+        [[ "${_rgc_cnt[$_rgc_id]}" -eq 0 ]] && _rgc_q+=("$_rgc_id")
+      done
+    done
+    # Surface waiting/paused items that are unresolvable.
+    local -a _new_waiting=() _new_paused=()
+    local _rgc_line _rgc_parsed _rgc_lid _rgc_lprio _rgc_lrest _rgc_lpreq
+    local _rg_cycle_found=0
+    for _rgc_line in "${waiting[@]+"${waiting[@]}"}"; do
+      _rgc_parsed="$(_parse_item "$_rgc_line")"
+      _rgc_lid="${_rgc_parsed#*|}"; _rgc_lid="${_rgc_lid#*|}"; _rgc_lid="${_rgc_lid%%|*}"
+      if [[ -z "${_rgc_done[$_rgc_lid]+x}" && "${_rgc_cnt[$_rgc_lid]:-0}" -gt 0 ]]; then
+        _rgc_lprio="${_rgc_parsed#*|}"; _rgc_lprio="${_rgc_lprio%%|*}"
+        _rgc_lrest="${_rgc_parsed#*|}"; _rgc_lrest="${_rgc_lrest#*|}"; _rgc_lrest="${_rgc_lrest#*|}"
+        _rgc_lpreq="${_rg_pq[$_rgc_lid]:-}"
+        surfaced+=("$(_serialize_item surfaced "$_rgc_lprio" "$_rgc_lid" "$_rgc_lrest" "$_rgc_lpreq")")
+        printf 'deputy: warning: #%s involved in an unresolvable dependency — surfacing (run deputy analyze-dep)\n' "$_rgc_lid" >&2 || true
+        _rg_cycle_found=1
+      else
+        _new_waiting+=("$_rgc_line")
+      fi
+    done
+    for _rgc_line in "${paused[@]+"${paused[@]}"}"; do
+      _rgc_parsed="$(_parse_item "$_rgc_line")"
+      _rgc_lid="${_rgc_parsed#*|}"; _rgc_lid="${_rgc_lid#*|}"; _rgc_lid="${_rgc_lid%%|*}"
+      if [[ -z "${_rgc_done[$_rgc_lid]+x}" && "${_rgc_cnt[$_rgc_lid]:-0}" -gt 0 ]]; then
+        _rgc_lprio="${_rgc_parsed#*|}"; _rgc_lprio="${_rgc_lprio%%|*}"
+        _rgc_lrest="${_rgc_parsed#*|}"; _rgc_lrest="${_rgc_lrest#*|}"; _rgc_lrest="${_rgc_lrest#*|}"
+        _rgc_lpreq="${_rg_pq[$_rgc_lid]:-}"
+        surfaced+=("$(_serialize_item surfaced "$_rgc_lprio" "$_rgc_lid" "$_rgc_lrest" "$_rgc_lpreq")")
+        printf 'deputy: warning: #%s involved in an unresolvable dependency — surfacing (run deputy analyze-dep)\n' "$_rgc_lid" >&2 || true
+        _rg_cycle_found=1
+      else
+        _new_paused+=("$_rgc_line")
+      fi
+    done
+    if [[ "$_rg_cycle_found" -eq 1 ]]; then
+      waiting=("${_new_waiting[@]+"${_new_waiting[@]}"}")
+      paused=("${_new_paused[@]+"${_new_paused[@]}"}")
+    fi
+  fi
 
   # When called from cmd_clean for done items, strip release delimiters that are
   # orphaned: no items appear between the delimiter and the next delimiter (or end).
