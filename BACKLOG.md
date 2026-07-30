@@ -15,8 +15,7 @@
 
 ### Surfaced (0)
 
-### Waiting (1)
-[#115][P3] first task
+### Waiting (0)
 
 ### Deferred (4)
 ;[#4][P3] Add richer item attributes: due dates and project/goal grouping. SCOPE NARROWED 2026-07-29: the dependencies/depends-on slice was split out to #114 (prerequisite tasks) and is NOT part of this item — do not re-add it here.
@@ -28,7 +27,8 @@
 
 ### Pending merge (0)
 
-### Failed / Cancelled / Duplicate (0)
+### Failed / Cancelled / Duplicate (1)
+%[#115][P3] first task
 
 ### Done (104)
 <!-- release v1.6.0 — 2026-07-29 -->
