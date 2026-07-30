@@ -10,12 +10,12 @@
 
 ## Items
 
-### Running (0)
+### Running (1)
+@[#114][P1] add the prerequisite tasks concept for each task in deputy
 
 ### Surfaced (0)
 
-### Waiting (1)
-[#114][P1] add the prerequisite tasks concept for each task in deputy
+### Waiting (0)
 
 ### Deferred (4)
 ;[#4][P3] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
