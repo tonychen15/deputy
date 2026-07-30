@@ -540,7 +540,7 @@ cmd_list() {
     esac
   done
   _with_lock _allocate_ids
-  local raw parsed count=0 _ls _lp _li _ld _lrest _ll_prereq
+  local raw parsed count=0 _ls _lp _li _ld _lrest _ll_prereq _bl_prid _bl_pstate _bl_unmet
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     _ls="${parsed%%|*}"; _lrest="${parsed#*|}"
@@ -558,6 +558,18 @@ cmd_list() {
     else
       # #114: pass prereq so the [prereq:...] tag round-trips in the output line.
       printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld" "$_ll_prereq")"
+      # #114: annotate blocked items with the list of unmet prereqs.
+      if [[ -n "$_ll_prereq" ]]; then
+        _bl_unmet=""
+        for _bl_prid in ${_ll_prereq//,/ }; do
+          _bl_pstate="$(_item_state_by_id "$_bl_prid")"
+          case "$_bl_pstate" in
+            done|cancelled|duplicate) ;;
+            *) _bl_unmet="${_bl_unmet:+$_bl_unmet, }#${_bl_prid}(${_bl_pstate})" ;;
+          esac
+        done
+        [[ -n "$_bl_unmet" ]] && printf '  [BLOCKED] waiting on: %s\n' "$_bl_unmet"
+      fi
       # For attention states (surfaced/failed/deferred/paused/cancelled), print the indented
       # detail block (status/details/summary/action) beneath the item; no-op otherwise, and
       # skipped under --porcelain so machine output stays clean.
@@ -1672,19 +1684,23 @@ _autorun() {
 
 cmd_status() {
   _with_lock _allocate_ids
-  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 pm=0 parsed
+  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 pm=0 bl=0 parsed
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
     case "$state" in
-      waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
+      waiting)
+        w=$((w+1)); _prereqs_satisfied_for_line "$raw" || bl=$((bl+1)) ;;
+      paused)
+        p=$((p+1)); _prereqs_satisfied_for_line "$raw" || bl=$((bl+1)) ;;
+      triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
       surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;;    failed)     f=$((f+1)) ;;
-      cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;; paused)  p=$((p+1)) ;;
+      cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;;
       pending-merge) pm=$((pm+1)) ;;
       deferred) df=$((df+1)) ;;
     esac
   done < <(_each_item)
-  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\npending-merge: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\n' \
-    "$w" "$t" "$r" "$s" "$pm" "$d" "$f" "$c" "$u" "$p" "$df"
+  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\npending-merge: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\nblocked:  %d\n' \
+    "$w" "$t" "$r" "$s" "$pm" "$d" "$f" "$c" "$u" "$p" "$df" "$bl"
 }
 
 # Numeric rank for a priority tag: P0=0 P1=1 P2=2 P3=3 P4=4 (none)=5.
