@@ -1502,17 +1502,48 @@ _print_waiting_queue() {
 
 cmd_pick() {
   _with_lock _allocate_ids
-  local raw parsed state prio best_rank=99 best_line="" rank
+  # #114 two-pass: build a priority-inheritance boost map (blocked items push their
+  # effective priority down to prereqs so prereqs are scheduled before lower-prio free work),
+  # then pick the highest-effective-priority item whose prereqs are already satisfied.
+  local raw parsed state prio id rank _cp_sat
+  local -a _cp_raws=() _cp_states=() _cp_ids=() _cp_ranks=() _cp_sats=()
+  declare -A _cp_boost   # id → min rank of its blocked dependents (lower = higher prio)
+
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     state="${parsed%%|*}"
-    [[ "$state" == "waiting" || "$state" == "paused" ]] || continue
     prio="${parsed#*|}"; prio="${prio%%|*}"
+    id="${parsed#*|}"; id="${id#*|}"; id="${id%%|*}"
     rank="$(_prio_rank "$prio")"
-    if (( rank < best_rank )); then          # strict < preserves FIFO on ties
-      best_rank="$rank"; best_line="$raw"
+    _cp_sat=1; _prereqs_satisfied_for_line "$raw" || _cp_sat=0
+    _cp_raws+=("$raw"); _cp_states+=("$state")
+    _cp_ids+=("$id"); _cp_ranks+=("$rank"); _cp_sats+=("$_cp_sat")
+    # Propagate blocked item's rank to its unmet prereqs (priority inheritance).
+    if [[ "$state" == "waiting" || "$state" == "paused" ]] && [[ "$_cp_sat" -eq 0 ]]; then
+      local _cp_pcsv _cp_prid _cp_cur
+      _cp_pcsv="$(_prereq_ids_from_line "$raw")"
+      while IFS= read -r _cp_prid; do
+        [[ -z "$_cp_prid" ]] && continue
+        _cp_cur="${_cp_boost[$_cp_prid]:-99}"
+        (( rank < _cp_cur )) && _cp_boost[$_cp_prid]=$rank
+      done <<< "${_cp_pcsv//,/$'\n'}"
     fi
   done < <(_each_item)
+
+  local best_rank=99 best_line="" i _eff
+  for i in "${!_cp_raws[@]}"; do
+    state="${_cp_states[$i]}"
+    [[ "$state" == "waiting" || "$state" == "paused" ]] || continue
+    [[ "${_cp_sats[$i]}" -eq 1 ]] || continue   # skip items blocked by unmet prereqs
+    id="${_cp_ids[$i]}"
+    rank="${_cp_ranks[$i]}"
+    # Effective rank = min(own rank, rank inherited from highest-priority blocked dependent).
+    _eff="${_cp_boost[$id]:-$rank}"
+    (( rank < _eff )) && _eff=$rank   # own rank caps effective (never worse than self)
+    if (( _eff < best_rank )); then
+      best_rank=$_eff; best_line="${_cp_raws[$i]}"
+    fi
+  done
   [[ -n "$best_line" ]] && printf '%s\n' "$best_line"
   return 0
 }
@@ -1763,6 +1794,11 @@ cmd_set() {
       # run loop, so this single call covers both interactive and autonomous paths.
       if [[ "$newval" == "done" ]]; then
         _print_waiting_queue
+      fi
+      # #114: when an item becomes failed, surface any waiting/paused dependents whose
+      # prereq graph goes through it — they can never become runnable.
+      if [[ "$newval" == "failed" ]]; then
+        _surface_blocked_by_failed "${_id_rest2%%|*}"
       fi
     fi
   fi
@@ -4315,6 +4351,7 @@ cmd_run() {
       local _fail_reason="cron resume budget exhausted ($_WP_RETRY_BUDGET attempts, no step progress)"
       printf '%s\n' "$_fail_reason" > "$(_trail_path fails "$_rb_slug")"   # #70: .deputy/fails/<slug>.md
       _with_lock _do_set_item_failed "$running_line" || true
+      _surface_blocked_by_failed "$_rb_id"   # #114: surface dependents whose prereq just failed
       rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
       _active_run_release
       processed=$((processed + 1))
@@ -4350,6 +4387,7 @@ cmd_run() {
             _with_lock _revert_to_waiting "$_qrb_cur_line" >/dev/null 2>&1 || true
             _qrb_cur_line="$(_line_by_id "$_rb_id" || true)"
             [[ -n "$_qrb_cur_line" ]] && { _with_lock _do_set_item_failed "$_qrb_cur_line" || true; }
+            _surface_blocked_by_failed "$_rb_id"   # #114: surface dependents of now-failed prereq
           fi
         fi
       fi
@@ -4418,6 +4456,7 @@ cmd_run() {
         local _rb_cur_line
         _rb_cur_line="$(_line_by_id "$_rb_id" || true)"
         [[ -n "$_rb_cur_line" ]] && { _with_lock _do_set_item_failed "$_rb_cur_line" || true; }
+        _surface_blocked_by_failed "$_rb_id"   # #114: surface dependents of now-failed prereq
       fi
     fi
     _archive_run_log "$running_line" "$log"
@@ -5495,6 +5534,37 @@ _do_set_item_failed() {
   _flip_line "$raw" "$to"
 }
 
+# #114: surface waiting/paused items that depend on a now-failed prerequisite.
+# 'failed' is NOT a satisfying terminal state, so any dependent whose only path through
+# the prereq graph goes through a failed node can never become runnable. Surfacing it
+# makes the chain-stuck condition visible instead of letting watch report quiescence.
+# Called OUTSIDE any lock (uses cmd_set which acquires its own lock per item).
+_surface_blocked_by_failed() {
+  local failed_id="$1" raw parsed state dep_id dep_desc dep_prio dep_slug qf
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    [[ "$state" == "waiting" || "$state" == "paused" ]] || continue
+    local dep_prereqs; dep_prereqs="$(_prereq_ids_from_line "$raw")"
+    [[ -z "$dep_prereqs" ]] && continue
+    # Check whether this item lists the failed ID as one of its prereqs.
+    local _sbf_found=0 _sbf_prid
+    while IFS= read -r _sbf_prid; do
+      [[ -z "$_sbf_prid" ]] && continue
+      [[ "$_sbf_prid" == "$failed_id" ]] && { _sbf_found=1; break; }
+    done <<< "${dep_prereqs//,/$'\n'}"
+    [[ "$_sbf_found" -eq 0 ]] && continue
+    dep_id="${parsed#*|}"; dep_id="${dep_id#*|}"; dep_id="${dep_id%%|*}"
+    dep_prio="${parsed#*|}"; dep_prio="${dep_prio%%|*}"
+    dep_desc="${parsed#*|}"; dep_desc="${dep_desc#*|}"; dep_desc="${dep_desc#*|}"
+    dep_slug="$(_wp_slug "$dep_id" "$dep_desc")" 2>/dev/null || true
+    qf="$(_trail_path questions "$dep_slug")" 2>/dev/null || true
+    printf 'Prerequisite #%s has failed — this item can never become runnable.\nResolve by cancelling this item, fixing and retrying the failed prerequisite, or removing the failed prereq from BACKLOG.md.\n' \
+      "$failed_id" >> "$qf" 2>/dev/null || true
+    cmd_set "$raw" surfaced >/dev/null 2>&1 || true
+  done < <(_each_item)
+}
+
 # #67 startup-crash circuit-breaker counters: consecutive FAILED spawns that never
 # created a waypoint ledger (the resume-budget can't see those). Per-item dotfile counter.
 _spawnfail_count() { local c; c="$(cat "$STATE_DIR/.spawnfail-$1" 2>/dev/null || true)"; [[ "$c" =~ ^[0-9]+$ ]] && printf '%s' "$c" || printf '0'; }
@@ -5616,7 +5686,13 @@ _runnable_count() {
   local n=0 raw parsed state
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
-    case "$state" in waiting|paused) n=$(( n + 1 )) ;; esac
+    case "$state" in
+      waiting|paused)
+        # #114: blocked items (unmet prereqs) are NOT runnable — exclude them so
+        # deputy watch reaches quiescence even when blocked items are present.
+        _prereqs_satisfied_for_line "$raw" || continue
+        n=$(( n + 1 )) ;;
+    esac
   done < <(_each_item)
   printf '%s' "$n"
 }
