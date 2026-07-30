@@ -1031,6 +1031,8 @@ _regroup_backlog() {
       for _rgc_ap in ${_rg_pq[$_rgc_id]//,/ }; do
         [[ -z "$_rgc_ap" || "$_rgc_ap" == "$_rgc_id" ]] && continue
         [[ -n "${_rg_st[$_rgc_ap]+x}" ]] || continue
+        # Satisfied terminals are already resolved — don't count them as blockers.
+        case "${_rg_st[$_rgc_ap]}" in done|cancelled|duplicate) continue ;; esac
         [[ -n "${_rgc_seen[$_rgc_ap]+x}" ]] && continue
         _rgc_seen["$_rgc_ap"]=1; (( _rgc_c++ )) || true
       done
