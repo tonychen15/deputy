@@ -1004,7 +1004,7 @@ _regroup_backlog() {
     # this is what migrates pre-migration '#'/'>' lines to '+'/';' on regroup.
     # #114: pass prereq extracted from the raw line so the tag is never lost on regroup.
     norm="$(_serialize_item "$state" "$prio" "$id" "$desc" "$_rg_prereq")"
-    _rg_st["$id"]="$state"; _rg_pq["$id"]="${_rg_prereq:-}"; _rg_ids+=("$id")
+    [[ -n "$id" ]] && { _rg_st["$id"]="$state"; _rg_pq["$id"]="${_rg_prereq:-}"; _rg_ids+=("$id"); }
     case "$state" in
       running)                    running+=("$norm") ;;
       # #112: MUST have an arm here — this case has no default branch, so any state without
@@ -1023,11 +1023,11 @@ _regroup_backlog() {
   # Surface waiting/paused items that are in or downstream of a cycle (they can never
   # complete without human intervention). NEVER blocks the write.
   if [[ ${#waiting[@]} -gt 0 || ${#paused[@]} -gt 0 ]]; then
-    declare -A _rgc_cnt=() _rgc_dedup=() _rgc_done=()
+    local -A _rgc_cnt=() _rgc_dedup=() _rgc_done=()
     local _rgc_id _rgc_ap
     for _rgc_id in "${_rg_ids[@]}"; do
       local _rgc_c=0
-      declare -A _rgc_seen=()
+      local -A _rgc_seen=()
       for _rgc_ap in ${_rg_pq[$_rgc_id]//,/ }; do
         [[ -z "$_rgc_ap" || "$_rgc_ap" == "$_rgc_id" ]] && continue
         [[ -n "${_rg_st[$_rgc_ap]+x}" ]] || continue
@@ -1064,7 +1064,7 @@ _regroup_backlog() {
     for _rgc_line in "${waiting[@]+"${waiting[@]}"}"; do
       _rgc_parsed="$(_parse_item "$_rgc_line")"
       _rgc_lid="${_rgc_parsed#*|}"; _rgc_lid="${_rgc_lid#*|}"; _rgc_lid="${_rgc_lid%%|*}"
-      if [[ -z "${_rgc_done[$_rgc_lid]+x}" && "${_rgc_cnt[$_rgc_lid]:-0}" -gt 0 ]]; then
+      if [[ -n "$_rgc_lid" && -z "${_rgc_done[$_rgc_lid]+x}" && "${_rgc_cnt[$_rgc_lid]:-0}" -gt 0 ]]; then
         _rgc_lprio="${_rgc_parsed#*|}"; _rgc_lprio="${_rgc_lprio%%|*}"
         _rgc_lrest="${_rgc_parsed#*|}"; _rgc_lrest="${_rgc_lrest#*|}"; _rgc_lrest="${_rgc_lrest#*|}"
         _rgc_lpreq="${_rg_pq[$_rgc_lid]:-}"
@@ -1078,7 +1078,7 @@ _regroup_backlog() {
     for _rgc_line in "${paused[@]+"${paused[@]}"}"; do
       _rgc_parsed="$(_parse_item "$_rgc_line")"
       _rgc_lid="${_rgc_parsed#*|}"; _rgc_lid="${_rgc_lid#*|}"; _rgc_lid="${_rgc_lid%%|*}"
-      if [[ -z "${_rgc_done[$_rgc_lid]+x}" && "${_rgc_cnt[$_rgc_lid]:-0}" -gt 0 ]]; then
+      if [[ -n "$_rgc_lid" && -z "${_rgc_done[$_rgc_lid]+x}" && "${_rgc_cnt[$_rgc_lid]:-0}" -gt 0 ]]; then
         _rgc_lprio="${_rgc_parsed#*|}"; _rgc_lprio="${_rgc_lprio%%|*}"
         _rgc_lrest="${_rgc_parsed#*|}"; _rgc_lrest="${_rgc_lrest#*|}"; _rgc_lrest="${_rgc_lrest#*|}"
         _rgc_lpreq="${_rg_pq[$_rgc_lid]:-}"
