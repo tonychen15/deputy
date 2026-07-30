@@ -26,8 +26,7 @@
 
 ### Pending merge (0)
 
-### Failed / Cancelled / Duplicate (1)
-%[#115][P3] first task
+### Failed / Cancelled / Duplicate (0)
 
 ### Done (105)
 +[#114][P1] add the prerequisite tasks concept for each task in deputy
