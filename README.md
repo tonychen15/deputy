@@ -159,7 +159,7 @@ it never overwrites your `BACKLOG.md` or existing config:
 ./inst_deputy.sh cron           # or: deputy cron --ensure
 ```
 
-**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.6.0`).
+**Check the installed version:** `cat <deputy-repo>/VERSION` (currently `1.6.1`).
 
 ---
 
@@ -471,7 +471,7 @@ templates/               # BACKLOG.md, config, protected seeds
 tests/                   # dependency-free bash test harness (no bats)
 docs/superpowers/        # specs/ (design) and plans/ (implementation plans)
 BACKLOG.md               # Deputy's own task queue
-VERSION                  # 1.6.0
+VERSION                  # 1.6.1
 ```
 
 Run the test suite with `bash tests/run.sh`.

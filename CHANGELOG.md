@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.6.1 — 2026-07-30
+
+Adds first-class prerequisite support: tasks can declare blockers, and the queue enforces ordering automatically.
+
+**Features**
+
+- `deputy add --prereq <ids>`: declare comma-separated prerequisites at add-time with format validation, dangling-ref, and self-ref checks
+- `deputy analyze-dep`: dependency graph report covering blocked items, cycles, self-refs, and dangling refs via Kahn's topo-sort (exit 0 = clean, exit 1 = structural defect)
+- `cmd_pick` skips blocked items and propagates priority transitively to unblocked dependents via fixpoint boost
+- `_regroup_backlog` runs Kahn's topo-sort on every write; surfaces waiting/paused items whose dependencies are unresolvable
+- List output annotates blocked items with `[BLOCKED]` and unmet prereq IDs; `deputy status` reports a blocked-item count
+
+**Fixes**
+
+- Dedup prereqs and fix cycle label accuracy in `analyze-dep`
+- Guard waiting/paused items in fixpoint boost to prevent priority routing through terminal states
+
+**Docs**
+
+- 23-test suite (`test_prereq.sh`) with test-map wiring and help/usage coverage
+- `templates/BACKLOG.md` LEGEND updated with prereq syntax; README prereq section added
+
 ## v1.6.0 — 2026-07-29
 
 Outcome-gated "done", automatic pending-merge state for blocked auto-merges, and tighter xReview retry budget.
