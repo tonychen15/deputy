@@ -1249,6 +1249,8 @@ cmd_add() {
   # #113: acceptance fields may be supplied non-interactively (scripts, CI, an agent
   # filing a proposal); --no-accept opts a chore out of the grill entirely.
   local _ACC_OBSERVE="" _ACC_ACTUAL="" _ACC_EXPECT="" _ACC_WHERE="" _ACC_MATCH="" _acc_skip=0
+  # #114: --prereq accepts comma-separated IDs (with or without '#'): "3,7" or "#3,#7".
+  local _ADD_PREREQ=""
   while [[ $# -gt 0 ]]; do
     if [[ "$no_more_flags" -eq 0 ]]; then
       case "$1" in
@@ -1258,6 +1260,8 @@ cmd_add() {
         --p2|-i)    prio=P2; shift; continue ;;
         --p3)       prio=P3; shift; continue ;;
         --p4)       prio=P4; shift; continue ;;
+        --prereq)   [[ $# -ge 2 ]] || { printf 'deputy: add --prereq needs a value\n' >&2; return 2; }
+                    _ADD_PREREQ="${2//#/}"; shift 2; continue ;;
         --observe)  [[ $# -ge 2 ]] || { printf 'deputy: add --observe needs a value\n' >&2; return 2; }; _ACC_OBSERVE="$(_acc_oneline "$2")"; shift 2; continue ;;
         --actual)   [[ $# -ge 2 ]] || { printf 'deputy: add --actual needs a value\n'  >&2; return 2; }; _ACC_ACTUAL="$(_acc_oneline "$2")";  shift 2; continue ;;
         --expect)   [[ $# -ge 2 ]] || { printf 'deputy: add --expect needs a value\n'  >&2; return 2; }; _ACC_EXPECT="$(_acc_oneline "$2")";  shift 2; continue ;;
@@ -1313,11 +1317,33 @@ cmd_add() {
       printf '  add one with: deputy accept <id> --observe "<how to see it>" --actual "<what happens>" --expect "<what should>" --where "<env+data>"\n' >&2
     fi
   fi
+  # #114: validate --prereq format before taking the lock (existence check happens inside).
+  if [[ -n "$_ADD_PREREQ" ]]; then
+    if ! [[ "$_ADD_PREREQ" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+      printf 'deputy: add --prereq: invalid format %q — expected comma-separated IDs like "3,7" or "#3,#7"\n' "$_ADD_PREREQ" >&2
+      return 2
+    fi
+  fi
   rm -f "$STATE_DIR/.proposed_pending.$$" "$STATE_DIR/.add_pending.$$" 2>/dev/null || true
   _do_add() {
     _allocate_ids || return 1
     if _desc_exists "$text"; then
       printf 'deputy: already present: %s\n' "$text"; return 0
+    fi
+    # #114: validate prereq IDs — must exist (no dangling refs) and not self-reference.
+    # Cycle detection at add-time is not possible since the new item's ID is brand-new;
+    # cycles across existing items are caught by _regroup_backlog and deputy analyze-dep.
+    if [[ -n "$_ADD_PREREQ" ]]; then
+      local _da_nid_probe; _da_nid_probe="$(_next_id)"
+      local _ap_prid
+      for _ap_prid in ${_ADD_PREREQ//,/ }; do
+        if [[ "$_ap_prid" == "$_da_nid_probe" ]]; then
+          printf 'deputy: add --prereq: #%s would reference itself\n' "$_ap_prid" >&2; return 2
+        fi
+        if [[ "$(_item_state_by_id "$_ap_prid")" == "missing" ]]; then
+          printf 'deputy: add --prereq: #%s not found in backlog\n' "$_ap_prid" >&2; return 2
+        fi
+      done
     fi
     if [[ "$_worker" -eq 1 ]]; then
       # Eagerly assign the id here (so the marker can name it), so _allocate_ids will
@@ -1327,12 +1353,12 @@ cmd_add() {
       # #99: freeze the immutable user_desc + canonical slug FIRST (required) — a task must
       # never exist without its frozen slug. Roll the meta back if the append then fails.
       _write_task_meta "$_nid" "$text" || { printf 'deputy: add: could not persist task metadata (#%s) — not added\n' "$_nid" >&2; return 1; }
-      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
+      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text" "$_ADD_PREREQ")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
       mkdir -p "$STATE_DIR" 2>/dev/null || true
       {
         printf 'proposed-by-run-pid: %s\n' "${DEPUTY_ACTIVE_RUN_PID:-}"
         printf 'proposed-at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf 'item: %s\n' "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")"
+        printf 'item: %s\n' "$(_serialize_item surfaced "$_pprio" "$_nid" "$text" "$_ADD_PREREQ")"
         printf 'approve: deputy set "<line>" waiting\n'
         printf 'reject:  deputy set "<line>" cancelled\n'
       } > "$STATE_DIR/proposed-$_nid"
@@ -1346,7 +1372,7 @@ cmd_add() {
     [[ "$_nid" =~ ^[0-9]+$ ]] || { printf 'deputy: id allocation failed\n' >&2; return 1; }
     # #99: freeze the immutable user_desc + canonical slug FIRST (required); roll back on append fail.
     _write_task_meta "$_nid" "$text" || { printf 'deputy: add: could not persist task metadata (#%s) — not added\n' "$_nid" >&2; return 1; }
-    _append_item "$(_serialize_item waiting "$_pprio" "$_nid" "$text")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
+    _append_item "$(_serialize_item waiting "$_pprio" "$_nid" "$text" "$_ADD_PREREQ")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
     # #105: hand the NEW id across the _with_lock subshell ($$ is stable) so the disposition
     # message below fires ONLY for a genuinely-new item (never a duplicate 'already present').
     printf '%s' "$_nid" > "$STATE_DIR/.add_pending.$$" 2>/dev/null || true
