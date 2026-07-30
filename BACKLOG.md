@@ -18,7 +18,7 @@
 ### Waiting (0)
 
 ### Deferred (4)
-;[#4][P3] Add richer item attributes: due dates, dependencies (depends-on), project/goal grouping
+;[#4][P3] Add richer item attributes: due dates and project/goal grouping. SCOPE NARROWED 2026-07-29: the dependencies/depends-on slice was split out to #114 (prerequisite tasks) and is NOT part of this item — do not re-add it here.
 ;[#3][P3] Add intake from GitHub issues, failing CI, and TODO/FIXME scan
 ;[#2][P2] Support parallel execution via multiple git worktrees (capped, conflict-aware)
 ;[#1][P2] Migrate waypoint and xReview to run on Gemini and Codex so complex items can fail over
