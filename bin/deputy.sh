@@ -383,17 +383,26 @@ cmd_analyze_dep() {
     done
   done
 
-  # Kahn's topological sort to detect cycles.
-  # prereq_count[X] = number of non-dangling, non-self prerequisites of X.
-  declare -A _prereq_cnt=()
+  # Kahn's topological sort to detect unresolvable dependencies (cycles or downstream victims).
+  # Deduplicate each item's prereq list first so duplicate IDs don't inflate the count.
+  # prereq_count[X] = number of unique, non-dangling, non-self prerequisites of X.
+  declare -A _prereq_cnt=() _dedup_prereqs=()
   for _ai in "${_ad_ids[@]}"; do
     local _cnt=0 _ap2
+    declare -A _seen_for_cnt=()
     for _ap2 in ${_ad_prereqs[$_ai]//,/ }; do
       [[ -z "$_ap2" || "$_ap2" == "$_ai" ]] && continue
       [[ -n "${_ad_states[$_ap2]+x}" ]] || continue
+      [[ -n "${_seen_for_cnt[$_ap2]+x}" ]] && continue  # dedup
+      _seen_for_cnt["$_ap2"]=1
       (( _cnt++ )) || true
     done
     _prereq_cnt["$_ai"]=$_cnt
+    # Store a space-separated deduplicated prereq list for the inner scan.
+    local _deduped=""
+    for _ap2 in "${!_seen_for_cnt[@]}"; do _deduped="${_deduped}${_deduped:+ }$_ap2"; done
+    _dedup_prereqs["$_ai"]="$_deduped"
+    unset _seen_for_cnt
   done
   local -a _kahn_q=()
   for _ai in "${_ad_ids[@]}"; do
@@ -403,13 +412,11 @@ cmd_analyze_dep() {
   while [[ ${#_kahn_q[@]} -gt 0 ]]; do
     local _curr="${_kahn_q[0]}"; _kahn_q=("${_kahn_q[@]:1}")
     _kahn_done["$_curr"]=1
-    # Decrement prereq_count for all items that have _curr as a prerequisite.
+    # Decrement prereq_count for all items that have _curr as a (unique) prerequisite.
     for _ai in "${_ad_ids[@]}"; do
       [[ -n "${_kahn_done[$_ai]+x}" ]] && continue
-      local _pc2="${_ad_prereqs[$_ai]:-}"
-      [[ -z "$_pc2" ]] && continue
       local _has=0 _ap3
-      for _ap3 in ${_pc2//,/ }; do
+      for _ap3 in ${_dedup_prereqs[$_ai]:-}; do
         [[ "$_ap3" == "$_curr" ]] && { _has=1; break; }
       done
       [[ "$_has" -eq 0 ]] && continue
@@ -417,6 +424,7 @@ cmd_analyze_dep() {
       [[ "${_prereq_cnt[$_ai]}" -eq 0 ]] && _kahn_q+=("$_ai")
     done
   done
+  # Unprocessed nodes are in or downstream of a cycle — all are unresolvable.
   for _ai in "${_ad_ids[@]}"; do
     [[ -n "${_kahn_done[$_ai]+x}" ]] && continue
     [[ "${_prereq_cnt[$_ai]:-0}" -eq 0 ]] && continue  # no real prereqs
@@ -459,7 +467,7 @@ cmd_analyze_dep() {
     printf '\n'
   fi
   if [[ ${#_cycle_nodes[@]} -gt 0 ]]; then
-    printf 'Items in dependency cycles (%d):\n' "${#_cycle_nodes[@]}"
+    printf 'Items with unresolvable dependencies — in a cycle or downstream of one (%d):\n' "${#_cycle_nodes[@]}"
     printf '%s\n' "${_cycle_nodes[@]}"
     printf '\n'
   fi
