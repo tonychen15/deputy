@@ -1540,6 +1540,8 @@ cmd_pick() {
     _cp_changed=0
     for i in "${!_cp_raws[@]}"; do
       [[ "${_cp_sats[$i]}" -eq 1 ]] && continue   # not blocked — nothing to propagate
+      # Only waiting/paused items can become runnable; don't route boosts through terminals.
+      [[ "${_cp_states[$i]}" == "waiting" || "${_cp_states[$i]}" == "paused" ]] || continue
       id="${_cp_ids[$i]}"
       [[ -z "${_cp_boost[$id]+x}" ]] && continue  # no boost received yet — skip
       local _cp_eff="${_cp_boost[$id]}" _cp_r="${_cp_ranks[$i]}"
