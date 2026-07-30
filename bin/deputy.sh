@@ -2725,6 +2725,12 @@ commands:
                                   bug and you are at a terminal, deputy asks for those four
                                   instead. --no-accept skips it (chores); DEPUTY_NO_GRILL=1
                                   or config accept_grill=0 disables the prompt everywhere
+                                  Prerequisites (#114): --prereq <ids> — comma-separated
+                                  IDs (e.g. "3,7" or "#3,#7") this new item depends on.
+                                  Blocked items are skipped by cmd_pick until all prereqs
+                                  reach done/cancelled/duplicate; the highest-priority
+                                  blocked item's rank is propagated to its prereq chain.
+                                  See also: analyze-dep, list (shows [BLOCKED] annotation)
   accept <id|slug>                print a task's acceptance record — the reported symptom
     [--observe <cmd>]             frozen in the reporter's words. With any flag, create or
     [--actual <text>]             update it instead (use this to backfill an item added
@@ -2766,7 +2772,16 @@ commands:
                                   remainder after the 3rd pipe and may itself contain '|';
                                   prio and id are empty strings when unset); composes with
                                   all state filters; use 'cut -d"|" -f4-' to extract desc
-  status                          counts by state
+                                  (#114) Items with unmet prerequisites show an indented
+                                  '[BLOCKED] waiting on: #N(state), ...' annotation listing
+                                  only the prereqs that are not yet done/cancelled/duplicate
+  analyze-dep                     (#114) analyze the full prerequisite dependency graph:
+                                  report blocked items, cycles, self-references, and
+                                  dangling IDs. Exit 0 = clean (no structural defects,
+                                  blocked items are normal queue operation); exit 1 =
+                                  structural defect that requires manual intervention
+  status                          counts by state; includes 'blocked: N' — waiting/paused
+                                  items whose prerequisites are not yet satisfied
   test [--changed] [<name>...]    run the test suite (config test_cmd, else tests/run.sh). With
                                   --changed, run ONLY the tests affected by the working-tree diff
                                   (bin/deputy.sh changed functions → tests/test-map + cmd_<X>→
