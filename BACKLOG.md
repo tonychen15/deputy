@@ -10,10 +10,10 @@
 
 ## Items
 
-### Running (1)
-@[#114][P1] add the prerequisite tasks concept for each task in deputy
+### Running (0)
 
-### Surfaced (0)
+### Surfaced (1)
+?[#114][P1] add the prerequisite tasks concept for each task in deputy
 
 ### Waiting (0)
 
