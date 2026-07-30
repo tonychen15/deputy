@@ -4,9 +4,10 @@
 **Status (line prefix):** (none) waiting | `~` triaging | `@` running | `?` surfaced | `+` done | `!` failed | `%` cancelled | `=` duplicate | `^` paused | `;` deferred | `&` pending-merge  (legacy `#`/`>` are still read and auto-migrated)
 **Priority (tag):** `[P0]` urgent+important | `[P1]` urgent | `[P2]` important | `[P3]` default (bare items) | `[P4]` lowest lane
 **Order:** P0 > P1 > P2 > P3 > P4 ; untagged items are assigned `[P3]` at numbering ; FIFO within a lane
-**Line format:** `<status?>[#N][Px] <description>`  (`[#N]` id assigned automatically on first reference; either tag order is read, written id-first)
+**Line format:** `<status?>[#N][Px][prereq:#M,...] <description>`  (`[#N]` id assigned automatically on first reference; either tag order is read, written id-first)
 **Sub-ids (grouping):** an id may be hand-written with an optional `.<n>` suffix — `[#145.2]` reads as "a sub-item of #145". `#145.2` is a full, independent item id (run/set/target it like any other); only its RELATIONSHIP to `#145` is a human label — the two share no scheduling/merge/lifecycle. Auto-allocation still emits plain integers and counts a sub-id's integer prefix (so `[#145.2]` present ⇒ next auto id is `#146`); type a sub-id yourself to group related work.
-**Add an item:** `deputy add [-ui|-u|-i|--p0|--p1|--p2|--p3|--p4] "your task"` — or just add a line below
+**Prerequisites:** `[prereq:#N,#M]` tag (optional) — item is blocked until all listed ids reach done/cancelled/duplicate; `deputy add --prereq N,M "task"` adds it; `deputy analyze-dep` checks the graph; `deputy list` shows `[BLOCKED]` annotation with unmet prereqs; `deputy status` shows `blocked: N` count.
+**Add an item:** `deputy add [-ui|-u|-i|--p0|--p1|--p2|--p3|--p4] [--prereq <ids>] "your task"` — or just add a line below
 **Sections:** items are auto-grouped under the `###` headers below (with live counts); add a
 line in any section and it is re-sorted on the next write. `<!-- release ... -->` lines in
 **Done** mark release boundaries. Order is by WHO resolves it: **Running/Surfaced/Waiting/

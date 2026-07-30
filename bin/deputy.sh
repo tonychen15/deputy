@@ -172,8 +172,10 @@ _parse_item() {
     esac
     line="${BASH_REMATCH[2]}"
   fi
-  # Tag zone: consume a priority tag ([Pn]) and an id tag ([#N] or bare [N]) in either
-  # order (both optional, at most one each) — keyed on the tag's CONTENT, not its position.
+  # Tag zone: consume a priority tag ([Pn]), an id tag ([#N]), and a prereq tag
+  # ([prereq:#N,#M,...]) in any order (all optional, at most one each).
+  # The prereq tag is stripped from the tag zone so desc stays clean — callers
+  # that need it use _prereq_ids_from_line on the raw line directly.
   local consumed=1
   while [[ "$consumed" -eq 1 ]]; do
     consumed=0
@@ -189,18 +191,85 @@ _parse_item() {
     if [[ -z "$id" && "$line" =~ ^\[#([0-9]+(\.[0-9]+)?)\][[:space:]]*(.*) ]]; then
       id="${BASH_REMATCH[1]}"; line="${BASH_REMATCH[3]}"; consumed=1
     fi
+    # #114: prereq tag — strip from tag zone so desc stays clean and _desc_exists dedup
+    # works. Callers needing prereq IDs use _prereq_ids_from_line on the RAW line.
+    # Strict grammar: [prereq:#N(.M)?(,#N(.M)?)*] — BASH_REMATCH[5] is the remainder.
+    if [[ "$line" =~ ^\[prereq:(#[0-9]+([.][0-9]+)?(,#[0-9]+([.][0-9]+)?)*)\][[:space:]]*(.*) ]]; then
+      line="${BASH_REMATCH[5]}"; consumed=1
+    fi
   done
   desc="$line"
   printf '%s|%s|%s|%s' "$state" "$prio" "$id" "$desc"
 }
 
-# Build a canonical line from (state, priority, id, description).
-# Canonical order (#62): <status>[#N][Pn] description — id first, then priority.
-# The status symbol directly abuts what follows (no space): `@[#3][P0] x`, `[#7] x`, `Plain`.
+# #114: extract comma-separated prereq IDs (without '#') from the TAG ZONE of a raw line.
+# Returns e.g. "3,7" from "[#5][P1][prereq:#3,#7] desc". Returns empty if no prereq tag.
+# Callers must pass the RAW line (before _parse_item), since _parse_item strips the tag.
+# Scans only the tag zone (after optional state prefix and [#N]/[Pn] tags) to avoid
+# false-positives from descriptions containing "[prereq:...]" text literally.
+_prereq_ids_from_line() {
+  local line="$1"
+  line="${line#"${line%%[![:space:]]*}"}"          # left-trim
+  # Strip optional state prefix — use if/then to avoid Bash operator-parsing quirks
+  # with & and > inside [[ ... ]] && ... (same char class as _parse_item line 158).
+  if [[ "$line" =~ ^([~@?+!%=^&\;#>])[[:space:]]*(.*) ]]; then line="${BASH_REMATCH[2]}"; fi
+  # Scan through [#N] and [Pn] tags in the tag zone, looking for [prereq:...]
+  local consumed=1
+  while [[ "$consumed" -eq 1 ]]; do
+    consumed=0
+    [[ "$line" =~ ^\[P[0-4]\][[:space:]]*(.*) ]] && { line="${BASH_REMATCH[1]}"; consumed=1; }
+    [[ "$line" =~ ^\[#[0-9]+(\.[0-9]+)?\][[:space:]]*(.*) ]] && { line="${BASH_REMATCH[2]}"; consumed=1; }
+    # Strict prereq grammar: [prereq:#N(.M)?(,#N(.M)?)*] — no trailing commas, no spaces.
+    if [[ "$line" =~ ^\[prereq:(#[0-9]+(\.[0-9]+)?(,#[0-9]+(\.[0-9]+)?)*)\] ]]; then
+      printf '%s' "${BASH_REMATCH[1]//#/}"   # strip all '#' → "3,7"
+      return 0
+    fi
+  done
+}
+
+# #114: get the state of an item by its numeric ID. Prints the state string or "missing"
+# if the ID is not found in BACKLOG. O(N) — only called from _prereqs_satisfied.
+_item_state_by_id() {
+  local want_id="$1" raw parsed rid
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    rid="${parsed#*|}"; rid="${rid#*|}"; rid="${rid%%|*}"
+    if [[ "$rid" == "$want_id" ]]; then
+      printf '%s' "${parsed%%|*}"; return 0
+    fi
+  done < <(_each_item)
+  printf 'missing'
+}
+
+# #114: return 0 (satisfied) or 1 (blocked) for the item whose raw line is $1.
+# Satisfied means all prereq IDs are in state done/cancelled/duplicate.
+# "missing" prereq IDs (dangling) are treated as NOT satisfied (unsatisfiable).
+_prereqs_satisfied_for_line() {
+  local raw="$1"
+  local prereq; prereq="$(_prereq_ids_from_line "$raw")"
+  [[ -z "$prereq" ]] && return 0   # no prereqs → always satisfied
+  local prid pstate
+  local IFS=','
+  for prid in $prereq; do
+    pstate="$(_item_state_by_id "$prid")"
+    case "$pstate" in
+      done|cancelled|duplicate) ;;  # satisfied
+      *) return 1 ;;                # unsatisfied (waiting/running/failed/missing/etc.)
+    esac
+  done
+  return 0
+}
+
+# Build a canonical line from (state, priority, id, description[, prereq]).
+# Canonical order (#62): <status>[#N][Pn][prereq:#M,...] description — id first, then
+# priority, then optional prereq tag (#114). The status symbol directly abuts what follows
+# (no space): `@[#3][P0] x`, `[#7] x`, `Plain`.
 # Reads are order-agnostic (see _parse_item), so old `[Pn][#N]` lines migrate on the
-# next re-serialize.
+# next re-serialize. Prereq ($5) is a comma-separated list of IDs WITHOUT '#' (e.g. "3,7");
+# callers that do a parse→serialize round-trip must extract it via _prereq_ids_from_line
+# and pass it here so the tag is preserved. Omit or pass "" to emit no prereq tag.
 _serialize_item() {
-  local state="$1" prio="$2" id="$3" desc="$4" prefix="" body=""
+  local state="$1" prio="$2" id="$3" desc="$4" prereq="${5:-}" prefix="" body=""
   case "$state" in
     waiting)   prefix="" ;;  triaging)  prefix="~" ;; running)   prefix="@" ;;
     surfaced)  prefix="?" ;; done)      prefix="+" ;; failed)    prefix="!" ;;
@@ -211,6 +280,10 @@ _serialize_item() {
   body=""
   [[ -n "$id"   ]] && body="${body}[#${id}]"
   [[ -n "$prio" ]] && body="${body}[${prio}]"
+  # #114: re-attach prereq tag after [Pn]; format "3,7" → "[prereq:#3,#7]"
+  if [[ -n "$prereq" ]]; then
+    body="${body}[prereq:#${prereq//,/,#}]"
+  fi
   if [[ -n "$body" ]]; then
     [[ -n "$desc" ]] && body="${body} ${desc}"
   else
@@ -267,6 +340,143 @@ _migrate_trails() {
     for f in "$STATE_DIR"/*.fail.md;      do base="${f##*/}"; _move_trail "$f" "$STATE_DIR/fails/${base%.fail.md}.md"; done
   fi
   shopt -u nullglob
+}
+
+# #114: Analyze the full dependency graph. Reports blocked items, cycles, self-refs,
+# and dangling prereq IDs. Exit 0 when graph is clean; exit 1 when issues exist.
+cmd_analyze_dep() {
+  declare -A _ad_states=() _ad_prios=() _ad_descs=() _ad_prereqs=()
+  local -a _ad_ids=()
+
+  while IFS= read -r _ad_raw; do
+    local _ad_parsed _ad_s _ad_p _ad_id _ad_d _ad_pc
+    _ad_parsed="$(_parse_item "$_ad_raw")"
+    _ad_s="${_ad_parsed%%|*}"
+    _ad_p="${_ad_parsed#*|}"; _ad_p="${_ad_p%%|*}"
+    _ad_id="${_ad_parsed#*|}"; _ad_id="${_ad_id#*|}"; _ad_id="${_ad_id%%|*}"
+    _ad_d="${_ad_parsed#*|}"; _ad_d="${_ad_d#*|}"; _ad_d="${_ad_d#*|}"
+    _ad_pc="$(_prereq_ids_from_line "$_ad_raw")"
+    _ad_states["$_ad_id"]="$_ad_s"
+    _ad_prios["$_ad_id"]="${_ad_p:-P3}"
+    _ad_descs["$_ad_id"]="${_ad_d:0:60}"
+    _ad_prereqs["$_ad_id"]="${_ad_pc:-}"
+    _ad_ids+=("$_ad_id")
+  done < <(_each_item)
+
+  local _issues=0
+  local -a _blocked=() _self=() _dangle=() _cycle_nodes=()
+
+  # Self-refs and dangling IDs.
+  local _ai _ap
+  for _ai in "${_ad_ids[@]}"; do
+    local _pc="${_ad_prereqs[$_ai]:-}"
+    [[ -z "$_pc" ]] && continue
+    for _ap in ${_pc//,/ }; do
+      [[ -z "$_ap" ]] && continue
+      if [[ "$_ap" == "$_ai" ]]; then
+        _self+=("  #$_ai (${_ad_prios[$_ai]}) references itself")
+        (( _issues++ )) || true
+      elif [[ -z "${_ad_states[$_ap]+x}" ]]; then
+        _dangle+=("  #$_ai (${_ad_prios[$_ai]}) → #$_ap [not in backlog]")
+        (( _issues++ )) || true
+      fi
+    done
+  done
+
+  # Kahn's topological sort to detect unresolvable dependencies (cycles or downstream victims).
+  # Deduplicate each item's prereq list first so duplicate IDs don't inflate the count.
+  # prereq_count[X] = number of unique, non-dangling, non-self prerequisites of X.
+  declare -A _prereq_cnt=() _dedup_prereqs=()
+  for _ai in "${_ad_ids[@]}"; do
+    local _cnt=0 _ap2
+    declare -A _seen_for_cnt=()
+    for _ap2 in ${_ad_prereqs[$_ai]//,/ }; do
+      [[ -z "$_ap2" || "$_ap2" == "$_ai" ]] && continue
+      [[ -n "${_ad_states[$_ap2]+x}" ]] || continue
+      [[ -n "${_seen_for_cnt[$_ap2]+x}" ]] && continue  # dedup
+      _seen_for_cnt["$_ap2"]=1
+      (( _cnt++ )) || true
+    done
+    _prereq_cnt["$_ai"]=$_cnt
+    # Store a space-separated deduplicated prereq list for the inner scan.
+    local _deduped=""
+    for _ap2 in "${!_seen_for_cnt[@]}"; do _deduped="${_deduped}${_deduped:+ }$_ap2"; done
+    _dedup_prereqs["$_ai"]="$_deduped"
+    unset _seen_for_cnt
+  done
+  local -a _kahn_q=()
+  for _ai in "${_ad_ids[@]}"; do
+    [[ "${_prereq_cnt[$_ai]:-0}" -eq 0 ]] && _kahn_q+=("$_ai")
+  done
+  declare -A _kahn_done=()
+  while [[ ${#_kahn_q[@]} -gt 0 ]]; do
+    local _curr="${_kahn_q[0]}"; _kahn_q=("${_kahn_q[@]:1}")
+    _kahn_done["$_curr"]=1
+    # Decrement prereq_count for all items that have _curr as a (unique) prerequisite.
+    for _ai in "${_ad_ids[@]}"; do
+      [[ -n "${_kahn_done[$_ai]+x}" ]] && continue
+      local _has=0 _ap3
+      for _ap3 in ${_dedup_prereqs[$_ai]:-}; do
+        [[ "$_ap3" == "$_curr" ]] && { _has=1; break; }
+      done
+      [[ "$_has" -eq 0 ]] && continue
+      _prereq_cnt["$_ai"]=$(( _prereq_cnt["$_ai"] - 1 ))
+      [[ "${_prereq_cnt[$_ai]}" -eq 0 ]] && _kahn_q+=("$_ai")
+    done
+  done
+  # Unprocessed nodes are in or downstream of a cycle — all are unresolvable.
+  for _ai in "${_ad_ids[@]}"; do
+    [[ -n "${_kahn_done[$_ai]+x}" ]] && continue
+    [[ "${_prereq_cnt[$_ai]:-0}" -eq 0 ]] && continue  # no real prereqs
+    _cycle_nodes+=("  #$_ai (${_ad_prios[$_ai]}) \"${_ad_descs[$_ai]}\"")
+    (( _issues++ )) || true
+  done
+
+  # Blocked items: waiting/paused with at least one unmet prerequisite.
+  for _ai in "${_ad_ids[@]}"; do
+    local _as="${_ad_states[$_ai]}"
+    [[ "$_as" == "waiting" || "$_as" == "paused" ]] || continue
+    local _pc3="${_ad_prereqs[$_ai]:-}"
+    [[ -z "$_pc3" ]] && continue
+    local _unmet="" _ap4
+    for _ap4 in ${_pc3//,/ }; do
+      [[ -z "$_ap4" ]] && continue
+      local _ps="${_ad_states[$_ap4]:-missing}"
+      case "$_ps" in
+        done|cancelled|duplicate) ;;
+        *) _unmet="${_unmet}${_unmet:+, }#$_ap4($_ps)" ;;
+      esac
+    done
+    [[ -z "$_unmet" ]] && continue
+    _blocked+=("  #$_ai [${_ad_prios[$_ai]}] \"${_ad_descs[$_ai]}\" — blocked by: $_unmet")
+  done
+
+  if [[ ${#_blocked[@]} -gt 0 ]]; then
+    printf 'Blocked items (%d):\n' "${#_blocked[@]}"
+    printf '%s\n' "${_blocked[@]}"
+    printf '\n'
+  fi
+  if [[ ${#_self[@]} -gt 0 ]]; then
+    printf 'Self-references (%d):\n' "${#_self[@]}"
+    printf '%s\n' "${_self[@]}"
+    printf '\n'
+  fi
+  if [[ ${#_dangle[@]} -gt 0 ]]; then
+    printf 'Dangling prerequisites (%d):\n' "${#_dangle[@]}"
+    printf '%s\n' "${_dangle[@]}"
+    printf '\n'
+  fi
+  if [[ ${#_cycle_nodes[@]} -gt 0 ]]; then
+    printf 'Items with unresolvable dependencies — in a cycle or downstream of one (%d):\n' "${#_cycle_nodes[@]}"
+    printf '%s\n' "${_cycle_nodes[@]}"
+    printf '\n'
+  fi
+  if [[ "$_issues" -eq 0 && ${#_blocked[@]} -eq 0 ]]; then
+    printf 'No dependency issues.\n'
+  elif [[ "$_issues" -eq 0 ]]; then
+    printf 'Graph is acyclic; no dangling or self-references.\n'
+  fi
+  return $(( _issues > 0 ? 1 : 0 ))
 }
 
 cmd_list() {
@@ -330,7 +540,7 @@ cmd_list() {
     esac
   done
   _with_lock _allocate_ids
-  local raw parsed count=0 _ls _lp _li _ld _lrest
+  local raw parsed count=0 _ls _lp _li _ld _lrest _ll_prereq _bl_prid _bl_pstate _bl_unmet
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     _ls="${parsed%%|*}"; _lrest="${parsed#*|}"
@@ -342,10 +552,24 @@ cmd_list() {
     # skipped items never produce a phantom separator; count>0 means we already printed one).
     # Suppressed under --porcelain (#93) so machine output stays cleanly delimiter-parseable.
     [[ -n "$filter" && "$count" -gt 0 && "$porcelain" -eq 0 ]] && printf '\n'
+    _ll_prereq="$(_prereq_ids_from_line "$raw")"
     if [[ "$porcelain" -eq 1 ]]; then
       printf '%s|%s|%s|%s\n' "$_ls" "$_lp" "$_li" "$_ld"
     else
-      printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld")"
+      # #114: pass prereq so the [prereq:...] tag round-trips in the output line.
+      printf '%s\n' "$(_serialize_item "$_ls" "$_lp" "$_li" "$_ld" "$_ll_prereq")"
+      # #114: annotate blocked items with the list of unmet prereqs.
+      if [[ -n "$_ll_prereq" ]]; then
+        _bl_unmet=""
+        for _bl_prid in ${_ll_prereq//,/ }; do
+          _bl_pstate="$(_item_state_by_id "$_bl_prid")"
+          case "$_bl_pstate" in
+            done|cancelled|duplicate) ;;
+            *) _bl_unmet="${_bl_unmet:+$_bl_unmet, }#${_bl_prid}(${_bl_pstate})" ;;
+          esac
+        done
+        [[ -n "$_bl_unmet" ]] && printf '  [BLOCKED] waiting on: %s\n' "$_bl_unmet"
+      fi
       # For attention states (surfaced/failed/deferred/paused/cancelled), print the indented
       # detail block (status/details/summary/action) beneath the item; no-op otherwise, and
       # skipped under --porcelain so machine output stays clean.
@@ -758,6 +982,9 @@ _regroup_backlog() {
   # release-delimiter lines (preserving their relative order). done_count tracks
   # ITEMS only (delimiters excluded from the Done header count).
   local -a running=() pendmerge=() surfaced=() waiting=() paused=() deferred=() failcanc=() done_stream=()
+  # #114: in-memory dep graph built during the scan for cycle detection after the loop.
+  declare -A _rg_st=() _rg_pq=()   # id→state, id→prereq_csv
+  local -a _rg_ids=()
   local done_count=0
 
   tmp="$(_backlog_mktemp)" || { [[ "$_src" != "$BACKLOG" ]] && rm -f "$_src" 2>/dev/null; return 1; }
@@ -784,9 +1011,12 @@ _regroup_backlog() {
     rest="${parsed#*|}"; prio="${rest%%|*}"
     rest="${rest#*|}";   id="${rest%%|*}"
     desc="${rest#*|}"
+    local _rg_prereq; _rg_prereq="$(_prereq_ids_from_line "$raw")"
     # Re-serialize each item so the canonical (current) symbols are written back —
     # this is what migrates pre-migration '#'/'>' lines to '+'/';' on regroup.
-    norm="$(_serialize_item "$state" "$prio" "$id" "$desc")"
+    # #114: pass prereq extracted from the raw line so the tag is never lost on regroup.
+    norm="$(_serialize_item "$state" "$prio" "$id" "$desc" "$_rg_prereq")"
+    [[ -n "$id" ]] && { _rg_st["$id"]="$state"; _rg_pq["$id"]="${_rg_prereq:-}"; _rg_ids+=("$id"); }
     case "$state" in
       running)                    running+=("$norm") ;;
       # #112: MUST have an arm here — this case has no default branch, so any state without
@@ -800,6 +1030,84 @@ _regroup_backlog() {
       done)                       done_stream+=("$norm"); done_count=$((done_count + 1)) ;;
     esac
   done < "$_src"
+
+  # #114: Cycle detection — run after the scan so _rg_st/_rg_pq are complete.
+  # Surface waiting/paused items that are in or downstream of a cycle (they can never
+  # complete without human intervention). NEVER blocks the write.
+  if [[ ${#waiting[@]} -gt 0 || ${#paused[@]} -gt 0 ]]; then
+    local -A _rgc_cnt=() _rgc_dedup=() _rgc_done=()
+    local _rgc_id _rgc_ap
+    for _rgc_id in "${_rg_ids[@]}"; do
+      local _rgc_c=0
+      local -A _rgc_seen=()
+      for _rgc_ap in ${_rg_pq[$_rgc_id]//,/ }; do
+        [[ -z "$_rgc_ap" || "$_rgc_ap" == "$_rgc_id" ]] && continue
+        [[ -n "${_rg_st[$_rgc_ap]+x}" ]] || continue
+        # Satisfied terminals are already resolved — don't count them as blockers.
+        case "${_rg_st[$_rgc_ap]}" in done|cancelled|duplicate) continue ;; esac
+        [[ -n "${_rgc_seen[$_rgc_ap]+x}" ]] && continue
+        _rgc_seen["$_rgc_ap"]=1; (( _rgc_c++ )) || true
+      done
+      _rgc_cnt["$_rgc_id"]=$_rgc_c
+      local _rgc_d=""; for _rgc_ap in "${!_rgc_seen[@]}"; do _rgc_d="${_rgc_d}${_rgc_d:+ }$_rgc_ap"; done
+      _rgc_dedup["$_rgc_id"]="$_rgc_d"
+      unset _rgc_seen
+    done
+    local -a _rgc_q=()
+    for _rgc_id in "${_rg_ids[@]}"; do
+      [[ "${_rgc_cnt[$_rgc_id]:-0}" -eq 0 ]] && _rgc_q+=("$_rgc_id")
+    done
+    while [[ ${#_rgc_q[@]} -gt 0 ]]; do
+      local _rgc_curr="${_rgc_q[0]}"; _rgc_q=("${_rgc_q[@]:1}")
+      _rgc_done["$_rgc_curr"]=1
+      for _rgc_id in "${_rg_ids[@]}"; do
+        [[ -n "${_rgc_done[$_rgc_id]+x}" ]] && continue
+        local _rgc_h=0 _rgc_ap2
+        for _rgc_ap2 in ${_rgc_dedup[$_rgc_id]:-}; do
+          [[ "$_rgc_ap2" == "$_rgc_curr" ]] && { _rgc_h=1; break; }
+        done
+        [[ "$_rgc_h" -eq 0 ]] && continue
+        _rgc_cnt["$_rgc_id"]=$(( _rgc_cnt["$_rgc_id"] - 1 ))
+        [[ "${_rgc_cnt[$_rgc_id]}" -eq 0 ]] && _rgc_q+=("$_rgc_id")
+      done
+    done
+    # Surface waiting/paused items that are unresolvable.
+    local -a _new_waiting=() _new_paused=()
+    local _rgc_line _rgc_parsed _rgc_lid _rgc_lprio _rgc_lrest _rgc_lpreq
+    local _rg_cycle_found=0
+    for _rgc_line in "${waiting[@]+"${waiting[@]}"}"; do
+      _rgc_parsed="$(_parse_item "$_rgc_line")"
+      _rgc_lid="${_rgc_parsed#*|}"; _rgc_lid="${_rgc_lid#*|}"; _rgc_lid="${_rgc_lid%%|*}"
+      if [[ -n "$_rgc_lid" && -z "${_rgc_done[$_rgc_lid]+x}" && "${_rgc_cnt[$_rgc_lid]:-0}" -gt 0 ]]; then
+        _rgc_lprio="${_rgc_parsed#*|}"; _rgc_lprio="${_rgc_lprio%%|*}"
+        _rgc_lrest="${_rgc_parsed#*|}"; _rgc_lrest="${_rgc_lrest#*|}"; _rgc_lrest="${_rgc_lrest#*|}"
+        _rgc_lpreq="${_rg_pq[$_rgc_lid]:-}"
+        surfaced+=("$(_serialize_item surfaced "$_rgc_lprio" "$_rgc_lid" "$_rgc_lrest" "$_rgc_lpreq")")
+        printf 'deputy: warning: #%s involved in an unresolvable dependency — surfacing (run deputy analyze-dep)\n' "$_rgc_lid" >&2 || true
+        _rg_cycle_found=1
+      else
+        _new_waiting+=("$_rgc_line")
+      fi
+    done
+    for _rgc_line in "${paused[@]+"${paused[@]}"}"; do
+      _rgc_parsed="$(_parse_item "$_rgc_line")"
+      _rgc_lid="${_rgc_parsed#*|}"; _rgc_lid="${_rgc_lid#*|}"; _rgc_lid="${_rgc_lid%%|*}"
+      if [[ -n "$_rgc_lid" && -z "${_rgc_done[$_rgc_lid]+x}" && "${_rgc_cnt[$_rgc_lid]:-0}" -gt 0 ]]; then
+        _rgc_lprio="${_rgc_parsed#*|}"; _rgc_lprio="${_rgc_lprio%%|*}"
+        _rgc_lrest="${_rgc_parsed#*|}"; _rgc_lrest="${_rgc_lrest#*|}"; _rgc_lrest="${_rgc_lrest#*|}"
+        _rgc_lpreq="${_rg_pq[$_rgc_lid]:-}"
+        surfaced+=("$(_serialize_item surfaced "$_rgc_lprio" "$_rgc_lid" "$_rgc_lrest" "$_rgc_lpreq")")
+        printf 'deputy: warning: #%s involved in an unresolvable dependency — surfacing (run deputy analyze-dep)\n' "$_rgc_lid" >&2 || true
+        _rg_cycle_found=1
+      else
+        _new_paused+=("$_rgc_line")
+      fi
+    done
+    if [[ "$_rg_cycle_found" -eq 1 ]]; then
+      waiting=("${_new_waiting[@]+"${_new_waiting[@]}"}")
+      paused=("${_new_paused[@]+"${_new_paused[@]}"}")
+    fi
+  fi
 
   # When called from cmd_clean for done items, strip release delimiters that are
   # orphaned: no items appear between the delimiter and the next delimiter (or end).
@@ -909,6 +1217,7 @@ _allocate_ids() {
     # Check if this item line needs an ID or a default priority
     parsed="$(_parse_item "$_ai_line")"
     _ai_id="${parsed#*|}"; _ai_id="${_ai_id#*|}"; _ai_id="${_ai_id%%|*}"
+    local _ai_prereq; _ai_prereq="$(_prereq_ids_from_line "$_ai_line")"
     if [[ -z "$_ai_id" ]]; then
       local _ai_state="${parsed%%|*}"
       local _ai_prio="${parsed#*|}"; _ai_prio="${_ai_prio%%|*}"
@@ -916,7 +1225,8 @@ _allocate_ids() {
       # Items with no explicit priority get the default [P3] tag.
       [[ -z "$_ai_prio" ]] && _ai_prio="P3"
       local _ai_new_line
-      _ai_new_line="$(_serialize_item "$_ai_state" "$_ai_prio" "$next_id" "$_ai_desc_rest")"
+      # #114: preserve prereq tag when assigning a new ID.
+      _ai_new_line="$(_serialize_item "$_ai_state" "$_ai_prio" "$next_id" "$_ai_desc_rest" "$_ai_prereq")"
       printf '%s\n' "$_ai_new_line" >> "$tmp" || _werr=1
       next_id=$(( next_id + 1 ))
       changed=1
@@ -927,7 +1237,8 @@ _allocate_ids() {
       local _ai_desc_rest="${parsed#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"; _ai_desc_rest="${_ai_desc_rest#*|}"
       if [[ -z "$_ai_prio" ]]; then
         local _ai_new_line
-        _ai_new_line="$(_serialize_item "$_ai_state" "P3" "$_ai_id" "$_ai_desc_rest")"
+        # #114: preserve prereq tag when backfilling priority.
+        _ai_new_line="$(_serialize_item "$_ai_state" "P3" "$_ai_id" "$_ai_desc_rest" "$_ai_prereq")"
         printf '%s\n' "$_ai_new_line" >> "$tmp" || _werr=1
         changed=1
       else
@@ -1169,6 +1480,8 @@ cmd_add() {
   # #113: acceptance fields may be supplied non-interactively (scripts, CI, an agent
   # filing a proposal); --no-accept opts a chore out of the grill entirely.
   local _ACC_OBSERVE="" _ACC_ACTUAL="" _ACC_EXPECT="" _ACC_WHERE="" _ACC_MATCH="" _acc_skip=0
+  # #114: --prereq accepts comma-separated IDs (with or without '#'): "3,7" or "#3,#7".
+  local _ADD_PREREQ=""
   while [[ $# -gt 0 ]]; do
     if [[ "$no_more_flags" -eq 0 ]]; then
       case "$1" in
@@ -1178,6 +1491,8 @@ cmd_add() {
         --p2|-i)    prio=P2; shift; continue ;;
         --p3)       prio=P3; shift; continue ;;
         --p4)       prio=P4; shift; continue ;;
+        --prereq)   [[ $# -ge 2 ]] || { printf 'deputy: add --prereq needs a value\n' >&2; return 2; }
+                    _ADD_PREREQ="${2//#/}"; shift 2; continue ;;
         --observe)  [[ $# -ge 2 ]] || { printf 'deputy: add --observe needs a value\n' >&2; return 2; }; _ACC_OBSERVE="$(_acc_oneline "$2")"; shift 2; continue ;;
         --actual)   [[ $# -ge 2 ]] || { printf 'deputy: add --actual needs a value\n'  >&2; return 2; }; _ACC_ACTUAL="$(_acc_oneline "$2")";  shift 2; continue ;;
         --expect)   [[ $# -ge 2 ]] || { printf 'deputy: add --expect needs a value\n'  >&2; return 2; }; _ACC_EXPECT="$(_acc_oneline "$2")";  shift 2; continue ;;
@@ -1233,11 +1548,33 @@ cmd_add() {
       printf '  add one with: deputy accept <id> --observe "<how to see it>" --actual "<what happens>" --expect "<what should>" --where "<env+data>"\n' >&2
     fi
   fi
+  # #114: validate --prereq format before taking the lock (existence check happens inside).
+  if [[ -n "$_ADD_PREREQ" ]]; then
+    if ! [[ "$_ADD_PREREQ" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+      printf 'deputy: add --prereq: invalid format %q — expected comma-separated IDs like "3,7" or "#3,#7"\n' "$_ADD_PREREQ" >&2
+      return 2
+    fi
+  fi
   rm -f "$STATE_DIR/.proposed_pending.$$" "$STATE_DIR/.add_pending.$$" 2>/dev/null || true
   _do_add() {
     _allocate_ids || return 1
     if _desc_exists "$text"; then
       printf 'deputy: already present: %s\n' "$text"; return 0
+    fi
+    # #114: validate prereq IDs — must exist (no dangling refs) and not self-reference.
+    # Cycle detection at add-time is not possible since the new item's ID is brand-new;
+    # cycles across existing items are caught by _regroup_backlog and deputy analyze-dep.
+    if [[ -n "$_ADD_PREREQ" ]]; then
+      local _da_nid_probe; _da_nid_probe="$(_next_id)"
+      local _ap_prid
+      for _ap_prid in ${_ADD_PREREQ//,/ }; do
+        if [[ "$_ap_prid" == "$_da_nid_probe" ]]; then
+          printf 'deputy: add --prereq: #%s would reference itself\n' "$_ap_prid" >&2; return 2
+        fi
+        if [[ "$(_item_state_by_id "$_ap_prid")" == "missing" ]]; then
+          printf 'deputy: add --prereq: #%s not found in backlog\n' "$_ap_prid" >&2; return 2
+        fi
+      done
     fi
     if [[ "$_worker" -eq 1 ]]; then
       # Eagerly assign the id here (so the marker can name it), so _allocate_ids will
@@ -1247,12 +1584,12 @@ cmd_add() {
       # #99: freeze the immutable user_desc + canonical slug FIRST (required) — a task must
       # never exist without its frozen slug. Roll the meta back if the append then fails.
       _write_task_meta "$_nid" "$text" || { printf 'deputy: add: could not persist task metadata (#%s) — not added\n' "$_nid" >&2; return 1; }
-      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
+      _append_item "$(_serialize_item surfaced "$_pprio" "$_nid" "$text" "$_ADD_PREREQ")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
       mkdir -p "$STATE_DIR" 2>/dev/null || true
       {
         printf 'proposed-by-run-pid: %s\n' "${DEPUTY_ACTIVE_RUN_PID:-}"
         printf 'proposed-at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf 'item: %s\n' "$(_serialize_item surfaced "$_pprio" "$_nid" "$text")"
+        printf 'item: %s\n' "$(_serialize_item surfaced "$_pprio" "$_nid" "$text" "$_ADD_PREREQ")"
         printf 'approve: deputy set "<line>" waiting\n'
         printf 'reject:  deputy set "<line>" cancelled\n'
       } > "$STATE_DIR/proposed-$_nid"
@@ -1266,7 +1603,7 @@ cmd_add() {
     [[ "$_nid" =~ ^[0-9]+$ ]] || { printf 'deputy: id allocation failed\n' >&2; return 1; }
     # #99: freeze the immutable user_desc + canonical slug FIRST (required); roll back on append fail.
     _write_task_meta "$_nid" "$text" || { printf 'deputy: add: could not persist task metadata (#%s) — not added\n' "$_nid" >&2; return 1; }
-    _append_item "$(_serialize_item waiting "$_pprio" "$_nid" "$text")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
+    _append_item "$(_serialize_item waiting "$_pprio" "$_nid" "$text" "$_ADD_PREREQ")" || { rm -f "$(_meta_path "$_nid")" 2>/dev/null || true; return 1; }
     # #105: hand the NEW id across the _with_lock subshell ($$ is stable) so the disposition
     # message below fires ONLY for a genuinely-new item (never a duplicate 'already present').
     printf '%s' "$_nid" > "$STATE_DIR/.add_pending.$$" 2>/dev/null || true
@@ -1347,19 +1684,23 @@ _autorun() {
 
 cmd_status() {
   _with_lock _allocate_ids
-  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 pm=0 parsed
+  local raw state w=0 t=0 r=0 s=0 d=0 f=0 c=0 u=0 p=0 df=0 pm=0 bl=0 parsed
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
     case "$state" in
-      waiting) w=$((w+1)) ;; triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
+      waiting)
+        w=$((w+1)); _prereqs_satisfied_for_line "$raw" || bl=$((bl+1)) ;;
+      paused)
+        p=$((p+1)); _prereqs_satisfied_for_line "$raw" || bl=$((bl+1)) ;;
+      triaging) t=$((t+1)) ;; running)    r=$((r+1)) ;;
       surfaced) s=$((s+1)) ;; done) d=$((d+1)) ;;    failed)     f=$((f+1)) ;;
-      cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;; paused)  p=$((p+1)) ;;
+      cancelled) c=$((c+1)) ;; duplicate) u=$((u+1)) ;;
       pending-merge) pm=$((pm+1)) ;;
       deferred) df=$((df+1)) ;;
     esac
   done < <(_each_item)
-  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\npending-merge: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\n' \
-    "$w" "$t" "$r" "$s" "$pm" "$d" "$f" "$c" "$u" "$p" "$df"
+  printf 'waiting:  %d\ntriaging: %d\nrunning:  %d\nsurfaced: %d\npending-merge: %d\ndone:     %d\nfailed:   %d\ncancelled: %d\nduplicate: %d\npaused:   %d\ndeferred: %d\nblocked:  %d\n' \
+    "$w" "$t" "$r" "$s" "$pm" "$d" "$f" "$c" "$u" "$p" "$df" "$bl"
 }
 
 # Numeric rank for a priority tag: P0=0 P1=1 P2=2 P3=3 P4=4 (none)=5.
@@ -1422,17 +1763,77 @@ _print_waiting_queue() {
 
 cmd_pick() {
   _with_lock _allocate_ids
-  local raw parsed state prio best_rank=99 best_line="" rank
+  # #114 — transitive priority inheritance + prereq gate.
+  # Phase 1: collect all items; compute initial one-hop boost (blocked item → direct prereq).
+  # Phase 2: fixpoint iteration — propagate effective rank down the chain until stable.
+  # Phase 3: pick the highest-effective-rank item whose own prereqs are satisfied.
+  local raw parsed state prio id rank _cp_sat _cp_pcsv
+  local -a _cp_raws=() _cp_states=() _cp_ids=() _cp_ranks=() _cp_sats=() _cp_pcsvs=()
+  declare -A _cp_boost   # id → min(rank) seen in its blocked subtree (lower = higher prio)
+
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
     state="${parsed%%|*}"
-    [[ "$state" == "waiting" || "$state" == "paused" ]] || continue
     prio="${parsed#*|}"; prio="${prio%%|*}"
+    id="${parsed#*|}"; id="${id#*|}"; id="${id%%|*}"
     rank="$(_prio_rank "$prio")"
-    if (( rank < best_rank )); then          # strict < preserves FIFO on ties
-      best_rank="$rank"; best_line="$raw"
+    _cp_sat=1; _prereqs_satisfied_for_line "$raw" || _cp_sat=0
+    _cp_pcsv=""
+    [[ "$_cp_sat" -eq 0 ]] && _cp_pcsv="$(_prereq_ids_from_line "$raw")"
+    _cp_raws+=("$raw"); _cp_states+=("$state")
+    _cp_ids+=("$id"); _cp_ranks+=("$rank"); _cp_sats+=("$_cp_sat"); _cp_pcsvs+=("$_cp_pcsv")
+    # One-hop boost: blocked item propagates its own rank to each direct prereq.
+    if [[ "$state" == "waiting" || "$state" == "paused" ]] && [[ "$_cp_sat" -eq 0 ]] && [[ -n "$_cp_pcsv" ]]; then
+      local _cp_prid _cp_cur
+      while IFS= read -r _cp_prid; do
+        [[ -z "$_cp_prid" ]] && continue
+        _cp_cur="${_cp_boost[$_cp_prid]:-99}"
+        (( rank < _cp_cur )) && _cp_boost[$_cp_prid]=$rank
+      done <<< "${_cp_pcsv//,/$'\n'}"
     fi
   done < <(_each_item)
+
+  # Fixpoint: if a boosted blocked item B has its own prereqs, propagate B's effective
+  # rank (min of B's own rank and boost) to B's prereqs — handles chains like D→B→A
+  # where D(P0) must eventually boost A, not just B.
+  local _cp_changed=1 i
+  while [[ "$_cp_changed" -eq 1 ]]; do
+    _cp_changed=0
+    for i in "${!_cp_raws[@]}"; do
+      [[ "${_cp_sats[$i]}" -eq 1 ]] && continue   # not blocked — nothing to propagate
+      # Only waiting/paused items can become runnable; don't route boosts through terminals.
+      [[ "${_cp_states[$i]}" == "waiting" || "${_cp_states[$i]}" == "paused" ]] || continue
+      id="${_cp_ids[$i]}"
+      [[ -z "${_cp_boost[$id]+x}" ]] && continue  # no boost received yet — skip
+      local _cp_eff="${_cp_boost[$id]}" _cp_r="${_cp_ranks[$i]}"
+      (( _cp_r < _cp_eff )) && _cp_eff=$_cp_r    # effective = min(own rank, boost)
+      local _cp_pcsv2="${_cp_pcsvs[$i]:-}"
+      [[ -z "$_cp_pcsv2" ]] && continue
+      local _cp_prid2 _cp_cur2
+      while IFS= read -r _cp_prid2; do
+        [[ -z "$_cp_prid2" ]] && continue
+        _cp_cur2="${_cp_boost[$_cp_prid2]:-99}"
+        if (( _cp_eff < _cp_cur2 )); then
+          _cp_boost[$_cp_prid2]=$_cp_eff; _cp_changed=1
+        fi
+      done <<< "${_cp_pcsv2//,/$'\n'}"
+    done
+  done
+
+  local best_rank=99 best_line="" _eff
+  for i in "${!_cp_raws[@]}"; do
+    state="${_cp_states[$i]}"
+    [[ "$state" == "waiting" || "$state" == "paused" ]] || continue
+    [[ "${_cp_sats[$i]}" -eq 1 ]] || continue   # skip items blocked by unmet prereqs
+    id="${_cp_ids[$i]}"
+    rank="${_cp_ranks[$i]}"
+    # Effective rank = min(own rank, rank inherited from highest-priority blocked descendant).
+    _eff="${_cp_boost[$id]:-$rank}"
+    (( rank < _eff )) && _eff=$rank   # own rank caps effective (can't boost worse than self)
+    if (( _eff < best_rank )); then
+      best_rank=$_eff; best_line="${_cp_raws[$i]}"
+    fi
+  done
   [[ -n "$best_line" ]] && printf '%s\n' "$best_line"
   return 0
 }
@@ -1583,15 +1984,17 @@ cmd_set() {
     prio="${parsed#*|}"; prio="${prio%%|*}"
     _id_rest="${parsed#*|}"; _id_rest="${_id_rest#*|}"; _id="${_id_rest%%|*}"
     desc="${_id_rest#*|}"
+    # #114: preserve prereq tag across state/prio changes.
+    local _ds_prereq; _ds_prereq="$(_prereq_ids_from_line "$from")"
     # #69: 'prio' keeps the current state and rewrites the [Px] tag; 'state' (default)
     # keeps the priority and rewrites the state — the original behavior. _eff_state is
     # the RESULTING state (current state for a prio change), used for the #60 marker.
     if [[ "$action" == "prio" ]]; then
       local _np; _np="$(printf '%s' "$newval" | tr 'a-z' 'A-Z')"
-      to="$(_serialize_item "$curr_state" "$_np" "$_id" "$desc")"
+      to="$(_serialize_item "$curr_state" "$_np" "$_id" "$desc" "$_ds_prereq")"
       _eff_state="$curr_state"
     else
-      to="$(_serialize_item "$newval" "$prio" "$_id" "$desc")"
+      to="$(_serialize_item "$newval" "$prio" "$_id" "$desc" "$_ds_prereq")"
       _eff_state="$newval"
     fi
     # Propagate a write failure: a swallowed rc here would let the trailing #60 marker
@@ -1681,6 +2084,11 @@ cmd_set() {
       # run loop, so this single call covers both interactive and autonomous paths.
       if [[ "$newval" == "done" ]]; then
         _print_waiting_queue
+      fi
+      # #114: when an item becomes failed, surface any waiting/paused dependents whose
+      # prereq graph goes through it — they can never become runnable.
+      if [[ "$newval" == "failed" ]]; then
+        _surface_blocked_by_failed "${_id_rest2%%|*}"
       fi
     fi
   fi
@@ -1842,7 +2250,8 @@ cmd_claim() {
     prio="${parsed#*|}"; prio="${prio%%|*}"
     _cid_rest="${parsed#*|}"; _cid_rest="${_cid_rest#*|}"; _cid="${_cid_rest%%|*}"
     desc="${_cid_rest#*|}"
-    to="$(_serialize_item running "$prio" "$_cid" "$desc")"
+    local _dc_prereq; _dc_prereq="$(_prereq_ids_from_line "$from")"
+    to="$(_serialize_item running "$prio" "$_cid" "$desc" "$_dc_prereq")"
     # #67: an AGENT claim must also hold the active-run lock so the cron guard sees all
     # three working parties uniformly. The worker path (cmd_run) already acquired the
     # active run before calling cmd_claim, so only --agent acquires here (no double-
@@ -1884,7 +2293,8 @@ _revert_to_waiting() {
   prio="${parsed#*|}"; prio="${prio%%|*}"
   _rid_rest="${parsed#*|}"; _rid_rest="${_rid_rest#*|}"; _rid="${_rid_rest%%|*}"
   desc="${_rid_rest#*|}"
-  to="$(_serialize_item waiting "$prio" "$_rid" "$desc")"
+  local _rtw_prereq; _rtw_prereq="$(_prereq_ids_from_line "$raw")"
+  to="$(_serialize_item waiting "$prio" "$_rid" "$desc" "$_rtw_prereq")"
   _flip_line "$raw" "$to"
 }
 
@@ -2315,6 +2725,12 @@ commands:
                                   bug and you are at a terminal, deputy asks for those four
                                   instead. --no-accept skips it (chores); DEPUTY_NO_GRILL=1
                                   or config accept_grill=0 disables the prompt everywhere
+                                  Prerequisites (#114): --prereq <ids> — comma-separated
+                                  IDs (e.g. "3,7" or "#3,#7") this new item depends on.
+                                  Blocked items are skipped by cmd_pick until all prereqs
+                                  reach done/cancelled/duplicate; the highest-priority
+                                  blocked item's rank is propagated to its prereq chain.
+                                  See also: analyze-dep, list (shows [BLOCKED] annotation)
   accept <id|slug>                print a task's acceptance record — the reported symptom
     [--observe <cmd>]             frozen in the reporter's words. With any flag, create or
     [--actual <text>]             update it instead (use this to backfill an item added
@@ -2356,7 +2772,16 @@ commands:
                                   remainder after the 3rd pipe and may itself contain '|';
                                   prio and id are empty strings when unset); composes with
                                   all state filters; use 'cut -d"|" -f4-' to extract desc
-  status                          counts by state
+                                  (#114) Items with unmet prerequisites show an indented
+                                  '[BLOCKED] waiting on: #N(state), ...' annotation listing
+                                  only the prereqs that are not yet done/cancelled/duplicate
+  analyze-dep                     (#114) analyze the full prerequisite dependency graph:
+                                  report blocked items, cycles, self-references, and
+                                  dangling IDs. Exit 0 = clean (no structural defects,
+                                  blocked items are normal queue operation); exit 1 =
+                                  structural defect that requires manual intervention
+  status                          counts by state; includes 'blocked: N' — waiting/paused
+                                  items whose prerequisites are not yet satisfied
   test [--changed] [<name>...]    run the test suite (config test_cmd, else tests/run.sh). With
                                   --changed, run ONLY the tests affected by the working-tree diff
                                   (bin/deputy.sh changed functions → tests/test-map + cmd_<X>→
@@ -3181,8 +3606,9 @@ _human_backoff_gate() {
       _surf_set_rc=0
       cmd_set "$_stale_item" surfaced || _surf_set_rc=$?
       if [[ "$_surf_set_rc" -eq 0 ]]; then
-        local _surf_line_surfaced
-        _surf_line_surfaced="$(_serialize_item surfaced "$_surf_prio" "$_surf_id" "$_surf_desc")"
+        local _surf_line_surfaced _surf_prereq
+        _surf_prereq="$(_prereq_ids_from_line "$_stale_item")"
+        _surf_line_surfaced="$(_serialize_item surfaced "$_surf_prio" "$_surf_id" "$_surf_desc" "$_surf_prereq")"
         printf 'Stale Claude session file found (PID %s, process dead) with cwd in this repo — a sign of an abnormal Claude Code crash. Deputy surfaced this item instead of running, so you can check. Resolve by removing the stale ~/.claude/sessions/%s.json (or confirming nothing'"'"'s wrong), then revive with: deputy set "%s" waiting.\n' \
           "$_isa_stale_pid" "$_isa_stale_pid" "$_surf_line_surfaced" >> "$_surf_qf"
         printf 'deputy: stale Claude session file (PID %s) — surfaced "%s" for human review.\n' \
@@ -4230,6 +4656,7 @@ cmd_run() {
       local _fail_reason="cron resume budget exhausted ($_WP_RETRY_BUDGET attempts, no step progress)"
       printf '%s\n' "$_fail_reason" > "$(_trail_path fails "$_rb_slug")"   # #70: .deputy/fails/<slug>.md
       _with_lock _do_set_item_failed "$running_line" || true
+      _surface_blocked_by_failed "$_rb_id"   # #114: surface dependents whose prereq just failed
       rm -f "$STATE_DIR/$$.claim" 2>/dev/null || true
       _active_run_release
       processed=$((processed + 1))
@@ -4265,6 +4692,7 @@ cmd_run() {
             _with_lock _revert_to_waiting "$_qrb_cur_line" >/dev/null 2>&1 || true
             _qrb_cur_line="$(_line_by_id "$_rb_id" || true)"
             [[ -n "$_qrb_cur_line" ]] && { _with_lock _do_set_item_failed "$_qrb_cur_line" || true; }
+            _surface_blocked_by_failed "$_rb_id"   # #114: surface dependents of now-failed prereq
           fi
         fi
       fi
@@ -4333,6 +4761,7 @@ cmd_run() {
         local _rb_cur_line
         _rb_cur_line="$(_line_by_id "$_rb_id" || true)"
         [[ -n "$_rb_cur_line" ]] && { _with_lock _do_set_item_failed "$_rb_cur_line" || true; }
+        _surface_blocked_by_failed "$_rb_id"   # #114: surface dependents of now-failed prereq
       fi
     fi
     _archive_run_log "$running_line" "$log"
@@ -5405,8 +5834,40 @@ _do_set_item_failed() {
   prio="${parsed#*|}"; prio="${prio%%|*}"
   _fsid_rest="${parsed#*|}"; _fsid_rest="${_fsid_rest#*|}"; _fsid="${_fsid_rest%%|*}"
   desc="${_fsid_rest#*|}"
-  to="$(_serialize_item failed "$prio" "$_fsid" "$desc")"
+  local _dsif_prereq; _dsif_prereq="$(_prereq_ids_from_line "$raw")"
+  to="$(_serialize_item failed "$prio" "$_fsid" "$desc" "$_dsif_prereq")"
   _flip_line "$raw" "$to"
+}
+
+# #114: surface waiting/paused items that depend on a now-failed prerequisite.
+# 'failed' is NOT a satisfying terminal state, so any dependent whose only path through
+# the prereq graph goes through a failed node can never become runnable. Surfacing it
+# makes the chain-stuck condition visible instead of letting watch report quiescence.
+# Called OUTSIDE any lock (uses cmd_set which acquires its own lock per item).
+_surface_blocked_by_failed() {
+  local failed_id="$1" raw parsed state dep_id dep_desc dep_prio dep_slug qf
+  while IFS= read -r raw; do
+    parsed="$(_parse_item "$raw")"
+    state="${parsed%%|*}"
+    [[ "$state" == "waiting" || "$state" == "paused" ]] || continue
+    local dep_prereqs; dep_prereqs="$(_prereq_ids_from_line "$raw")"
+    [[ -z "$dep_prereqs" ]] && continue
+    # Check whether this item lists the failed ID as one of its prereqs.
+    local _sbf_found=0 _sbf_prid
+    while IFS= read -r _sbf_prid; do
+      [[ -z "$_sbf_prid" ]] && continue
+      [[ "$_sbf_prid" == "$failed_id" ]] && { _sbf_found=1; break; }
+    done <<< "${dep_prereqs//,/$'\n'}"
+    [[ "$_sbf_found" -eq 0 ]] && continue
+    dep_id="${parsed#*|}"; dep_id="${dep_id#*|}"; dep_id="${dep_id%%|*}"
+    dep_prio="${parsed#*|}"; dep_prio="${dep_prio%%|*}"
+    dep_desc="${parsed#*|}"; dep_desc="${dep_desc#*|}"; dep_desc="${dep_desc#*|}"
+    dep_slug="$(_wp_slug "$dep_id" "$dep_desc")" 2>/dev/null || true
+    qf="$(_trail_path questions "$dep_slug")" 2>/dev/null || true
+    printf 'Prerequisite #%s has failed — this item can never become runnable.\nResolve by cancelling this item, fixing and retrying the failed prerequisite, or removing the failed prereq from BACKLOG.md.\n' \
+      "$failed_id" >> "$qf" 2>/dev/null || true
+    cmd_set "$raw" surfaced >/dev/null 2>&1 || true
+  done < <(_each_item)
 }
 
 # #67 startup-crash circuit-breaker counters: consecutive FAILED spawns that never
@@ -5530,7 +5991,13 @@ _runnable_count() {
   local n=0 raw parsed state
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"; state="${parsed%%|*}"
-    case "$state" in waiting|paused) n=$(( n + 1 )) ;; esac
+    case "$state" in
+      waiting|paused)
+        # #114: blocked items (unmet prereqs) are NOT runnable — exclude them so
+        # deputy watch reaches quiescence even when blocked items are present.
+        _prereqs_satisfied_for_line "$raw" || continue
+        n=$(( n + 1 )) ;;
+    esac
   done < <(_each_item)
   printf '%s' "$n"
 }
@@ -6164,7 +6631,7 @@ main() {
     version|--version|-V) cmd_version; return $? ;;
     _parse) _parse_item "${2:-}"; printf '\n'; return 0 ;;
     list) shift; cmd_list "$@"; return $? ;;
-    _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" && printf '\n' || return 1 ;;
+    _serialize) _serialize_item "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" && printf '\n' || return 1 ;;
     add) shift; cmd_add "$@" ;;
     accept) shift; cmd_accept "$@"; return $? ;;     # #113: the frozen acceptance record
     verify) shift; cmd_verify "$@"; return $? ;;     # #113: red / green / bite / smoke gates
@@ -6173,6 +6640,7 @@ main() {
     test) shift; cmd_test "$@"; return $? ;;
     watch|tail) shift; cmd_watch "$@"; return $? ;;
     progress) shift; cmd_progress "${1:-}"; return $? ;;   # #108: passive read-only per-task progress
+    analyze-dep) cmd_analyze_dep; return $? ;;
     pick) cmd_pick; return 0 ;;
     pickup) shift; cmd_pickup "${1:-}"; return $? ;;
     set) shift; cmd_set "$@"; return $? ;;

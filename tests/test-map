@@ -8,12 +8,13 @@
 # full-suite run (never a silent skip).
 
 # ── commands whose tests are not simply test_<name> ──────────────────────────
-cmd_list: test_list test_list_detail test_cmd_help
+cmd_list: test_list test_list_detail test_cmd_help test_prereq
 cmd_watch: test_watch_digest test_livelog test_reflect test_review
-cmd_add: test_add test_add_priority test_autorun test_worker_proposal test_accept
+cmd_add: test_add test_add_priority test_autorun test_worker_proposal test_accept test_prereq
 cmd_run: test_run test_run_add test_run_priority test_run_branch_guard test_heartbeat test_headed
 cmd_reflect: test_reflect test_review
-cmd_pick: test_pick
+cmd_pick: test_pick test_prereq
+cmd_analyze_dep: test_prereq
 
 # ── helpers (no cmd_ convention) ─────────────────────────────────────────────
 _config_get: test_config test_self_heal_76
@@ -49,12 +50,12 @@ _short_hash: test_slug
 _write_task_meta: test_slug
 _meta_get: test_slug
 cmd_slug: test_slug
-_parse_item: test_parse test_item_ids
-_serialize_item: test_parse test_item_ids test_backlog_sections
+_parse_item: test_parse test_item_ids test_prereq
+_serialize_item: test_parse test_item_ids test_backlog_sections test_prereq
 _allocate_ids: test_item_ids
 _backlog_commit: test_write_hardening test_torn_write_recovery test_queue_commit
 _flip_line: test_set test_write_hardening
-_regroup_backlog: test_regroup test_backlog_sections
+_regroup_backlog: test_regroup test_backlog_sections test_prereq
 _wt_remove: test_worktree test_delete_merged_branch
 _wt_create: test_worktree
 _strip_cmd_prefixes: test_guardrail
@@ -84,3 +85,10 @@ _verify_item_commits: test_verify
 _verify_bite_tree: test_verify
 cmd_wp_done: test_verify test_wp_start
 cmd_wp_commit: test_wp_commit test_verify
+
+# ── #114: prerequisite tasks ──────────────────────────────────────────────────
+_prereq_ids_from_line: test_prereq
+_prereqs_satisfied_for_line: test_prereq
+_item_state_by_id: test_prereq
+_surface_blocked_by_failed: test_prereq
+cmd_status: test_status test_prereq

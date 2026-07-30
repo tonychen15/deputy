@@ -168,6 +168,8 @@ it never overwrites your `BACKLOG.md` or existing config:
 ```bash
 deputy add "fix the login redirect loop" -ui   # add an urgent+important item (-ui=P0, -u=P1, -i=P2)
 deputy add "tidy the README"                    # bare items default to P3 at numbering (P4 is the lowest lane); --p0/--p1/--p2/--p3/--p4 also accepted
+deputy add "deploy api" --prereq 1,2           # (#114) blocked until #1 and #2 are done/cancelled/duplicate
+deputy analyze-dep                             # (#114) check the prereq graph; blocked items, cycles, dangling IDs
 deputy accept <id>     # the item's acceptance record — the reported symptom, frozen at add time
 deputy verify <id> --red|--green|--bite|--smoke # prove the symptom moved (see "Proving a fix" below)
 deputy list [--<state>] # items in BACKLOG.md format: @[#N][Pn] desc (running), [#N][Pn] desc (waiting), etc.
@@ -386,6 +388,10 @@ at numbering time; FIFO within a lane. Use `--p0`/`--p1`/`--p2`/`--p3`/`--p4` fl
 with `deputy add` to assign a lane explicitly.
 **Item IDs** `[#N]` are assigned automatically on first reference (e.g., `list`, `run`, `watch`); use
 `deputy run <id>` to target a specific item directly.
+**Prerequisite tag** `[prereq:#N,#M]` — an item with this tag is blocked until all listed
+ids reach done/cancelled/duplicate. Add via `deputy add --prereq N,M "task"`; inspect with
+`deputy analyze-dep`; `deputy list` shows `[BLOCKED]` with unmet prereqs; `deputy status`
+shows `blocked: N`.
 The parser reads everything after `## Items`, skipping `###` section headers and release
 delimiter comments.
 
