@@ -342,6 +342,135 @@ _migrate_trails() {
   shopt -u nullglob
 }
 
+# #114: Analyze the full dependency graph. Reports blocked items, cycles, self-refs,
+# and dangling prereq IDs. Exit 0 when graph is clean; exit 1 when issues exist.
+cmd_analyze_dep() {
+  declare -A _ad_states=() _ad_prios=() _ad_descs=() _ad_prereqs=()
+  local -a _ad_ids=()
+
+  while IFS= read -r _ad_raw; do
+    local _ad_parsed _ad_s _ad_p _ad_id _ad_d _ad_pc
+    _ad_parsed="$(_parse_item "$_ad_raw")"
+    _ad_s="${_ad_parsed%%|*}"
+    _ad_p="${_ad_parsed#*|}"; _ad_p="${_ad_p%%|*}"
+    _ad_id="${_ad_parsed#*|}"; _ad_id="${_ad_id#*|}"; _ad_id="${_ad_id%%|*}"
+    _ad_d="${_ad_parsed#*|}"; _ad_d="${_ad_d#*|}"; _ad_d="${_ad_d#*|}"
+    _ad_pc="$(_prereq_ids_from_line "$_ad_raw")"
+    _ad_states["$_ad_id"]="$_ad_s"
+    _ad_prios["$_ad_id"]="${_ad_p:-P3}"
+    _ad_descs["$_ad_id"]="${_ad_d:0:60}"
+    _ad_prereqs["$_ad_id"]="${_ad_pc:-}"
+    _ad_ids+=("$_ad_id")
+  done < <(_each_item)
+
+  local _issues=0
+  local -a _blocked=() _self=() _dangle=() _cycle_nodes=()
+
+  # Self-refs and dangling IDs.
+  local _ai _ap
+  for _ai in "${_ad_ids[@]}"; do
+    local _pc="${_ad_prereqs[$_ai]:-}"
+    [[ -z "$_pc" ]] && continue
+    for _ap in ${_pc//,/ }; do
+      [[ -z "$_ap" ]] && continue
+      if [[ "$_ap" == "$_ai" ]]; then
+        _self+=("  #$_ai (${_ad_prios[$_ai]}) references itself")
+        (( _issues++ )) || true
+      elif [[ -z "${_ad_states[$_ap]+x}" ]]; then
+        _dangle+=("  #$_ai (${_ad_prios[$_ai]}) → #$_ap [not in backlog]")
+        (( _issues++ )) || true
+      fi
+    done
+  done
+
+  # Kahn's topological sort to detect cycles.
+  # prereq_count[X] = number of non-dangling, non-self prerequisites of X.
+  declare -A _prereq_cnt=()
+  for _ai in "${_ad_ids[@]}"; do
+    local _cnt=0 _ap2
+    for _ap2 in ${_ad_prereqs[$_ai]//,/ }; do
+      [[ -z "$_ap2" || "$_ap2" == "$_ai" ]] && continue
+      [[ -n "${_ad_states[$_ap2]+x}" ]] || continue
+      (( _cnt++ )) || true
+    done
+    _prereq_cnt["$_ai"]=$_cnt
+  done
+  local -a _kahn_q=()
+  for _ai in "${_ad_ids[@]}"; do
+    [[ "${_prereq_cnt[$_ai]:-0}" -eq 0 ]] && _kahn_q+=("$_ai")
+  done
+  declare -A _kahn_done=()
+  while [[ ${#_kahn_q[@]} -gt 0 ]]; do
+    local _curr="${_kahn_q[0]}"; _kahn_q=("${_kahn_q[@]:1}")
+    _kahn_done["$_curr"]=1
+    # Decrement prereq_count for all items that have _curr as a prerequisite.
+    for _ai in "${_ad_ids[@]}"; do
+      [[ -n "${_kahn_done[$_ai]+x}" ]] && continue
+      local _pc2="${_ad_prereqs[$_ai]:-}"
+      [[ -z "$_pc2" ]] && continue
+      local _has=0 _ap3
+      for _ap3 in ${_pc2//,/ }; do
+        [[ "$_ap3" == "$_curr" ]] && { _has=1; break; }
+      done
+      [[ "$_has" -eq 0 ]] && continue
+      _prereq_cnt["$_ai"]=$(( _prereq_cnt["$_ai"] - 1 ))
+      [[ "${_prereq_cnt[$_ai]}" -eq 0 ]] && _kahn_q+=("$_ai")
+    done
+  done
+  for _ai in "${_ad_ids[@]}"; do
+    [[ -n "${_kahn_done[$_ai]+x}" ]] && continue
+    [[ "${_prereq_cnt[$_ai]:-0}" -eq 0 ]] && continue  # no real prereqs
+    _cycle_nodes+=("  #$_ai (${_ad_prios[$_ai]}) \"${_ad_descs[$_ai]}\"")
+    (( _issues++ )) || true
+  done
+
+  # Blocked items: waiting/paused with at least one unmet prerequisite.
+  for _ai in "${_ad_ids[@]}"; do
+    local _as="${_ad_states[$_ai]}"
+    [[ "$_as" == "waiting" || "$_as" == "paused" ]] || continue
+    local _pc3="${_ad_prereqs[$_ai]:-}"
+    [[ -z "$_pc3" ]] && continue
+    local _unmet="" _ap4
+    for _ap4 in ${_pc3//,/ }; do
+      [[ -z "$_ap4" ]] && continue
+      local _ps="${_ad_states[$_ap4]:-missing}"
+      case "$_ps" in
+        done|cancelled|duplicate) ;;
+        *) _unmet="${_unmet}${_unmet:+, }#$_ap4($_ps)" ;;
+      esac
+    done
+    [[ -z "$_unmet" ]] && continue
+    _blocked+=("  #$_ai [${_ad_prios[$_ai]}] \"${_ad_descs[$_ai]}\" — blocked by: $_unmet")
+  done
+
+  if [[ ${#_blocked[@]} -gt 0 ]]; then
+    printf 'Blocked items (%d):\n' "${#_blocked[@]}"
+    printf '%s\n' "${_blocked[@]}"
+    printf '\n'
+  fi
+  if [[ ${#_self[@]} -gt 0 ]]; then
+    printf 'Self-references (%d):\n' "${#_self[@]}"
+    printf '%s\n' "${_self[@]}"
+    printf '\n'
+  fi
+  if [[ ${#_dangle[@]} -gt 0 ]]; then
+    printf 'Dangling prerequisites (%d):\n' "${#_dangle[@]}"
+    printf '%s\n' "${_dangle[@]}"
+    printf '\n'
+  fi
+  if [[ ${#_cycle_nodes[@]} -gt 0 ]]; then
+    printf 'Items in dependency cycles (%d):\n' "${#_cycle_nodes[@]}"
+    printf '%s\n' "${_cycle_nodes[@]}"
+    printf '\n'
+  fi
+  if [[ "$_issues" -eq 0 && ${#_blocked[@]} -eq 0 ]]; then
+    printf 'No dependency issues.\n'
+  elif [[ "$_issues" -eq 0 ]]; then
+    printf 'Graph is acyclic; no dangling or self-references.\n'
+  fi
+  return $(( _issues > 0 ? 1 : 0 ))
+}
+
 cmd_list() {
   # State filter — three equivalent forms (canonical first): a bare '<state>'
   # ('deputy list waiting'), '--state <state>', or the shorthand '--<state>'
@@ -6390,6 +6519,7 @@ main() {
     test) shift; cmd_test "$@"; return $? ;;
     watch|tail) shift; cmd_watch "$@"; return $? ;;
     progress) shift; cmd_progress "${1:-}"; return $? ;;   # #108: passive read-only per-task progress
+    analyze-dep) cmd_analyze_dep; return $? ;;
     pick) cmd_pick; return 0 ;;
     pickup) shift; cmd_pickup "${1:-}"; return $? ;;
     set) shift; cmd_set "$@"; return $? ;;
