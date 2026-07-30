@@ -1502,12 +1502,13 @@ _print_waiting_queue() {
 
 cmd_pick() {
   _with_lock _allocate_ids
-  # #114 two-pass: build a priority-inheritance boost map (blocked items push their
-  # effective priority down to prereqs so prereqs are scheduled before lower-prio free work),
-  # then pick the highest-effective-priority item whose prereqs are already satisfied.
-  local raw parsed state prio id rank _cp_sat
-  local -a _cp_raws=() _cp_states=() _cp_ids=() _cp_ranks=() _cp_sats=()
-  declare -A _cp_boost   # id → min rank of its blocked dependents (lower = higher prio)
+  # #114 — transitive priority inheritance + prereq gate.
+  # Phase 1: collect all items; compute initial one-hop boost (blocked item → direct prereq).
+  # Phase 2: fixpoint iteration — propagate effective rank down the chain until stable.
+  # Phase 3: pick the highest-effective-rank item whose own prereqs are satisfied.
+  local raw parsed state prio id rank _cp_sat _cp_pcsv
+  local -a _cp_raws=() _cp_states=() _cp_ids=() _cp_ranks=() _cp_sats=() _cp_pcsvs=()
+  declare -A _cp_boost   # id → min(rank) seen in its blocked subtree (lower = higher prio)
 
   while IFS= read -r raw; do
     parsed="$(_parse_item "$raw")"
@@ -1516,12 +1517,13 @@ cmd_pick() {
     id="${parsed#*|}"; id="${id#*|}"; id="${id%%|*}"
     rank="$(_prio_rank "$prio")"
     _cp_sat=1; _prereqs_satisfied_for_line "$raw" || _cp_sat=0
+    _cp_pcsv=""
+    [[ "$_cp_sat" -eq 0 ]] && _cp_pcsv="$(_prereq_ids_from_line "$raw")"
     _cp_raws+=("$raw"); _cp_states+=("$state")
-    _cp_ids+=("$id"); _cp_ranks+=("$rank"); _cp_sats+=("$_cp_sat")
-    # Propagate blocked item's rank to its unmet prereqs (priority inheritance).
-    if [[ "$state" == "waiting" || "$state" == "paused" ]] && [[ "$_cp_sat" -eq 0 ]]; then
-      local _cp_pcsv _cp_prid _cp_cur
-      _cp_pcsv="$(_prereq_ids_from_line "$raw")"
+    _cp_ids+=("$id"); _cp_ranks+=("$rank"); _cp_sats+=("$_cp_sat"); _cp_pcsvs+=("$_cp_pcsv")
+    # One-hop boost: blocked item propagates its own rank to each direct prereq.
+    if [[ "$state" == "waiting" || "$state" == "paused" ]] && [[ "$_cp_sat" -eq 0 ]] && [[ -n "$_cp_pcsv" ]]; then
+      local _cp_prid _cp_cur
       while IFS= read -r _cp_prid; do
         [[ -z "$_cp_prid" ]] && continue
         _cp_cur="${_cp_boost[$_cp_prid]:-99}"
@@ -1530,16 +1532,41 @@ cmd_pick() {
     fi
   done < <(_each_item)
 
-  local best_rank=99 best_line="" i _eff
+  # Fixpoint: if a boosted blocked item B has its own prereqs, propagate B's effective
+  # rank (min of B's own rank and boost) to B's prereqs — handles chains like D→B→A
+  # where D(P0) must eventually boost A, not just B.
+  local _cp_changed=1 i
+  while [[ "$_cp_changed" -eq 1 ]]; do
+    _cp_changed=0
+    for i in "${!_cp_raws[@]}"; do
+      [[ "${_cp_sats[$i]}" -eq 1 ]] && continue   # not blocked — nothing to propagate
+      id="${_cp_ids[$i]}"
+      [[ -z "${_cp_boost[$id]+x}" ]] && continue  # no boost received yet — skip
+      local _cp_eff="${_cp_boost[$id]}" _cp_r="${_cp_ranks[$i]}"
+      (( _cp_r < _cp_eff )) && _cp_eff=$_cp_r    # effective = min(own rank, boost)
+      local _cp_pcsv2="${_cp_pcsvs[$i]:-}"
+      [[ -z "$_cp_pcsv2" ]] && continue
+      local _cp_prid2 _cp_cur2
+      while IFS= read -r _cp_prid2; do
+        [[ -z "$_cp_prid2" ]] && continue
+        _cp_cur2="${_cp_boost[$_cp_prid2]:-99}"
+        if (( _cp_eff < _cp_cur2 )); then
+          _cp_boost[$_cp_prid2]=$_cp_eff; _cp_changed=1
+        fi
+      done <<< "${_cp_pcsv2//,/$'\n'}"
+    done
+  done
+
+  local best_rank=99 best_line="" _eff
   for i in "${!_cp_raws[@]}"; do
     state="${_cp_states[$i]}"
     [[ "$state" == "waiting" || "$state" == "paused" ]] || continue
     [[ "${_cp_sats[$i]}" -eq 1 ]] || continue   # skip items blocked by unmet prereqs
     id="${_cp_ids[$i]}"
     rank="${_cp_ranks[$i]}"
-    # Effective rank = min(own rank, rank inherited from highest-priority blocked dependent).
+    # Effective rank = min(own rank, rank inherited from highest-priority blocked descendant).
     _eff="${_cp_boost[$id]:-$rank}"
-    (( rank < _eff )) && _eff=$rank   # own rank caps effective (never worse than self)
+    (( rank < _eff )) && _eff=$rank   # own rank caps effective (can't boost worse than self)
     if (( _eff < best_rank )); then
       best_rank=$_eff; best_line="${_cp_raws[$i]}"
     fi
